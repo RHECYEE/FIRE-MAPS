@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Straighten
+import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -69,6 +70,7 @@ import com.rhecyee.firelinemap.geopdf.RemotePdf
 import com.rhecyee.firelinemap.geopdf.UrlProbe
 import com.rhecyee.firelinemap.location.LocationRepository
 import com.rhecyee.firelinemap.location.TrackRecordingService
+import com.rhecyee.firelinemap.location.TrackSettingsStore
 import com.rhecyee.firelinemap.map.GeoBounds
 import com.rhecyee.firelinemap.map.IncidentMapCoverage
 import com.rhecyee.firelinemap.map.MapCoverage
@@ -90,7 +92,11 @@ fun FirelineApp() {
     val activeIncident = incidents.firstOrNull { it.isActive }
 
     var coordinateFormat by remember { mutableStateOf(CoordinateFormat.DDM) }
-    var isRecording by remember { mutableStateOf(false) }
+
+    val trackSettings = remember { TrackSettingsStore(context) }
+    var watching by remember { mutableStateOf(false) }
+    var stopThreshold by remember { mutableIntStateOf(trackSettings.stopThresholdSeconds) }
+    var showTrackSettings by remember { mutableStateOf(false) }
 
     val repository = remember { MapDocumentRepository(context) }
     val urlImporter = remember { MapUrlImporter(context.cacheDir) }
@@ -200,6 +206,17 @@ fun FirelineApp() {
         }
     }
 
+    if (showTrackSettings) {
+        TrackSettingsDialog(
+            stopThresholdSeconds = stopThreshold,
+            onDismiss = { showTrackSettings = false },
+            onSelect = { seconds ->
+                trackSettings.stopThresholdSeconds = seconds
+                stopThreshold = trackSettings.stopThresholdSeconds
+            }
+        )
+    }
+
     if (showUrlDialog) {
         UrlImportDialog(
             busy = urlBusy,
@@ -278,6 +295,9 @@ fun FirelineApp() {
                     }
                 },
                 actions = {
+                    IconButton(onClick = { showTrackSettings = true }) {
+                        Icon(Icons.Default.Timer, contentDescription = "Track settings")
+                    }
                     IconButton(onClick = { showUrlDialog = true }) {
                         Icon(Icons.Default.Link, contentDescription = "Import from URL")
                     }
@@ -362,27 +382,38 @@ fun FirelineApp() {
             Button(
                 onClick = {
                     val intent = Intent(context, TrackRecordingService::class.java).apply {
-                        action = if (isRecording) TrackRecordingService.ACTION_STOP
+                        action = if (watching) TrackRecordingService.ACTION_STOP
                         else TrackRecordingService.ACTION_START
                         putExtra(TrackRecordingService.EXTRA_INCIDENT_ID, activeIncident?.id)
                     }
                     ContextCompat.startForegroundService(context, intent)
-                    isRecording = !isRecording
+                    watching = !watching
                 },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(64.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isRecording) MaterialTheme.colorScheme.error
+                    containerColor = if (watching) MaterialTheme.colorScheme.error
                     else MaterialTheme.colorScheme.primary
                 ),
                 shape = RoundedCornerShape(12.dp)
             ) {
-                Text(
-                    if (isRecording) "STOP AND SAVE" else "●  START TRAVEL",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Black
-                )
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        if (watching) "STOP AUTO RECORDING" else "\u25cf  AUTO RECORD TRAVEL",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Black
+                    )
+                    Text(
+                        if (watching) {
+                            "Records on movement \u00b7 ends after " +
+                                TrackSettingsStore.describe(stopThreshold) + " stopped"
+                        } else {
+                            "Tracks start themselves when you move"
+                        },
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
             }
             Spacer(Modifier.height(6.dp))
         }

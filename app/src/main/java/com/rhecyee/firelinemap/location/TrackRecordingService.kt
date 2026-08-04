@@ -22,91 +22,204 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Locale
 import java.util.UUID
 
+/**
+ * Watches for travel and records it without being told to.
+ *
+ * The service stays resident once armed and opens a track when sustained
+ * movement is detected, rather than waiting for someone to press a button
+ * with gloves on. Detection itself lives in [TrackDetector], which is free of
+ * Android types and covered by tests; this class handles the platform.
+ */
 class TrackRecordingService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val points = mutableListOf<Pair<Double, Double>>()
-    private var startedAt = 0L
-    private var trackId: String? = null
+
+    private lateinit var settingsStore: TrackSettingsStore
+    private val detector by lazy { TrackDetector(settingsStore.settings()) }
+
     private var incidentId: String? = null
+    private var trackId: String? = null
+    private var armed = false
 
     private val client by lazy { LocationServices.getFusedLocationProviderClient(this) }
     private val callback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
-            result.locations.forEach { points += it.longitude to it.latitude }
-            persist(isRecording = true)
+            result.locations.forEach { handle(it) }
         }
     }
 
     override fun onCreate() {
         super.onCreate()
+        settingsStore = TrackSettingsStore(this)
         createNotificationChannel()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_STOP -> stopRecording()
-            else -> startRecording(intent?.getStringExtra(EXTRA_INCIDENT_ID))
+            ACTION_STOP -> {
+                closeOpenTrack()
+                disarm()
+            }
+            else -> arm(intent?.getStringExtra(EXTRA_INCIDENT_ID))
         }
+        // Restarting after process death resumes watching; the open track is
+        // recovered from the database rather than being silently abandoned.
         return START_STICKY
     }
 
-    private fun startRecording(requestedIncidentId: String?) {
-        if (trackId != null) return
-        incidentId = requestedIncidentId ?: return
-        trackId = UUID.randomUUID().toString()
-        startedAt = System.currentTimeMillis()
-        startForeground(NOTIFICATION_ID, notification("Travel recording active"))
+    private fun arm(requestedIncidentId: String?) {
+        if (requestedIncidentId != null) incidentId = requestedIncidentId
+        if (armed) return
 
-        val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val granted = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
         if (!granted) {
             stopSelf()
             return
         }
-        val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 3_000L)
-            .setMinUpdateDistanceMeters(3f)
+
+        armed = true
+        detector.settings = settingsStore.settings()
+        startForeground(NOTIFICATION_ID, notification("Watching for travel"))
+
+        val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 5_000L)
+            // No displacement filter: the detector needs the stationary fixes
+            // to decide that travel has ended.
+            .setMinUpdateDistanceMeters(0f)
+            .setWaitForAccurateLocation(false)
             .build()
         client.requestLocationUpdates(request, callback, mainLooper)
-        persist(isRecording = true)
+
+        scope.launch { recoverOpenTrack() }
     }
 
-    private fun stopRecording() {
+    private fun disarm() {
         client.removeLocationUpdates(callback)
-        persist(isRecording = false, endedAt = System.currentTimeMillis())
+        armed = false
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
-    private fun persist(isRecording: Boolean, endedAt: Long? = null) {
-        val id = trackId ?: return
-        val incident = incidentId ?: return
-        val now = endedAt ?: System.currentTimeMillis()
-        val geometry = points.joinToString(prefix = "{\"type\":\"LineString\",\"coordinates\":[", postfix = "]}") {
-            "[${it.first},${it.second}]"
+    private fun handle(location: android.location.Location) {
+        val fix = Fix(
+            latitude = location.latitude,
+            longitude = location.longitude,
+            timeMillis = location.time.takeIf { it > 0 } ?: System.currentTimeMillis(),
+            accuracyMeters = if (location.hasAccuracy()) location.accuracy else 999f,
+            speedMetersPerSecond = if (location.hasSpeed()) location.speed.toDouble() else null
+        )
+
+        when (val event = detector.onFix(fix)) {
+            is TrackEvent.Started -> {
+                trackId = UUID.randomUUID().toString()
+                updateNotification("Travel recording — 0.0 km")
+                persist(event.atMillis, endedAt = null, isRecording = true)
+            }
+            is TrackEvent.Extended -> {
+                updateNotification(
+                    "Travel recording — %.1f km".format(event.distanceMeters / 1000.0)
+                )
+                persist(
+                    startedAt = fix.timeMillis - detector.currentElapsedMillis(fix.timeMillis),
+                    endedAt = null,
+                    isRecording = true
+                )
+            }
+            is TrackEvent.Ended -> {
+                finalise(event)
+                updateNotification("Watching for travel")
+            }
+            TrackEvent.None -> Unit
         }
+    }
+
+    private fun closeOpenTrack() {
+        val event = detector.finish()
+        if (event is TrackEvent.Ended) finalise(event)
+    }
+
+    private fun finalise(event: TrackEvent.Ended) {
+        val id = trackId ?: return
+        trackId = null
+        val incident = incidentId ?: return
+
+        if (!event.kept) {
+            // Too short to be travel. Remove the in-progress row rather than
+            // leaving a stub in the incident's track list.
+            scope.launch {
+                (application as FirelineApplication).database.dao().deleteTrack(id)
+            }
+            return
+        }
+
+        val track = event.track
         scope.launch {
-            val app = application as FirelineApplication
-            app.database.dao().upsertTrack(
+            (application as FirelineApplication).database.dao().upsertTrack(
                 TrackEntity(
                     id = id,
                     incidentId = incident,
-                    name = "Travel ${java.text.SimpleDateFormat("MMM d HH:mm", java.util.Locale.US).format(startedAt)}",
+                    name = "Travel ${NAME_FORMAT.format(track.startedAt)}",
+                    startedAt = track.startedAt,
+                    endedAt = track.endedAt,
+                    elapsedSeconds = track.elapsedMillis / 1000,
+                    distanceMeters = track.distanceMeters,
+                    geometryGeoJson = geometryOf(track.points),
+                    isRecording = false
+                )
+            )
+        }
+    }
+
+    private fun persist(startedAt: Long, endedAt: Long?, isRecording: Boolean) {
+        val id = trackId ?: return
+        val incident = incidentId ?: return
+        val distance = detector.currentDistanceMeters
+        val now = endedAt ?: System.currentTimeMillis()
+        scope.launch {
+            (application as FirelineApplication).database.dao().upsertTrack(
+                TrackEntity(
+                    id = id,
+                    incidentId = incident,
+                    name = "Travel ${NAME_FORMAT.format(startedAt)}",
                     startedAt = startedAt,
                     endedAt = endedAt,
                     elapsedSeconds = (now - startedAt).coerceAtLeast(0) / 1000,
-                    geometryGeoJson = geometry,
+                    distanceMeters = distance,
+                    geometryGeoJson = "{\"type\":\"LineString\",\"coordinates\":[]}",
                     isRecording = isRecording
                 )
             )
         }
     }
 
+    /** Closes out a track left open by a process kill. */
+    private suspend fun recoverOpenTrack() {
+        val dao = (application as FirelineApplication).database.dao()
+        val open = dao.getActiveTrack() ?: return
+        dao.upsertTrack(open.copy(isRecording = false, endedAt = open.endedAt ?: open.startedAt))
+    }
+
+    private fun geometryOf(points: List<Fix>): String =
+        points.joinToString(
+            prefix = "{\"type\":\"LineString\",\"coordinates\":[",
+            postfix = "]}"
+        ) { "[${it.longitude},${it.latitude}]" }
+
     private fun createNotificationChannel() {
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "Travel recording", NotificationManager.IMPORTANCE_LOW)
+        getSystemService(NotificationManager::class.java).createNotificationChannel(
+            NotificationChannel(
+                CHANNEL_ID, "Travel recording", NotificationManager.IMPORTANCE_LOW
+            )
         )
+    }
+
+    private fun updateNotification(text: String) {
+        getSystemService(NotificationManager::class.java)
+            .notify(NOTIFICATION_ID, notification(text))
     }
 
     private fun notification(text: String) = NotificationCompat.Builder(this, CHANNEL_ID)
@@ -124,6 +237,11 @@ class TrackRecordingService : Service() {
         )
         .build()
 
+    override fun onDestroy() {
+        closeOpenTrack()
+        super.onDestroy()
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
@@ -132,5 +250,6 @@ class TrackRecordingService : Service() {
         const val EXTRA_INCIDENT_ID = "incident_id"
         private const val CHANNEL_ID = "travel_recording"
         private const val NOTIFICATION_ID = 4102
+        private val NAME_FORMAT = SimpleDateFormat("MMM d HH:mm", Locale.US)
     }
 }

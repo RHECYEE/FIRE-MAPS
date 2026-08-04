@@ -39,6 +39,9 @@ interface FirelineDao {
     @Query("SELECT * FROM tracks WHERE isRecording = 1 LIMIT 1")
     suspend fun getActiveTrack(): TrackEntity?
 
+    @Query("DELETE FROM tracks WHERE id = :trackId")
+    suspend fun deleteTrack(trackId: String)
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertMarker(marker: MarkerEntity)
 

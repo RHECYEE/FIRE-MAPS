@@ -114,3 +114,41 @@ fun RemoteListingDialog(
         }
     )
 }
+
+/** Adjusts how long a stop must last before it ends a track. */
+@androidx.compose.runtime.Composable
+fun TrackSettingsDialog(
+    stopThresholdSeconds: Int,
+    onDismiss: () -> Unit,
+    onSelect: (Int) -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("End a track after stopping for") },
+        text = {
+            Column {
+                Text(
+                    "Travel records itself once you start moving. A stop shorter " +
+                        "than this stays part of the same track, so a gate, traffic, " +
+                        "or working a patient does not split the trip.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                com.rhecyee.firelinemap.location.TrackSettingsStore.CHOICES_SECONDS
+                    .forEach { seconds ->
+                        val selected = seconds == stopThresholdSeconds
+                        Text(
+                            (if (selected) "●  " else "○  ") +
+                                com.rhecyee.firelinemap.location.TrackSettingsStore
+                                    .describe(seconds),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onSelect(seconds) }
+                                .padding(vertical = 10.dp),
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                        )
+                    }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } }
+    )
+}
