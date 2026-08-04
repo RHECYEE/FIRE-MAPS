@@ -128,6 +128,30 @@ class AppSettings(context: Context) {
     fun chromeTimeoutMillis(): Long? =
         chromeTimeoutSeconds.takeIf { it > 0 }?.let { it * 1_000L }
 
+    /**
+     * Where the map was last looking, so it opens there.
+     *
+     * With no sheet imported the app draws its own terrain around a point, and
+     * that point has to come from somewhere before the first fix arrives.
+     * Remembering it means someone who lands at camp with no signal still gets
+     * the ground they were on yesterday, from tiles already on the device,
+     * instead of a blank screen until the receiver settles.
+     */
+    var lastAnchor: Pair<Double, Double>?
+        get() {
+            val latitude = preferences.getFloat(KEY_ANCHOR_LATITUDE, Float.NaN)
+            val longitude = preferences.getFloat(KEY_ANCHOR_LONGITUDE, Float.NaN)
+            if (latitude.isNaN() || longitude.isNaN()) return null
+            return latitude.toDouble() to longitude.toDouble()
+        }
+        set(value) {
+            if (value == null) return
+            preferences.edit()
+                .putFloat(KEY_ANCHOR_LATITUDE, value.first.toFloat())
+                .putFloat(KEY_ANCHOR_LONGITUDE, value.second.toFloat())
+                .apply()
+        }
+
     /** Null when offline; true when the connection is not metered. */
     fun connectionState(): Pair<Boolean, Boolean> {
         val manager = app.getSystemService(ConnectivityManager::class.java)
@@ -139,6 +163,20 @@ class AppSettings(context: Context) {
             NetworkCapabilities.NET_CAPABILITY_NOT_METERED
         )
         return connected to unmetered
+    }
+
+    /**
+     * Whether the ground currently on screen may be fetched.
+     *
+     * Separate from [mayAutoDownload], which asks whether to keep a radius of
+     * ground the operator is not looking at. This is a bounded fetch for what
+     * is in front of them, so it only has to answer to the metered-connection
+     * preference.
+     */
+    fun mayFetchForView(): Boolean {
+        val (connected, unmetered) = connectionState()
+        if (!connected) return false
+        return unmetered || !autoDownloadWifiOnly
     }
 
     /** Whether terrain may be fetched right now. */
@@ -153,6 +191,8 @@ class AppSettings(context: Context) {
         private const val KEY_RADIUS = "auto_download_radius_miles"
         private const val KEY_WIFI_ONLY = "auto_download_wifi_only"
         private const val KEY_TOPO = "topography_enabled"
+        private const val KEY_ANCHOR_LATITUDE = "last_anchor_latitude"
+        private const val KEY_ANCHOR_LONGITUDE = "last_anchor_longitude"
         private const val KEY_CONTOURS = "contours_enabled"
         private const val KEY_OWNERSHIP = "land_ownership_enabled"
         private const val KEY_CHROME_TIMEOUT = "chrome_timeout_seconds"

@@ -10,7 +10,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import com.rhecyee.firelinemap.geopdf.MapFrame
+import com.rhecyee.firelinemap.map.MapProjection
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -93,7 +93,7 @@ class ContourLayer(context: Context) {
         val west: Double,
         val east: Double,
         val zoom: Int,
-        val frameKey: String
+        val projection: MapProjection
     ) {
         /**
          * Whether a new view is close enough to this one to reuse.
@@ -103,7 +103,7 @@ class ContourLayer(context: Context) {
          * to the edge of the contours and finds nothing there.
          */
         fun covers(other: Request): Boolean {
-            if (other.zoom != zoom || other.frameKey != frameKey) return false
+            if (other.zoom != zoom || other.projection !== projection) return false
             val slackLatitude = (north - south) * 0.1
             val slackLongitude = (east - west) * 0.1
             return other.north <= north + slackLatitude &&
@@ -128,17 +128,14 @@ class ContourLayer(context: Context) {
         west: Double,
         east: Double,
         viewZoom: Int,
-        frame: MapFrame,
-        pageWidthPoints: Int,
-        pageHeightPoints: Int
+        projection: MapProjection
     ) {
         if (north <= south || east <= west) return
-        if (pageWidthPoints <= 0 || pageHeightPoints <= 0) return
         val demZoom = viewZoom.coerceIn(MIN_DEM_ZOOM, MAX_DEM_ZOOM)
-        val request = Request(
-            north, south, west, east, demZoom,
-            "${frame.name}/${frame.box}/$pageWidthPoints/$pageHeightPoints"
-        )
+        // The projection is part of the key: the same ground drawn through a
+        // sheet and through plain terrain lands in different places, so lines
+        // cut for one are wrong for the other.
+        val request = Request(north, south, west, east, demZoom, projection)
         if (lastRequest?.covers(request) == true && _status.value == ContourStatus.READY) return
         lastRequest = request
 
@@ -186,12 +183,7 @@ class ContourLayer(context: Context) {
             // next one queues behind it.
             val set = ContourBuilder.build(grid, interval) { isActive }
             ensureActive()
-            val render = ContourProjector.project(
-                set = set,
-                frame = frame,
-                pageWidthPoints = pageWidthPoints,
-                pageHeightPoints = pageHeightPoints
-            ) { isActive }
+            val render = ContourProjector.project(set, projection) { isActive }
             ensureActive()
 
             _contours.value = render

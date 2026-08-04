@@ -50,6 +50,20 @@ class BasemapTileCache(context: Context) {
     /** Decoded tiles, keyed z/x/y. Backed by snapshot state so arrivals redraw. */
     val tiles: SnapshotStateMap<String, Bitmap> = mutableStateMapOf()
 
+    /**
+     * Which tiles were looked at, oldest first.
+     *
+     * This map used to grow without limit. Every tile ever drawn stayed
+     * decoded in memory at a quarter of a megabyte each, and zooming is
+     * precisely the thing that touches tiles at many levels at once: a few
+     * passes in and out over one district is several hundred tiles, which is
+     * more heap than the rendered sheet and everything else put together. The
+     * app ran out of memory and was killed, which looked like zooming
+     * crashing it. The tiles are still on disk; only the decoded copies are
+     * dropped, and they decode again in a millisecond.
+     */
+    private val recent = object : LinkedHashMap<String, Unit>(16, 0.75f, true) {}
+
     private val inFlight = mutableSetOf<String>()
 
     /**
@@ -80,7 +94,7 @@ class BasemapTileCache(context: Context) {
      * that was actually settled on is fetched once the hand comes off.
      */
     fun sample(zoom: Int, x: Int, y: Int, fetch: Boolean = true): TileSample? {
-        val exact = if (fetch) tile(zoom, x, y) else tiles[key(zoom, x, y)]
+        val exact = if (fetch) tile(zoom, x, y) else held(key(zoom, x, y))
         if (exact != null) return TileSample(exact, 0, 0, exact.width)
 
         var depth = 1
@@ -88,7 +102,7 @@ class BasemapTileCache(context: Context) {
             val ancestorZoom = zoom - depth
             val ancestorX = x shr depth
             val ancestorY = y shr depth
-            val ancestor = tiles[key(ancestorZoom, ancestorX, ancestorY)]
+            val ancestor = held(key(ancestorZoom, ancestorX, ancestorY))
             if (ancestor != null) {
                 val span = 1 shl depth
                 val size = ancestor.width / span
@@ -111,7 +125,7 @@ class BasemapTileCache(context: Context) {
     /** Returns the tile if it is ready, otherwise starts fetching it. */
     fun tile(zoom: Int, x: Int, y: Int): Bitmap? {
         val key = key(zoom, x, y)
-        tiles[key]?.let { return it }
+        held(key)?.let { return it }
 
         synchronized(inFlight) {
             if (!inFlight.add(key)) return null
@@ -128,7 +142,7 @@ class BasemapTileCache(context: Context) {
                 limiter.withPermit { download(zoom, x, y, file) }
                 decode(file)
             }
-            if (bitmap != null) tiles[key] = bitmap
+            if (bitmap != null) put(key, bitmap)
             synchronized(inFlight) {
                 inFlight.remove(key)
                 if (bitmap == null) failedAt[key] = now() else failedAt.remove(key)
@@ -139,6 +153,34 @@ class BasemapTileCache(context: Context) {
 
     /** Overridable so the back-off can be tested without waiting a minute. */
     internal var now: () -> Long = { System.currentTimeMillis() }
+
+    /** A held tile, marked as used so it survives the next eviction. */
+    private fun held(key: String): Bitmap? {
+        val bitmap = tiles[key] ?: return null
+        synchronized(recent) { recent[key] = Unit }
+        return bitmap
+    }
+
+    private fun put(key: String, bitmap: Bitmap) {
+        tiles[key] = bitmap
+        val evicted = synchronized(recent) {
+            recent[key] = Unit
+            val over = recent.size - TILES_HELD
+            if (over <= 0) {
+                emptyList()
+            } else {
+                // The eldest by last use, which during a zoom is the level
+                // that was left behind rather than the one being looked at.
+                val going = recent.keys.take(over).toList()
+                going.forEach { recent.remove(it) }
+                going
+            }
+        }
+        // Dropped rather than recycled: a draw in flight may still be holding
+        // one, and recycling underneath it would take the app down for the
+        // sake of freeing memory a moment sooner.
+        evicted.forEach { tiles.remove(it) }
+    }
 
     private fun decode(file: File): Bitmap? {
         if (!file.exists() || file.length() == 0L) return null
@@ -175,6 +217,7 @@ class BasemapTileCache(context: Context) {
 
     fun clear() {
         tiles.clear()
+        synchronized(recent) { recent.clear() }
         synchronized(inFlight) { failedAt.clear() }
         root.deleteRecursively()
         root.mkdirs()
@@ -187,6 +230,16 @@ class BasemapTileCache(context: Context) {
         const val ATTRIBUTION = "USGS The National Map"
 
         const val TILE_SIZE = 256
+
+        /**
+         * How many decoded tiles to keep in memory.
+         *
+         * A quarter of a megabyte each, so this is about forty megabytes --
+         * comfortably more than any one screen needs, which is a few dozen,
+         * and far below what an unbounded cache reached after a few minutes
+         * of zooming.
+         */
+        const val TILES_HELD = 160
 
         /** How many zoom levels to climb looking for something to draw. */
         const val ANCESTOR_DEPTH = 4

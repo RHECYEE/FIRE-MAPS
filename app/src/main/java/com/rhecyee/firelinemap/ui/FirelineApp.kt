@@ -95,6 +95,9 @@ import com.rhecyee.firelinemap.location.TrackRecordingService
 import com.rhecyee.firelinemap.location.SegmentAnchor
 import com.rhecyee.firelinemap.location.TrackSettingsStore
 import com.rhecyee.firelinemap.map.BasemapTileCache
+import com.rhecyee.firelinemap.map.GroundProjection
+import com.rhecyee.firelinemap.map.MapProjection
+import com.rhecyee.firelinemap.map.SheetProjection
 import com.rhecyee.firelinemap.terrain.ContourLayer
 import com.rhecyee.firelinemap.terrain.ContourStatus
 import com.rhecyee.firelinemap.terrain.DemTileCache
@@ -491,48 +494,79 @@ fun FirelineApp() {
         }
     }
 
+    /**
+     * What the canvas draws through.
+     *
+     * An imported sheet when there is one, and the app's own ground when there
+     * is not. The second case is the one this tool exists for: on day one of a
+     * fire there is no product yet, and that is the day somebody most needs to
+     * know where they are. Terrain, contours, position, tracks, pins,
+     * measurements and the coordinate search all work either way -- the only
+     * things that need a sheet are the sheet itself and the drop points read
+     * off it.
+     */
+    var groundAnchor by remember { mutableStateOf(settings.lastAnchor) }
+    LaunchedEffect(displayLatitude, displayLongitude) {
+        val lat = displayLatitude ?: return@LaunchedEffect
+        val lon = displayLongitude ?: return@LaunchedEffect
+        val current = groundAnchor
+        // Re-cut the working area when the operator has travelled clear of it.
+        // Rare inside one incident, and cheaper than carrying a whole-world
+        // projection for the sake of a case that happens on the drive home.
+        val far = current == null ||
+            MapCoverage.distanceMeters(current.first, current.second, lat, lon) >
+            GroundProjection.REANCHOR_METERS
+        if (far) {
+            groundAnchor = lat to lon
+            settings.lastAnchor = lat to lon
+        }
+    }
+
+    val projection = remember(activeMap?.id, pageWidth, pageHeight, bitmap, groundAnchor) {
+        val frame = activeMap?.frame
+        val sheet = bitmap
+        if (frame != null && sheet != null && pageWidth > 0 && pageHeight > 0) {
+            SheetProjection(
+                frame = frame,
+                pageWidthPoints = pageWidth,
+                pageHeightPoints = pageHeight,
+                contentWidth = sheet.width.toFloat(),
+                contentHeight = sheet.height.toFloat()
+            )
+        } else {
+            groundAnchor?.let { (lat, lon) -> GroundProjection(lat, lon) }
+        }
+    }
+
     // Contours are re-cut whenever the view settles somewhere new. Cheap when
     // nothing has changed -- the layer recognises a view it has already
     // answered -- so this can key on every pan without re-doing the work.
-    LaunchedEffect(view, contoursOn, activeMap?.id, pageWidth, pageHeight) {
+    LaunchedEffect(view, contoursOn, projection) {
         val here = view
-        val frame = activeMap?.frame
-        if (!contoursOn || here == null || frame == null) return@LaunchedEffect
-        contourLayer.request(
-            north = here.north,
-            south = here.south,
-            west = here.west,
-            east = here.east,
-            viewZoom = here.zoom,
-            frame = frame,
-            pageWidthPoints = pageWidth,
-            pageHeightPoints = pageHeight
-        )
+        val where = projection
+        if (!contoursOn || here == null || where == null) return@LaunchedEffect
+        contourLayer.request(here.north, here.south, here.west, here.east, here.zoom, where)
     }
 
     // Elevation for what is on screen, fetched ahead of anything else.
     // Contours are the thing a crew reads terrain from, and a basemap picture
     // arriving first is no use to someone working out whether the slope above
     // them goes anywhere.
-    LaunchedEffect(view, contoursOn, wifiOnly, activeMap?.id) {
+    LaunchedEffect(view, contoursOn, wifiOnly, projection) {
         val here = view
-        val frame = activeMap?.frame
-        if (!contoursOn || here == null || frame == null) return@LaunchedEffect
-        if (!settings.mayAutoDownload()) return@LaunchedEffect
+        val where = projection
+        if (!contoursOn || here == null || where == null) return@LaunchedEffect
+        // Gated on the connection rather than on the preload radius. The
+        // radius is about keeping ground you are not looking at; this is the
+        // ground on the screen, and having to set a preference before the
+        // layer does anything is how a feature gets a reputation for not
+        // working.
+        if (!settings.mayFetchForView()) return@LaunchedEffect
         val fetched = withContext(Dispatchers.IO) {
             contourLayer.download(here.north, here.south, here.west, here.east, here.zoom)
         }
         if (fetched > 0) {
-            contourLayer.request(
-                north = here.north,
-                south = here.south,
-                west = here.west,
-                east = here.east,
-                viewZoom = here.zoom,
-                frame = frame,
-                pageWidthPoints = pageWidth,
-                pageHeightPoints = pageHeight
-            )
+            contourLayer.request(here.north, here.south, here.west, here.east, here.zoom, where)
         }
     }
 
@@ -1085,7 +1119,7 @@ fun FirelineApp() {
                 longitude = displayLongitude,
                 positionIsSimulated = simulated != null,
                 dropPoints = if (segmentAtDropPoints) dropPoints else emptyList(),
-                basemap = basemap,
+                basemap = basemap.takeIf { topographyOn },
                 contours = contourSet.takeIf { contoursOn },
                 onViewBounds = { north, south, west, east, zoom ->
                     view = MapView(north, south, west, east, zoom)
@@ -1152,6 +1186,7 @@ fun FirelineApp() {
                     // silently replaced the live GPS readout from a stray touch.
                 },
                     onInteraction = { touched() },
+                    projection = projection,
                     modifier = Modifier.fillMaxSize()
                 )
 
@@ -1358,8 +1393,10 @@ private fun MapStatusRow(map: ImportedMap?, message: String?) {
             colour = Color(0xFFB3261E)
         }
         map == null -> {
-            text = "No map loaded — import from a file or a URL"
-            colour = Color(0xFF5F6368)
+            // Not a warning any more. Running on the app's own terrain is a
+            // supported way to work, not a state to get out of.
+            text = "Own terrain · import a product map when you have one"
+            colour = Color(0xFF37474F)
         }
         map.kind == PdfKind.GEOREFERENCED -> {
             val insets = map.document.insetFrames.size

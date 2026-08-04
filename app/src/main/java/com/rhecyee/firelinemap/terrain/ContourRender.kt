@@ -1,6 +1,6 @@
 package com.rhecyee.firelinemap.terrain
 
-import com.rhecyee.firelinemap.geopdf.MapFrame
+import com.rhecyee.firelinemap.map.MapProjection
 import kotlin.math.atan2
 
 /**
@@ -67,15 +67,10 @@ object ContourProjector {
 
     fun project(
         set: ContourSet,
-        frame: MapFrame,
-        pageWidthPoints: Int,
-        pageHeightPoints: Int,
+        projection: MapProjection,
         maxPoints: Int = MAX_POINTS,
         isActive: () -> Boolean = { true }
     ): ContourRender {
-        if (pageWidthPoints <= 0 || pageHeightPoints <= 0) return ContourRender.NONE
-        val width = pageWidthPoints.toDouble()
-        val height = pageHeightPoints.toDouble()
         val out = ArrayList<ProjectedContour>(set.lines.size)
         var budget = maxPoints
 
@@ -93,12 +88,9 @@ object ContourProjector {
             var kept = 0
             for (index in 0 until count) {
                 val (latitude, longitude) = line.points[index]
-                val page = frame.geoToPage(latitude, longitude) ?: continue
-                val x = (page.first / width).toFloat()
-                val y = 1f - (page.second / height).toFloat()
-                if (!x.isFinite() || !y.isFinite()) continue
-                xs[kept] = x
-                ys[kept] = y
+                val unit = projection.toUnit(latitude, longitude) ?: continue
+                xs[kept] = unit.first
+                ys[kept] = unit.second
                 kept++
             }
             if (kept < 2) continue

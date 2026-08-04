@@ -52,6 +52,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.rhecyee.firelinemap.map.BasemapTileCache
+import com.rhecyee.firelinemap.map.MapProjection
 import com.rhecyee.firelinemap.data.MarkerEntity
 import com.rhecyee.firelinemap.resources.ResourceSymbol
 import com.rhecyee.firelinemap.measure.MeasureMode
@@ -76,6 +77,7 @@ fun MapCanvas(
     bitmap: Bitmap?,
     pageWidthPoints: Int,
     pageHeightPoints: Int,
+    projection: MapProjection?,
     latitude: Double?,
     longitude: Double?,
     positionIsSimulated: Boolean = false,
@@ -147,41 +149,45 @@ fun MapCanvas(
             .onSizeChanged { viewport = it },
         contentAlignment = Alignment.Center
     ) {
-        if (map == null || bitmap == null) {
+        // A sheet is no longer required. With none imported the app draws its
+        // own terrain around wherever the operator is, which is the state
+        // every fire starts in: there is no product on day one, and that is
+        // the day somebody most needs to know where they are.
+        if (projection == null) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("NO MAP IMPORTED", color = Color.White, fontWeight = FontWeight.Black)
+                Text("WAITING FOR A POSITION", color = Color.White, fontWeight = FontWeight.Black)
                 Text(
-                    "Import a GeoPDF to place your position on it",
+                    "Terrain draws around you as soon as there is a fix, " +
+                        "or import a GeoPDF",
                     color = Color.White.copy(alpha = 0.75f),
-                    style = MaterialTheme.typography.labelMedium
+                    style = MaterialTheme.typography.labelMedium,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
                 )
             }
             return@Box
         }
 
-        val image = remember(bitmap) { bitmap.asImageBitmap() }
+        val image = remember(bitmap) { bitmap?.asImageBitmap() }
+        val contentWidth = projection.contentWidth
+        val contentHeight = projection.contentHeight
 
         // An external request to bring a position into view, used by the
         // search so a found region can be looked at without hunting for it.
-        androidx.compose.runtime.LaunchedEffect(centreOn, viewport) {
+        androidx.compose.runtime.LaunchedEffect(centreOn, viewport, projection) {
             val target = centreOn ?: return@LaunchedEffect
-            val frame = map.frame ?: return@LaunchedEffect
-            if (viewport.width == 0 || pageWidthPoints <= 0 || pageHeightPoints <= 0) {
-                return@LaunchedEffect
-            }
-            val page = frame.geoToPage(target.first, target.second)
-            if (page != null) {
+            if (viewport.width == 0) return@LaunchedEffect
+            val unit = projection.toUnit(target.first, target.second)
+            if (unit != null) {
                 val fitNow = minOf(
-                    viewport.width.toFloat() / image.width,
-                    viewport.height.toFloat() / image.height
+                    viewport.width.toFloat() / contentWidth,
+                    viewport.height.toFloat() / contentHeight
                 )
-                val next = maxOf(scale, 6f)
+                val next = maxOf(scale, minOf(6f, projection.maxScale))
                 scale = next
-                val drawWidth = image.width * fitNow * next
-                val drawHeight = image.height * fitNow * next
-                val fx = (page.first / pageWidthPoints).toFloat()
-                val fy = 1f - (page.second / pageHeightPoints).toFloat()
-                offset = Offset(drawWidth * (0.5f - fx), drawHeight * (0.5f - fy))
+                offset = Offset(
+                    contentWidth * fitNow * next * (0.5f - unit.first),
+                    contentHeight * fitNow * next * (0.5f - unit.second)
+                )
             }
             onCentred()
         }
@@ -197,51 +203,47 @@ fun MapCanvas(
         fun fitScale(): Float =
             if (viewport.width > 0 && viewport.height > 0) {
                 minOf(
-                    viewport.width.toFloat() / image.width,
-                    viewport.height.toFloat() / image.height
+                    viewport.width.toFloat() / contentWidth,
+                    viewport.height.toFloat() / contentHeight
                 )
             } else {
                 1f
             }
 
-        // The sheet may be panned until its edge reaches the view, plus an
-        // allowance for travelling off it. Being off the sheet is normal --
-        // ICP and the drive in usually sit outside the neatline -- so the
-        // operator has to be able to pan out there and see where they are.
+        fun contentSize(atScale: Float): Pair<Float, Float> {
+            val fit = fitScale()
+            return contentWidth * fit * atScale to contentHeight * fit * atScale
+        }
+
+        fun origin(atScale: Float): Offset {
+            val (width, height) = contentSize(atScale)
+            return Offset(
+                (viewport.width - width) / 2f + offset.x,
+                (viewport.height - height) / 2f + offset.y
+            )
+        }
+
         /**
          * Bounds a pan without ever hauling the view somewhere it was not.
          *
-         * Centring on a position off the sheet sets the pan directly, so the
-         * view can legitimately sit far outside the normal range. A clamp that
-         * simply coerced into that range would snap it back on the first drag,
-         * which read as the map teleporting. Being outside is allowed; going
-         * further out is not, and moving back in always is.
+         * Centring on a position off the content sets the pan directly, so the
+         * view can legitimately sit far outside the normal range. The limit
+         * therefore always contains where the view already is; a limit that
+         * ignored that would snap it back on the first drag, which read as
+         * teleporting.
          *
-         * [from] is where the pan started, and is what "further out" is judged
-         * against. A pinch has already moved it before this is reached -- the
-         * sheet grew, so the pan grew with it -- and measuring against the
-         * pre-pinch value there would reject the zoom's own bookkeeping and
-         * leave the view lurching.
+         * Within that it is a real clamp rather than a refusal. It used to
+         * return the offset unchanged whenever a drag would cross the edge, so
+         * the pan stopped wherever the finger happened to be instead of at the
+         * edge, and pushing further did nothing -- the map felt like it did
+         * not want to go that way.
          */
         fun clamp(candidate: Offset, atScale: Float, from: Offset = offset): Offset {
-            val drawWidth = image.width * fitScale() * atScale
-            val drawHeight = image.height * fitScale() * atScale
+            val (drawWidth, drawHeight) = contentSize(atScale)
             val slackX = viewport.width * OFF_SHEET_PAN_ALLOWANCE
             val slackY = viewport.height * OFF_SHEET_PAN_ALLOWANCE
             val maxX = ((drawWidth - viewport.width) / 2f).coerceAtLeast(0f) + slackX
             val maxY = ((drawHeight - viewport.height) / 2f).coerceAtLeast(0f) + slackY
-
-            // The limit always contains where the view already is. Centring on
-            // a position off the sheet sets the pan directly and can legally
-            // land outside the normal range; a limit that ignored that would
-            // haul the view back on the first drag, which read as teleporting.
-            //
-            // Within that, this is a real clamp rather than a refusal. The
-            // previous version returned the unchanged offset whenever a drag
-            // would have crossed the edge, so the pan stopped wherever the
-            // finger happened to be rather than at the edge, and pushing
-            // further did nothing at all -- the map felt like it did not want
-            // to go that way.
             val limitX = maxOf(maxX, abs(from.x))
             val limitY = maxOf(maxY, abs(from.y))
             return Offset(
@@ -250,35 +252,39 @@ fun MapCanvas(
             )
         }
 
+        /** Ground to a point on screen. */
+        fun screenPosition(latitude: Double, longitude: Double): Offset? {
+            val unit = projection.toUnit(latitude, longitude) ?: return null
+            val (width, height) = contentSize(scale)
+            val at = origin(scale)
+            return Offset(at.x + unit.first * width, at.y + unit.second * height)
+        }
+
+        fun screenToGeoPoint(point: Offset): Pair<Double, Double>? {
+            val (width, height) = contentSize(scale)
+            if (width <= 0f || height <= 0f) return null
+            val at = origin(scale)
+            // Not clamped to the content. Taps land beyond it all the time --
+            // the drive in, ICP, a spot across the road -- and refusing them
+            // there made the tools look dead whenever the sheet did not fill
+            // the view.
+            return projection.toGeo((point.x - at.x) / width, (point.y - at.y) / height)
+        }
+
+        /** Page coordinates, which only exist when a sheet is behind the view. */
         fun screenToPagePoints(point: Offset): Pair<Double, Double>? {
             if (pageWidthPoints <= 0 || pageHeightPoints <= 0) return null
-            val drawWidth = image.width * fitScale() * scale
-            val drawHeight = image.height * fitScale() * scale
-            val originX = (viewport.width - drawWidth) / 2f + offset.x
-            val originY = (viewport.height - drawHeight) / 2f + offset.y
-            val fx = (point.x - originX) / drawWidth
-            val fy = (point.y - originY) / drawHeight
-            // Not clamped to the sheet. Taps land on the terrain fill beyond
-            // the neatline all the time -- the drive in, ICP, a spot across the
-            // road -- and refusing them there was making the tools look dead
-            // whenever the sheet did not fill the view.
+            val (width, height) = contentSize(scale)
+            if (width <= 0f || height <= 0f) return null
+            val at = origin(scale)
+            val fx = (point.x - at.x) / width
+            val fy = (point.y - at.y) / height
             // Bitmap y runs downward; PDF page space runs upward.
             return fx * pageWidthPoints.toDouble() to (1f - fy) * pageHeightPoints.toDouble()
         }
 
-        fun markerScreenPosition(marker: MarkerEntity): Offset? {
-            val frame = map.frame ?: return null
-            if (pageWidthPoints <= 0 || pageHeightPoints <= 0) return null
-            val page = frame.geoToPage(marker.latitude, marker.longitude) ?: return null
-            val drawWidth = image.width * fitScale() * scale
-            val drawHeight = image.height * fitScale() * scale
-            val originX = (viewport.width - drawWidth) / 2f + offset.x
-            val originY = (viewport.height - drawHeight) / 2f + offset.y
-            return Offset(
-                originX + (page.first / pageWidthPoints).toFloat() * drawWidth,
-                originY + (1f - (page.second / pageHeightPoints).toFloat()) * drawHeight
-            )
-        }
+        fun markerScreenPosition(marker: MarkerEntity): Offset? =
+            screenPosition(marker.latitude, marker.longitude)
 
         fun markerAt(point: Offset): MarkerEntity? = currentMarkers.lastOrNull { marker ->
             val position = markerScreenPosition(marker) ?: return@lastOrNull false
@@ -288,21 +294,10 @@ fun MapCanvas(
 
         /** The saved track a tap lands on, if any. */
         fun trackAt(point: Offset): SavedTrack? {
-            val frame = map.frame ?: return null
-            if (pageWidthPoints <= 0 || pageHeightPoints <= 0) return null
-            val drawWidth = image.width * fitScale() * scale
-            val drawHeight = image.height * fitScale() * scale
-            val originX = (viewport.width - drawWidth) / 2f + offset.x
-            val originY = (viewport.height - drawHeight) / 2f + offset.y
-
             for (saved in currentSavedTracks) {
                 var previous: Offset? = null
                 for ((latitude, longitude) in saved.points) {
-                    val page = frame.geoToPage(latitude, longitude) ?: continue
-                    val current = Offset(
-                        originX + (page.first / pageWidthPoints).toFloat() * drawWidth,
-                        originY + (1f - (page.second / pageHeightPoints).toFloat()) * drawHeight
-                    )
+                    val current = screenPosition(latitude, longitude) ?: continue
                     val start = previous
                     if (start != null && distanceToSegment(point, start, current) <= 44f) {
                         return saved
@@ -313,30 +308,19 @@ fun MapCanvas(
             return null
         }
 
-        fun screenToGeoPoint(point: Offset): Pair<Double, Double>? {
-            val page = screenToPagePoints(point) ?: return null
-            val geo = map.frame?.pageToGeo(page.first, page.second) ?: return null
-            return geo.latitude to geo.longitude
-        }
-
         /** Puts the current position in the middle of the view. */
         fun centreOnPosition(): Boolean {
-            val frame = map.frame ?: return false
             if (latitude == null || longitude == null) return false
-            if (pageWidthPoints <= 0 || pageHeightPoints <= 0) return false
-            val page = frame.geoToPage(latitude, longitude) ?: return false
-            val fx = (page.first / pageWidthPoints).toFloat()
-            val fy = 1f - (page.second / pageHeightPoints).toFloat()
+            val unit = projection.toUnit(latitude, longitude) ?: return false
             // Zoomed in enough that centring can take effect: at a
-            // fit-to-view scale the pan clamp pins the sheet in place.
-            val next = maxOf(scale, 4f)
+            // fit-to-view scale the pan clamp pins the content in place.
+            val next = maxOf(scale, minOf(4f, projection.maxScale))
             scale = next
-            val width = image.width * fitScale() * next
-            val height = image.height * fitScale() * next
+            val (width, height) = contentSize(next)
             // Set directly rather than through the pan clamp: when the
             // position is off the sheet the clamp would stop short of it,
             // which is precisely the case this control exists for.
-            offset = Offset(width * (0.5f - fx), height * (0.5f - fy))
+            offset = Offset(width * (0.5f - unit.first), height * (0.5f - unit.second))
             return true
         }
 
@@ -352,7 +336,7 @@ fun MapCanvas(
                 // One handler for everything. Three competing pointerInput
                 // blocks meant drag and transform each claimed the pointer
                 // stream and taps frequently never arrived at all.
-                .pointerInput(map.id, bitmap) {
+                .pointerInput(projection, bitmap) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         // Any touch on the map counts as being in use.
@@ -448,22 +432,26 @@ fun MapCanvas(
                     }
                 }
         ) {
-            val drawWidth = image.width * fitScale() * scale
-            val drawHeight = image.height * fitScale() * scale
+            val (drawWidth, drawHeight) = contentSize(scale)
             val originX = (size.width - drawWidth) / 2f + offset.x
             val originY = (size.height - drawHeight) / 2f + offset.y
 
+            /** Ground to this frame's screen coordinates. */
+            fun place(latitude: Double, longitude: Double): Offset? {
+                val unit = projection.toUnit(latitude, longitude) ?: return null
+                return Offset(
+                    originX + unit.first * drawWidth,
+                    originY + unit.second * drawHeight
+                )
+            }
+
             // Terrain first, so any ground the sheet does not cover is filled
-            // rather than left blank.
-            val frameForBase = map.frame
-            if (basemap != null && frameForBase != null &&
-                pageWidthPoints > 0 && pageHeightPoints > 0
-            ) {
+            // rather than left blank -- and, with no sheet at all, so there is
+            // something to stand on.
+            if (basemap != null) {
                 drawBasemap(
                     basemap = basemap,
-                    frame = frameForBase,
-                    pageWidthPoints = pageWidthPoints,
-                    pageHeightPoints = pageHeightPoints,
+                    projection = projection,
                     originX = originX,
                     originY = originY,
                     drawWidth = drawWidth,
@@ -473,13 +461,13 @@ fun MapCanvas(
                 )
             }
 
-            drawImage(
-                image = image,
-                dstOffset = IntOffset(originX.roundToInt(), originY.roundToInt()),
-                dstSize = IntSize(drawWidth.roundToInt(), drawHeight.roundToInt())
-            )
-
-            val frame = map.frame
+            if (image != null) {
+                drawImage(
+                    image = image,
+                    dstOffset = IntOffset(originX.roundToInt(), originY.roundToInt()),
+                    dstSize = IntSize(drawWidth.roundToInt(), drawHeight.roundToInt())
+                )
+            }
 
             // Contours sit directly on the terrain and under everything else.
             // They are ground, not incident information: a line of a crew's
@@ -488,8 +476,8 @@ fun MapCanvas(
                 // Guarded because this is decoration on top of a working map.
                 // Anything thrown from a draw kills the process, and losing a
                 // navigation tool on a fireline because a terrain layer could
-                // not draw is not a trade worth making. The sheet, the
-                // position and the tracks all still come out below.
+                // not draw is not a trade worth making. Everything below still
+                // comes out.
                 runCatching {
                     drawContours(
                         lines = contours.lines,
@@ -501,7 +489,8 @@ fun MapCanvas(
                 }.onFailure { onContourDrawFailed?.invoke(it) }
             }
 
-            if (frame != null && pageWidthPoints > 0 && pageHeightPoints > 0) {
+            // Drop points are read off a sheet, so they only exist with one.
+            if (projection.hasSheet && pageWidthPoints > 0 && pageHeightPoints > 0) {
                 for (point in dropPoints) {
                     val dx = (point.pageX / pageWidthPoints).toFloat()
                     val dy = 1f - (point.pageY / pageHeightPoints).toFloat()
@@ -512,77 +501,25 @@ fun MapCanvas(
                 }
             }
 
-            if (frame == null || latitude == null || longitude == null ||
-                pageWidthPoints <= 0 || pageHeightPoints <= 0
-            ) {
-                return@Canvas
+            for (saved in savedTracks) {
+                drawTrack(saved.points, ::place, Color(0xFF9C27B0))
             }
 
-            val page = frame.geoToPage(latitude, longitude) ?: return@Canvas
-            val fx = (page.first / pageWidthPoints).toFloat()
-            val fy = 1f - (page.second / pageHeightPoints).toFloat()
-            val target = Offset(originX + fx * drawWidth, originY + fy * drawHeight)
-
-            if (frame != null) {
-                for (saved in savedTracks) {
-                    drawTrack(
-                        points = saved.points,
-                        frame = frame,
-                        pageWidthPoints = pageWidthPoints,
-                        pageHeightPoints = pageHeightPoints,
-                        originX = originX,
-                        originY = originY,
-                        drawWidth = drawWidth,
-                        drawHeight = drawHeight,
-                        colour = Color(0xFF9C27B0)
-                    )
-                }
+            if (trackPoints.size >= 2) {
+                drawTrack(trackPoints, ::place, Color(0xFFE91E63))
             }
 
-            if (trackPoints.size >= 2 && frame != null) {
-                drawTrack(
-                    points = trackPoints,
-                    frame = frame,
-                    pageWidthPoints = pageWidthPoints,
-                    pageHeightPoints = pageHeightPoints,
-                    originX = originX,
-                    originY = originY,
-                    drawWidth = drawWidth,
-                    drawHeight = drawHeight
-                )
-            }
-
-            if (measurePoints.size >= 1) {
-                drawMeasurement(
-                    points = measurePoints,
-                    mode = measureMode,
-                    frame = frame,
-                    pageWidthPoints = pageWidthPoints,
-                    pageHeightPoints = pageHeightPoints,
-                    originX = originX,
-                    originY = originY,
-                    drawWidth = drawWidth,
-                    drawHeight = drawHeight
-                )
+            if (measurePoints.isNotEmpty()) {
+                drawMeasurement(measurePoints, measureMode, ::place)
             }
 
             // Where the searched position could still be. A point when it is
             // known, a line or a box while digits are missing.
-            if (searchRegion != null && frame != null &&
-                pageWidthPoints > 0 && pageHeightPoints > 0
-            ) {
-                fun toScreen(latitude: Double, longitude: Double): Offset? {
-                    val page = frame.geoToPage(latitude, longitude) ?: return null
-                    return Offset(
-                        originX + (page.first / pageWidthPoints).toFloat() * drawWidth,
-                        originY + (1f - (page.second / pageHeightPoints).toFloat()) * drawHeight
-                    )
-                }
-
-                val southWest = toScreen(searchRegion.south, searchRegion.west)
-                val northEast = toScreen(searchRegion.north, searchRegion.east)
-                val northWest = toScreen(searchRegion.north, searchRegion.west)
-                val southEast = toScreen(searchRegion.south, searchRegion.east)
+            if (searchRegion != null) {
+                val southWest = place(searchRegion.south, searchRegion.west)
+                val northEast = place(searchRegion.north, searchRegion.east)
+                val northWest = place(searchRegion.north, searchRegion.west)
+                val southEast = place(searchRegion.south, searchRegion.east)
 
                 if (southWest != null && northEast != null &&
                     northWest != null && southEast != null
@@ -622,6 +559,9 @@ fun MapCanvas(
                 )
             }
 
+            if (latitude == null || longitude == null) return@Canvas
+            val target = place(latitude, longitude) ?: return@Canvas
+
             // Drawn wherever it lands, not only inside the neatline. Off the
             // sheet there is terrain underneath now, and the whole question
             // being asked of the screen is "where am I".
@@ -630,7 +570,7 @@ fun MapCanvas(
             if (onScreen) {
                 drawPositionDot(target, positionIsSimulated)
             } else {
-                // Off the sheet: point at where the position actually is
+                // Off the content: point at where the position actually is
                 // rather than drawing nothing at all.
                 drawOffSheetArrow(
                     target = target,
@@ -722,60 +662,39 @@ private fun distanceToSegment(point: Offset, start: Offset, end: Offset): Float 
 }
 
 
-/** Draws the recorded travel line. */
+/**
+ * A line of travel.
+ *
+ * Takes a placing function rather than a frame and a page size: the same line
+ * has to draw over an imported sheet and over the app's own terrain, and the
+ * only difference between those is how ground becomes a point on screen.
+ */
 private fun DrawScope.drawTrack(
     points: List<Pair<Double, Double>>,
-    frame: com.rhecyee.firelinemap.geopdf.MapFrame,
-    pageWidthPoints: Int,
-    pageHeightPoints: Int,
-    originX: Float,
-    originY: Float,
-    drawWidth: Float,
-    drawHeight: Float,
-    colour: Color = Color(0xFFE91E63)
+    place: (Double, Double) -> Offset?,
+    colour: Color
 ) {
-    if (pageWidthPoints <= 0 || pageHeightPoints <= 0) return
-    val screen = points.mapNotNull { (latitude, longitude) ->
-        val page = frame.geoToPage(latitude, longitude) ?: return@mapNotNull null
-        Offset(
-            originX + (page.first / pageWidthPoints).toFloat() * drawWidth,
-            originY + (1f - (page.second / pageHeightPoints).toFloat()) * drawHeight
-        )
-    }
+    if (points.size < 2) return
+    val screen = points.mapNotNull { (latitude, longitude) -> place(latitude, longitude) }
     if (screen.size < 2) return
 
     val path = Path().apply {
         moveTo(screen.first().x, screen.first().y)
         screen.drop(1).forEach { lineTo(it.x, it.y) }
     }
-    // Cased so the line stays readable over both pale terrain and dark shading.
-    drawPath(path, Color.Black, alpha = 0.55f, style = Stroke(width = 9f))
-    drawPath(path, colour, style = Stroke(width = 4.5f))
-    // Mark where travel began, so a long track reads directionally.
-    drawCircle(Color.White, radius = 7f, center = screen.first())
-    drawCircle(colour, radius = 4.5f, center = screen.first())
+    drawPath(path, Color.Black, alpha = 0.45f, style = Stroke(width = 9f))
+    drawPath(path, colour, style = Stroke(width = 5f))
+    drawCircle(colour, radius = 7f, center = screen.first())
+    drawCircle(Color.White, radius = 3f, center = screen.first())
 }
 
 /** Draws the in-progress measurement over the sheet. */
 private fun DrawScope.drawMeasurement(
     points: List<MeasurePoint>,
     mode: MeasureMode,
-    frame: com.rhecyee.firelinemap.geopdf.MapFrame,
-    pageWidthPoints: Int,
-    pageHeightPoints: Int,
-    originX: Float,
-    originY: Float,
-    drawWidth: Float,
-    drawHeight: Float
+    place: (Double, Double) -> Offset?
 ) {
-    if (pageWidthPoints <= 0 || pageHeightPoints <= 0) return
-    val screen = points.mapNotNull { point ->
-        val page = frame.geoToPage(point.latitude, point.longitude) ?: return@mapNotNull null
-        Offset(
-            originX + (page.first / pageWidthPoints).toFloat() * drawWidth,
-            originY + (1f - (page.second / pageHeightPoints).toFloat()) * drawHeight
-        )
-    }
+    val screen = points.mapNotNull { point -> place(point.latitude, point.longitude) }
     if (screen.isEmpty()) return
 
     val accent = Color(0xFFFFC400)
@@ -809,9 +728,7 @@ private fun DrawScope.drawMeasurement(
  */
 private fun DrawScope.drawBasemap(
     basemap: BasemapTileCache,
-    frame: com.rhecyee.firelinemap.geopdf.MapFrame,
-    pageWidthPoints: Int,
-    pageHeightPoints: Int,
+    projection: MapProjection,
     originX: Float,
     originY: Float,
     drawWidth: Float,
@@ -819,22 +736,18 @@ private fun DrawScope.drawBasemap(
     held: TileZoomHolder,
     fetch: Boolean
 ) {
-    fun screenToGeo(x: Float, y: Float): com.rhecyee.firelinemap.geopdf.GeoPoint? {
-        val fx = (x - originX) / drawWidth
-        val fy = (y - originY) / drawHeight
-        return frame.pageToGeo(
-            fx * pageWidthPoints.toDouble(),
-            (1f - fy) * pageHeightPoints.toDouble()
-        )
-    }
+    if (drawWidth <= 0f || drawHeight <= 0f || size.width <= 0f) return
+
+    fun screenToGeo(x: Float, y: Float): Pair<Double, Double>? =
+        projection.toGeo((x - originX) / drawWidth, (y - originY) / drawHeight)
 
     val topLeft = screenToGeo(0f, 0f) ?: return
     val bottomRight = screenToGeo(size.width, size.height) ?: return
 
-    val north = maxOf(topLeft.latitude, bottomRight.latitude)
-    val south = minOf(topLeft.latitude, bottomRight.latitude)
-    val west = minOf(topLeft.longitude, bottomRight.longitude)
-    val east = maxOf(topLeft.longitude, bottomRight.longitude)
+    val north = maxOf(topLeft.first, bottomRight.first)
+    val south = minOf(topLeft.first, bottomRight.first)
+    val west = minOf(topLeft.second, bottomRight.second)
+    val east = maxOf(topLeft.second, bottomRight.second)
     if (north <= south || east <= west) return
 
     val centreLatitude = (north + south) / 2.0
@@ -842,7 +755,7 @@ private fun DrawScope.drawBasemap(
     val spanMeters = com.rhecyee.firelinemap.map.MapCoverage.distanceMeters(
         centreLatitude, west, centreLatitude, east
     )
-    if (spanMeters <= 0.0 || size.width <= 0f) return
+    if (spanMeters <= 0.0) return
     val zoom = BasemapTileCache.zoomForStable(
         latitude = centreLatitude,
         targetMetersPerPixel = spanMeters / size.width,
@@ -867,15 +780,13 @@ private fun DrawScope.drawBasemap(
             val tileWest = BasemapTileCache.tileWest(x, zoom)
             val tileEast = BasemapTileCache.tileWest(x + 1, zoom)
 
-            val topLeftPage = frame.geoToPage(tileNorth, tileWest) ?: continue
-            val bottomRightPage = frame.geoToPage(tileSouth, tileEast) ?: continue
+            val topLeftUnit = projection.toUnit(tileNorth, tileWest) ?: continue
+            val bottomRightUnit = projection.toUnit(tileSouth, tileEast) ?: continue
 
-            val left = originX + (topLeftPage.first / pageWidthPoints).toFloat() * drawWidth
-            val top = originY +
-                (1f - (topLeftPage.second / pageHeightPoints).toFloat()) * drawHeight
-            val right = originX + (bottomRightPage.first / pageWidthPoints).toFloat() * drawWidth
-            val bottom = originY +
-                (1f - (bottomRightPage.second / pageHeightPoints).toFloat()) * drawHeight
+            val left = originX + topLeftUnit.first * drawWidth
+            val top = originY + topLeftUnit.second * drawHeight
+            val right = originX + bottomRightUnit.first * drawWidth
+            val bottom = originY + bottomRightUnit.second * drawHeight
 
             val width = (right - left).roundToInt()
             val height = (bottom - top).roundToInt()

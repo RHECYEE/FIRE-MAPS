@@ -10,10 +10,17 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!--
+        largeHeap: a rendered sheet is twenty megabytes of bitmap, terrain
+        tiles are a quarter of a megabyte each, and contours are cut from
+        elevation grids. The tile cache is bounded, but the default heap on a
+        mid-range phone leaves very little margin for all three at once.
+    -->
     <application
         android:name=".FirelineApplication"
         android:allowBackup="true"
         android:label="Fireline Map"
+        android:largeHeap="true"
         android:supportsRtl="true"
         android:theme="@style/Theme.FirelineMap">
 
