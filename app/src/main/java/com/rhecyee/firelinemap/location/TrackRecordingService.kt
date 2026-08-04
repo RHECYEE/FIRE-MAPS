@@ -53,6 +53,20 @@ class TrackRecordingService : Service() {
     private var appliedInterval = 0L
     private var appliedMode: com.rhecyee.firelinemap.data.PowerMode? = null
 
+    /**
+     * Held while armed, so recording survives the screen going off.
+     *
+     * A foreground service keeps the process alive but does not keep the
+     * processor awake. Without this, fixes arrive and the work that turns them
+     * into a track is deferred until something else wakes the device -- so a
+     * shift recorded with the phone in a pocket comes back with holes in it,
+     * or with a straight line across a drainage nobody drove through.
+     *
+     * Released the moment recording is disarmed. A wake lock left held is a
+     * flat battery, which on a fire is worse than a gap in a track.
+     */
+    private var wakeLock: android.os.PowerManager.WakeLock? = null
+
     private val client by lazy { LocationServices.getFusedLocationProviderClient(this) }
     private val callback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
@@ -98,6 +112,7 @@ class TrackRecordingService : Service() {
         }
 
         armed = true
+        acquireWakeLock()
         detector.settings = settingsStore.settings()
         detector.anchors = (application as FirelineApplication).dropPoints
         startForeground(NOTIFICATION_ID, notification("Watching for travel"))
@@ -142,7 +157,29 @@ class TrackRecordingService : Service() {
         client.requestLocationUpdates(request, callback, mainLooper)
     }
 
+    private fun acquireWakeLock() {
+        if (wakeLock?.isHeld == true) return
+        val power = getSystemService(android.os.PowerManager::class.java) ?: return
+        wakeLock = power.newWakeLock(
+            android.os.PowerManager.PARTIAL_WAKE_LOCK,
+            "FirelineMap:travel"
+        ).apply {
+            setReferenceCounted(false)
+            // No timeout: a shift is as long as it is, and a lock that expired
+            // mid-afternoon would lose exactly the part nobody was watching.
+            // The foreground notification is what makes this honest -- it is
+            // on screen the whole time it is held.
+            runCatching { acquire() }
+        }
+    }
+
+    private fun releaseWakeLock() {
+        runCatching { wakeLock?.takeIf { it.isHeld }?.release() }
+        wakeLock = null
+    }
+
     private fun disarm() {
+        releaseWakeLock()
         TrackRecordingState.clear()
         client.removeLocationUpdates(callback)
         armed = false
@@ -336,6 +373,7 @@ class TrackRecordingService : Service() {
         .build()
 
     override fun onDestroy() {
+        releaseWakeLock()
         closeOpenTrack()
         super.onDestroy()
     }

@@ -9,6 +9,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Held only while travel recording is armed, and only alongside the
+         foreground notification that says so. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!--
         largeHeap: a rendered sheet is twenty megabytes of bitmap, terrain

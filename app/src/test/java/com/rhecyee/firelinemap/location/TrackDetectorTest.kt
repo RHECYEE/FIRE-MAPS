@@ -348,6 +348,67 @@ class TrackDetectorTest {
             track.segments.count { it.endedAtDropPointId == "dp-190" }
         )
     }
+
+    /**
+     * The phone going to sleep in somebody's pocket.
+     *
+     * The receiver stops reporting whenever the system decides it should --
+     * the screen sleeps, an app is throttled, a canyon takes the sky away --
+     * and when it comes back the operator may be miles from where it stopped.
+     * Nothing is known about the ground in between, and the one thing the
+     * detector must not do is invent it.
+     */
+    @Test
+    fun aSilenceIsAGapRatherThanAStraightLineAcrossIt() {
+        val detector = detector()
+        var events = walk(detector, 0L, seconds = 180, speed = 8.0)
+        assertTrue("should be recording", detector.isRecording)
+        val before = detector.currentDistanceMeters
+        val pointsBefore = detector.currentPointCount
+
+        // Twenty minutes of silence, and eleven kilometres further on.
+        val resumeAt = 180_000L + 20 * 60_000L
+        detector.onFix(
+            Fix(
+                latitude = north(11_000.0),
+                longitude = startLon,
+                timeMillis = resumeAt,
+                accuracyMeters = 8f
+            )
+        )
+
+        // The eleven kilometres nobody observed must not be added to the
+        // track. It would read as a drive that happened, at a speed nobody
+        // went, straight through ground nobody crossed.
+        assertEquals(
+            "distance grew across the gap",
+            before,
+            detector.currentDistanceMeters,
+            0.5
+        )
+        assertTrue("the resumed position is still recorded", detector.currentPointCount > pointsBefore)
+
+        // And the run picks up cleanly from where it came back.
+        events = walk(detector, resumeAt + 5_000L, seconds = 120, speed = 8.0)
+        assertTrue(detector.isRecording)
+        assertTrue(
+            "travel after the gap must be counted",
+            detector.currentDistanceMeters > before + 500.0
+        )
+        assertTrue(events.isNotEmpty())
+    }
+
+    @Test
+    fun anOrdinaryUpdateRateIsNeverTreatedAsAGap() {
+        // The slowest power mode asks for a fix every thirty seconds, and the
+        // recorder floors itself faster than that. A shift must never trip the
+        // gap rule by simply being configured for battery life.
+        val detector = detector()
+        walk(detector, 0L, seconds = 600, speed = 8.0, stepSeconds = 30)
+        assertTrue(detector.isRecording)
+        // 600 s at 8 m/s is 4.8 km, all of it observed.
+        assertEquals(4_800.0, detector.currentDistanceMeters, 200.0)
+    }
 }
 
 class TrackDetectorSpeedTest {
@@ -391,4 +452,5 @@ class TrackDetectorSpeedTest {
             track.movingMillis >= track.elapsedMillis - 15_000
         )
     }
+
 }

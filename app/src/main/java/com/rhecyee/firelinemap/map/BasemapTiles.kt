@@ -45,7 +45,19 @@ data class TileSample(
 class BasemapTileCache(context: Context) {
 
     private val root = File(context.filesDir, "basemap").apply { mkdirs() }
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    /**
+     * Tile work must not be able to take the app down.
+     *
+     * Without a handler, anything thrown in one of these coroutines reaches
+     * the thread's uncaught handler and the process is killed. Decoding
+     * bitmaps off the network is the likeliest place in this app to run out
+     * of memory, and losing the map because one tile failed is not a trade
+     * worth making.
+     */
+    private val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.IO +
+            kotlinx.coroutines.CoroutineExceptionHandler { _, _ -> }
+    )
 
     /** Decoded tiles, keyed z/x/y. Backed by snapshot state so arrivals redraw. */
     val tiles: SnapshotStateMap<String, Bitmap> = mutableStateMapOf()
@@ -128,24 +140,46 @@ class BasemapTileCache(context: Context) {
         held(key)?.let { return it }
 
         synchronized(inFlight) {
+            // A pinch asks for every missing tile on every frame, across
+            // several levels. Unbounded, that is hundreds of requests queued
+            // behind a six-deep limiter, most of them for ground that is off
+            // screen before they land -- and the ones that time out take the
+            // ground the operator is actually looking at down with them.
+            if (inFlight.size >= MAX_IN_FLIGHT) return null
             if (!inFlight.add(key)) return null
-            val failed = failedAt[key]
-            if (failed != null && now() - failed < RETRY_AFTER_MILLIS) {
+            val retryAt = failedAt[key]
+            if (retryAt != null && now() < retryAt) {
                 inFlight.remove(key)
                 return null
             }
         }
 
         scope.launch {
-            val file = File(root, "$zoom/$x/$y.png")
-            val bitmap = decode(file) ?: run {
-                limiter.withPermit { download(zoom, x, y, file) }
-                decode(file)
-            }
-            if (bitmap != null) put(key, bitmap)
-            synchronized(inFlight) {
-                inFlight.remove(key)
-                if (bitmap == null) failedAt[key] = now() else failedAt.remove(key)
+            var retryAfter = 0L
+            try {
+                val file = File(root, "$zoom/$x/$y.png")
+                var outcome = Fetch.OK
+                val bitmap = decode(file) ?: run {
+                    outcome = limiter.withPermit { download(zoom, x, y, file) }
+                    decode(file)
+                }
+                if (bitmap != null) put(key, bitmap)
+                retryAfter = when {
+                    bitmap != null -> 0L
+                    outcome == Fetch.MISSING -> MISSING_BACKOFF_MILLIS
+                    else -> TRANSIENT_BACKOFF_MILLIS
+                }
+            } finally {
+                // In a finally because a key left behind here is never asked
+                // for again: the request is treated as still in flight for the
+                // life of the process, and that patch of map stays empty
+                // forever. It looks exactly like the terrain not loading,
+                // which is what it is.
+                synchronized(inFlight) {
+                    inFlight.remove(key)
+                    if (retryAfter > 0) failedAt[key] = now() + retryAfter
+                    else failedAt.remove(key)
+                }
             }
         }
         return null
@@ -165,13 +199,17 @@ class BasemapTileCache(context: Context) {
         if (file.length() > 0L) return true
         val key = key(zoom, x, y)
         synchronized(inFlight) {
-            val failed = failedAt[key]
-            if (failed != null && now() - failed < RETRY_AFTER_MILLIS) return false
+            val retryAt = failedAt[key]
+            if (retryAt != null && now() < retryAt) return false
         }
-        limiter.withPermit { download(zoom, x, y, file) }
-        val ok = file.length() > 0L
+        val outcome = limiter.withPermit { download(zoom, x, y, file) }
+        val ok = outcome == Fetch.OK && file.length() > 0L
         synchronized(inFlight) {
-            if (ok) failedAt.remove(key) else failedAt[key] = now()
+            when {
+                ok -> failedAt.remove(key)
+                outcome == Fetch.MISSING -> failedAt[key] = now() + MISSING_BACKOFF_MILLIS
+                else -> failedAt[key] = now() + TRANSIENT_BACKOFF_MILLIS
+            }
         }
         return ok
     }
@@ -212,7 +250,11 @@ class BasemapTileCache(context: Context) {
         return runCatching { BitmapFactory.decodeFile(file.absolutePath) }.getOrNull()
     }
 
-    private fun download(zoom: Int, x: Int, y: Int, target: File) {
+    /** What came of asking for a tile. */
+    private enum class Fetch { OK, MISSING, TRANSIENT }
+
+    private fun download(zoom: Int, x: Int, y: Int, target: File): Fetch {
+        var outcome = Fetch.TRANSIENT
         runCatching {
             target.parentFile?.mkdirs()
             // The National Map's REST tiles are ordered z/y/x, not z/x/y.
@@ -223,19 +265,47 @@ class BasemapTileCache(context: Context) {
                 setRequestProperty("User-Agent", "FirelineMap/0.3")
             }
             try {
-                if (connection.responseCode !in 200..299) return
+                val code = connection.responseCode
+                if (code !in 200..299) {
+                    // A refusal is about the tile and will not change; anything
+                    // else is about the moment and will.
+                    outcome = if (code in 400..499) Fetch.MISSING else Fetch.TRANSIENT
+                    return@runCatching
+                }
                 val temporary = File(target.parentFile, "${target.name}.part")
                 connection.inputStream.use { input ->
                     temporary.outputStream().use { output -> input.copyTo(output) }
                 }
-                if (temporary.length() > 0) temporary.renameTo(target) else temporary.delete()
+                outcome = if (temporary.length() > 0 && temporary.renameTo(target)) {
+                    Fetch.OK
+                } else {
+                    temporary.delete()
+                    Fetch.TRANSIENT
+                }
             } finally {
                 connection.disconnect()
             }
         }
+        return outcome
     }
 
+
     private fun key(zoom: Int, x: Int, y: Int) = "$zoom/$x/$y"
+
+    /**
+     * What the tile layer is doing, in one line.
+     *
+     * Put here because "the map went grey" has cost several rounds of
+     * guessing. Held is what can be drawn now; in flight is what is being
+     * waited on; waiting is tiles under a back-off, which is the state that
+     * looks like a broken map and is not.
+     */
+    fun diagnostics(): String {
+        val (flight, waiting) = synchronized(inFlight) {
+            inFlight.size to failedAt.count { now() < it.value }
+        }
+        return "${tiles.size} held · $flight fetching · $waiting waiting"
+    }
 
     fun cachedBytes(): Long =
         root.walkTopDown().filter { it.isFile }.sumOf { it.length() }
@@ -269,8 +339,33 @@ class BasemapTileCache(context: Context) {
         /** How many zoom levels to climb looking for something to draw. */
         const val ANCESTOR_DEPTH = 4
 
-        /** How long to leave a tile alone after the service refused it. */
-        const val RETRY_AFTER_MILLIS = 60_000L
+        /**
+         * How long to leave a tile alone after the service refused it.
+         *
+         * A refusal is about the tile: it is past the top of the pyramid or
+         * outside the extent, and asking again in a second changes nothing.
+         */
+        const val MISSING_BACKOFF_MILLIS = 60_000L
+
+        /**
+         * How long to wait after a tile failed to arrive.
+         *
+         * Short, because this is about the moment rather than the tile. A
+         * timeout on a ridge with one bar is the normal case out here, and
+         * treating it like a refusal left whole screens blank for a minute at
+         * a time -- which is exactly what "the map went grey and stayed grey"
+         * was.
+         */
+        const val TRANSIENT_BACKOFF_MILLIS = 3_000L
+
+        /**
+         * How many tile requests may be outstanding at once.
+         *
+         * Deep enough to keep the six workers fed, shallow enough that a
+         * request started now is answered in seconds rather than after a
+         * gesture's worth of stale ones ahead of it.
+         */
+        const val MAX_IN_FLIGHT = 24
 
         /**
          * How far past a level boundary the view has to travel before the

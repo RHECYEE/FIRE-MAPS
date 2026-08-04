@@ -51,6 +51,7 @@ fun SettingsSheet(
     wifiOnly: Boolean,
     onWifiOnly: (Boolean) -> Unit,
     cachedTerrainBytes: Long,
+    terrainDiagnostics: String,
     onClearTerrain: () -> Unit,
     crashReport: String?,
     onCopyCrash: () -> Unit,
@@ -195,6 +196,11 @@ fun SettingsSheet(
                     }
                     Switch(checked = wifiOnly, onCheckedChange = onWifiOnly)
                 }
+                Text(
+                    terrainDiagnostics,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         "Held: %.0f MB".format(cachedTerrainBytes / 1048576.0),

@@ -56,6 +56,16 @@ data class TrackDetectionSettings(
     /** Window over which net displacement is measured. */
     val movementWindowMillis: Long = 20_000,
 
+    /**
+     * Longest silence that still counts as one continuous run of fixes.
+     *
+     * Past this the receiver was not reporting rather than the operator not
+     * moving, and nothing can be said about the ground in between. Two minutes
+     * is comfortably longer than any configured update rate, including the
+     * slowest power mode, so an ordinary shift never trips it.
+     */
+    val maxGapMillis: Long = 120_000,
+
     /** Tracks shorter than these are not worth keeping. */
     val minimumTrackDistanceMeters: Double = 100.0,
     val minimumTrackMillis: Long = 60_000,
@@ -210,8 +220,39 @@ class TrackDetector(
         val previous = lastAccepted
         lastAccepted = fix
 
+        // A long silence is a gap in the record, not a straight line across it.
+        //
+        // The receiver goes quiet whenever the system decides it should: the
+        // screen sleeps, the phone goes in a pocket, an app is throttled, a
+        // canyon takes the sky away. When it comes back the operator may be
+        // miles from where it stopped. Measuring a step across that gap invents
+        // travel that was never observed -- a leg drawn straight through ground
+        // nobody drove, at a speed nobody went -- and it is exactly the shape
+        // of error that gets believed, because the line looks like every other
+        // line on the map.
+        //
+        // The window is dropped instead, so the run resumes from the new
+        // position and says nothing about what happened in between.
+        val silentMillis = previous?.let { fix.timeMillis - it.timeMillis } ?: 0L
+        if (previous != null && silentMillis > settings.maxGapMillis) {
+            window.clear()
+            window.addLast(fix)
+            if (recording) points += fix else { candidate.clear(); candidate += fix }
+            lastFixWasMoving = false
+            return TrackEvent.None
+        }
+
         window.addLast(fix)
-        while (window.size > 1 &&
+        // Always two fixes, whatever the update rate.
+        //
+        // Trimming down to one leaves nothing to compare against, so the
+        // detector concludes nobody is moving and auto recording silently
+        // stops working. That happens whenever fixes arrive further apart than
+        // the window is long -- which the slowest power mode asks for
+        // outright. The recorder floors its own interval to keep clear of
+        // this, but a detector that cannot judge movement from the fixes it is
+        // given is a trap waiting for the next caller.
+        while (window.size > 2 &&
             fix.timeMillis - window.first().timeMillis > settings.movementWindowMillis
         ) {
             window.removeFirst()

@@ -87,6 +87,7 @@ import com.rhecyee.firelinemap.medical.MedicalReport
 import com.rhecyee.firelinemap.medical.MedicalRepository
 import com.rhecyee.firelinemap.medical.RadioReadout
 import com.rhecyee.firelinemap.medical.PlaceNamer
+import com.rhecyee.firelinemap.land.LandBoundaryLayer
 import com.rhecyee.firelinemap.land.LandOwnershipService
 import com.rhecyee.firelinemap.land.LandStatus
 import java.io.File
@@ -166,6 +167,8 @@ fun FirelineApp() {
     val contourSet by contourLayer.contours.collectAsState()
     val contourStatus by contourLayer.status.collectAsState()
     val contourFailure by contourLayer.failure.collectAsState()
+    val boundaryLayer = remember { LandBoundaryLayer() }
+    val boundaries by boundaryLayer.boundaries.collectAsState()
     // The ground on screen, reported by the canvas once it settles. Drives
     // both the contour cut and what the automatic download reaches for.
     //
@@ -197,6 +200,7 @@ fun FirelineApp() {
     var locationInterval by remember { mutableIntStateOf(settings.locationIntervalSeconds) }
     var powerMode by remember { mutableStateOf(settings.powerMode) }
     var cachedTerrain by remember { mutableStateOf(0L) }
+    var terrainDiagnostics by remember { mutableStateOf("") }
     var importedMaps by remember { mutableStateOf<List<com.rhecyee.firelinemap.geopdf.ImportedMap>>(emptyList()) }
     var keypadOpen by remember { mutableStateOf(true) }
     val landOwnership = remember { LandOwnershipService() }
@@ -541,6 +545,17 @@ fun FirelineApp() {
     // Contours are re-cut whenever the view settles somewhere new. Cheap when
     // nothing has changed -- the layer recognises a view it has already
     // answered -- so this can key on every pan without re-doing the work.
+    // Outlines for whatever is on screen, on the same settle as the contours.
+    LaunchedEffect(view, landOwnershipOn, projection) {
+        val here = view
+        val where = projection
+        if (!landOwnershipOn || here == null || where == null) {
+            boundaryLayer.clear()
+            return@LaunchedEffect
+        }
+        boundaryLayer.request(here.north, here.south, here.west, here.east, where)
+    }
+
     LaunchedEffect(view, contoursOn, projection) {
         val here = view
         val where = projection
@@ -836,6 +851,7 @@ fun FirelineApp() {
             cachedTerrain = withContext(Dispatchers.IO) {
                 basemap.cachedBytes() + contourLayer.cache.cachedBytes()
             }
+            terrainDiagnostics = basemap.diagnostics()
         }
         SettingsSheet(
             reporterName = reporterName,
@@ -879,6 +895,7 @@ fun FirelineApp() {
                 applyLocationSettings()
             },
             cachedTerrainBytes = cachedTerrain,
+            terrainDiagnostics = terrainDiagnostics,
             onClearTerrain = {
                 scope.launch {
                     withContext(Dispatchers.IO) { basemap.clear(); contourLayer.clear() }
@@ -1124,6 +1141,7 @@ fun FirelineApp() {
                 dropPoints = if (segmentAtDropPoints) dropPoints else emptyList(),
                 basemap = basemap.takeIf { topographyOn },
                 contours = contourSet.takeIf { contoursOn },
+                boundaries = boundaries.takeIf { landOwnershipOn },
                 onViewBounds = { north, south, west, east, zoom ->
                     view = MapView(north, south, west, east, zoom)
                 },

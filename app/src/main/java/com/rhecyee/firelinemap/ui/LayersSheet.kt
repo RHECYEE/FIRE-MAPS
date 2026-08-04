@@ -134,9 +134,10 @@ fun LayersSheet(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 ToggleRow(
-                    title = "Land ownership",
-                    subtitle = "Tap bare ground for the administering agency. " +
-                        "Free BLM data; needs a connection.",
+                    title = "Land status",
+                    subtitle = "Outlines administered ground and names it. Tap anywhere " +
+                        "for the agency, the unit and the county. Free federal and " +
+                        "census data; needs a connection.",
                     checked = landOwnershipOn,
                     onCheckedChange = onToggleLandOwnership
                 )

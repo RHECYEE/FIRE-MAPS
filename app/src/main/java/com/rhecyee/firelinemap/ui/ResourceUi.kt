@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -216,7 +217,21 @@ fun TrackDetailDialog(
     val miles = track.distanceMeters / 1609.344
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(track.name) },
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // The swatch is how this dialog is tied to the line that was
+                // tapped, on a map that may carry a shift's worth of them.
+                Column(
+                    modifier = Modifier
+                        .size(18.dp, 6.dp)
+                        .background(
+                            androidx.compose.ui.graphics.Color(track.colourArgb),
+                            RoundedCornerShape(3.dp)
+                        )
+                ) {}
+                Text(track.name, modifier = Modifier.padding(start = 8.dp))
+            }
+        },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(

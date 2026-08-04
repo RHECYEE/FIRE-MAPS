@@ -90,6 +90,7 @@ fun MapCanvas(
     savedTracks: List<SavedTrack> = emptyList(),
     searchRegion: SearchRegion? = null,
     contours: com.rhecyee.firelinemap.terrain.ContourRender? = null,
+    boundaries: com.rhecyee.firelinemap.land.BoundaryRender? = null,
     onViewBounds: ((north: Double, south: Double, west: Double, east: Double, zoom: Int) -> Unit)? = null,
     onContourDrawFailed: ((Throwable) -> Unit)? = null,
     centreOn: Pair<Double, Double>? = null,
@@ -523,6 +524,20 @@ fun MapCanvas(
                 }.onFailure { onContourDrawFailed?.invoke(it) }
             }
 
+            // Above terrain and below anything a crew made. Whose ground this
+            // is belongs with the ground, not with the incident drawn on it.
+            if (boundaries != null && !boundaries.isEmpty) {
+                runCatching {
+                    drawBoundaries(
+                        boundaries = boundaries.boundaries,
+                        originX = originX,
+                        originY = originY,
+                        drawWidth = drawWidth,
+                        drawHeight = drawHeight
+                    )
+                }
+            }
+
             // Drop points are read off a sheet, so they only exist with one.
             if (projection.hasSheet && pageWidthPoints > 0 && pageHeightPoints > 0) {
                 for (point in dropPoints) {
@@ -536,7 +551,7 @@ fun MapCanvas(
             }
 
             for (saved in savedTracks) {
-                drawTrack(saved.points, ::place, Color(0xFF9C27B0))
+                drawTrack(saved.points, ::place, Color(saved.colourArgb))
             }
 
             if (trackPoints.size >= 2) {
@@ -687,7 +702,11 @@ data class SavedTrack(
     val points: List<Pair<Double, Double>>,
     val distanceMeters: Double,
     val elapsedSeconds: Long
-)
+) {
+    /** Stable for the life of the track, so the map does not re-label itself. */
+    val colourArgb: Int
+        get() = com.rhecyee.firelinemap.location.TrackColours.forId(id)
+}
 
 /** Shortest distance from a point to a line segment, in pixels. */
 private fun distanceToSegment(point: Offset, start: Offset, end: Offset): Float {
@@ -940,6 +959,87 @@ private fun DrawScope.drawContours(
 private val CONTOUR = Color(0xFF9A6634)
 private val INDEX_CONTOUR = Color(0xFF6E3F14)
 private const val INDEX_CONTOUR_ARGB = 0xFF6E3F14.toInt()
+
+/**
+ * Administered ground, outlined and named.
+ *
+ * Stroked rather than filled. A fill would either hide the terrain the
+ * boundary is meant to be read against or, at an opacity low enough not to,
+ * tint the whole screen a colour that means something -- and on this map
+ * colour already means the operator, a track, a measurement or a hazard.
+ *
+ * Each unit is drawn in its agency's colour, the same one the tap dialog uses
+ * for its badge, so the outline and the answer are visibly the same thing.
+ */
+private fun DrawScope.drawBoundaries(
+    boundaries: List<com.rhecyee.firelinemap.land.ProjectedBoundary>,
+    originX: Float,
+    originY: Float,
+    drawWidth: Float,
+    drawHeight: Float
+) {
+    val path = Path()
+    for (boundary in boundaries) {
+        path.reset()
+        var onScreen = false
+        for (ring in 0 until boundary.ringStarts.size - 1) {
+            val from = boundary.ringStarts[ring]
+            val until = boundary.ringStarts[ring + 1]
+            if (until - from < 3) continue
+            for (index in from until until) {
+                val x = originX + boundary.xs[index] * drawWidth
+                val y = originY + boundary.ys[index] * drawHeight
+                if (!onScreen && x > -80f && x < size.width + 80f &&
+                    y > -80f && y < size.height + 80f
+                ) {
+                    onScreen = true
+                }
+                if (index == from) path.moveTo(x, y) else path.lineTo(x, y)
+            }
+            path.close()
+        }
+        if (!onScreen) continue
+
+        val colour = Color(boundary.agency.colorArgb)
+        // A dark casing first, so the line reads over pale rock and dark
+        // timber alike without having to be thick enough to hide either.
+        drawPath(path, Color.Black, alpha = 0.35f, style = Stroke(width = 7f))
+        drawPath(
+            path = path,
+            color = colour,
+            style = Stroke(
+                width = 3.5f,
+                pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(
+                    floatArrayOf(18f, 9f)
+                )
+            )
+        )
+
+        if (!boundary.hasLabel) continue
+        val at = Offset(
+            originX + boundary.labelX * drawWidth,
+            originY + boundary.labelY * drawHeight
+        )
+        if (at.x < 60f || at.x > size.width - 60f || at.y < 30f || at.y > size.height - 30f) {
+            continue
+        }
+        drawContext.canvas.nativeCanvas.apply {
+            val paint = android.graphics.Paint().apply {
+                textAlign = android.graphics.Paint.Align.CENTER
+                textSize = 25f
+                isAntiAlias = true
+                isFakeBoldText = true
+            }
+            paint.style = android.graphics.Paint.Style.STROKE
+            paint.strokeWidth = 6f
+            paint.color = android.graphics.Color.argb(215, 255, 255, 255)
+            drawText(boundary.name.take(28), at.x, at.y, paint)
+            paint.style = android.graphics.Paint.Style.FILL
+            paint.color = boundary.agency.colorArgb
+            drawText(boundary.name.take(28), at.x, at.y, paint)
+        }
+    }
+}
 
 /** A resource pin: a coloured plate carrying its abbreviation, with the
  * identifier beneath it. */
