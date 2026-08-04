@@ -75,6 +75,18 @@ object TerrainMath {
         -10_000.0 + ((red * 256 * 256 + green * 256 + blue) * 0.1)
 
     /**
+     * Terrarium encodes it differently: metres offset by 32768, with the blue
+     * channel carrying the fraction.
+     *
+     * A different scheme from Terrain-RGB and not interchangeable with it --
+     * decoding one as the other gives elevations wrong by kilometres while
+     * still looking like plausible numbers, which is the sort of error that
+     * survives a glance. Terrarium is what the public-domain tiles use.
+     */
+    fun decodeTerrarium(red: Int, green: Int, blue: Int): Double =
+        (red * 256.0 + green + blue / 256.0) - 32_768.0
+
+    /**
      * @param grid nine elevations in metres, row-major, north row first.
      * @param cellSizeMeters ground distance between neighbouring samples.
      */

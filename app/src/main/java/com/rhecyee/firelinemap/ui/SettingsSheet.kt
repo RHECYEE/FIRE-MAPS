@@ -167,7 +167,10 @@ fun SettingsSheet(
                 Heading("OFFLINE TERRAIN")
                 Text(
                     "Keeps terrain around you while there is a connection, so it is " +
-                        "already there when there is not.",
+                        "already there when there is not. Elevation is fetched first " +
+                        "and finished before the basemap picture starts: it is what " +
+                        "contours and slope come out of, and it is a fraction of the " +
+                        "size, so it is the part worth having when the signal is poor.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

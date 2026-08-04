@@ -99,6 +99,9 @@ import com.rhecyee.firelinemap.location.TrackRecordingService
 import com.rhecyee.firelinemap.location.SegmentAnchor
 import com.rhecyee.firelinemap.location.TrackSettingsStore
 import com.rhecyee.firelinemap.map.BasemapTileCache
+import com.rhecyee.firelinemap.terrain.ContourLayer
+import com.rhecyee.firelinemap.terrain.ContourStatus
+import com.rhecyee.firelinemap.terrain.DemTileCache
 import com.rhecyee.firelinemap.map.TileMath
 import com.rhecyee.firelinemap.measure.AreaUnit
 import com.rhecyee.firelinemap.measure.DistanceUnit
@@ -160,6 +163,13 @@ fun FirelineApp() {
     val repository = remember { MapDocumentRepository(context) }
     val urlImporter = remember { MapUrlImporter(context.cacheDir) }
     val basemap = remember { BasemapTileCache(context) }
+    val contourLayer = remember { ContourLayer(context) }
+    val contourSet by contourLayer.contours.collectAsState()
+    val contourStatus by contourLayer.status.collectAsState()
+    // The ground on screen, reported by the canvas once it settles. Drives
+    // both the contour cut and what the automatic download reaches for.
+    var viewBox by remember { mutableStateOf<DoubleArray?>(null) }
+    var viewZoom by remember { mutableIntStateOf(13) }
     val elevations = remember { ElevationService() }
     val resources = remember { ResourceRepository(app.database.dao()) }
     val medical = remember { MedicalRepository(app.database.dao()) }
@@ -174,6 +184,7 @@ fun FirelineApp() {
     var showLegend by remember { mutableStateOf(true) }
     val settings = remember { AppSettings(context) }
     var topographyOn by remember { mutableStateOf(settings.topographyEnabled) }
+    var contoursOn by remember { mutableStateOf(settings.contoursEnabled) }
     var landOwnershipOn by remember { mutableStateOf(settings.landOwnershipEnabled) }
     var autoRadius by remember { mutableIntStateOf(settings.autoDownloadRadiusMiles) }
     var wifiOnly by remember { mutableStateOf(settings.autoDownloadWifiOnly) }
@@ -556,17 +567,64 @@ fun FirelineApp() {
         }
     }
 
+    // Contours are re-cut whenever the view settles somewhere new. Cheap when
+    // nothing has changed -- the layer recognises a view it has already
+    // answered -- so this can key on every pan without re-doing the work.
+    LaunchedEffect(viewBox, viewZoom, contoursOn) {
+        val box = viewBox
+        if (!contoursOn || box == null) return@LaunchedEffect
+        contourLayer.request(box[0], box[1], box[2], box[3], viewZoom)
+    }
+
+    // Elevation for what is on screen, fetched ahead of anything else.
+    // Contours are the thing a crew reads terrain from, and a basemap picture
+    // arriving first is no use to someone working out whether the slope above
+    // them goes anywhere.
+    LaunchedEffect(viewBox, viewZoom, contoursOn, wifiOnly) {
+        val box = viewBox
+        if (!contoursOn || box == null) return@LaunchedEffect
+        if (!settings.mayAutoDownload()) return@LaunchedEffect
+        val fetched = withContext(Dispatchers.IO) {
+            contourLayer.download(box[0], box[1], box[2], box[3], viewZoom)
+        }
+        if (fetched > 0) contourLayer.request(box[0], box[1], box[2], box[3], viewZoom)
+    }
+
     // Terrain is kept around the operator while there is a connection, so it
     // is already on the device when there is not. Bounded by tile count as
     // well as radius: the point is to be useful, not to fill the phone.
-    LaunchedEffect(autoRadius, wifiOnly, topographyOn, displayLatitude != null) {
+    LaunchedEffect(autoRadius, wifiOnly, topographyOn, contoursOn, displayLatitude != null) {
         val lat = displayLatitude
         val lon = displayLongitude
-        if (lat == null || lon == null || !topographyOn) return@LaunchedEffect
+        if (lat == null || lon == null) return@LaunchedEffect
+        if (!topographyOn && !contoursOn) return@LaunchedEffect
         if (!settings.mayAutoDownload()) return@LaunchedEffect
 
+        val area = TileMath.around(lat, lon, autoRadius * 1609.344)
+
         withContext(Dispatchers.IO) {
-            val area = TileMath.around(lat, lon, autoRadius * 1609.344)
+            // Elevation before imagery, and finished before imagery starts.
+            //
+            // The two compete for the same connection, and on a truck stop's
+            // worth of signal only one of them is going to complete. Elevation
+            // is the one worth having: it is what contours, slope and aspect
+            // all come out of, and it is a twentieth the size. A basemap
+            // picture with no elevation behind it can be looked at; elevation
+            // with no picture can still be worked from.
+            if (contoursOn) {
+                for (zoom in ContourLayer.MIN_DEM_ZOOM..ContourLayer.MAX_DEM_ZOOM) {
+                    contourLayer.download(
+                        north = area.north,
+                        south = area.south,
+                        west = area.west,
+                        east = area.east,
+                        zoom = zoom,
+                        limit = DEM_TILES_PER_LEVEL
+                    )
+                }
+            }
+
+            if (!topographyOn) return@withContext
             var requested = 0
             for (zoom in 9..14) {
                 if (requested > 4_000) break
@@ -771,6 +829,9 @@ fun FirelineApp() {
             onSelectMap = { activeMap = it; showLayers = false },
             topographyOn = topographyOn,
             onToggleTopography = { settings.topographyEnabled = it; topographyOn = it },
+            contoursOn = contoursOn,
+            onToggleContours = { settings.contoursEnabled = it; contoursOn = it },
+            contourSummary = contourDescription(contoursOn, contourStatus, contourSet),
             landOwnershipOn = landOwnershipOn,
             onToggleLandOwnership = { settings.landOwnershipEnabled = it; landOwnershipOn = it },
             packages = layerPackages,
@@ -829,7 +890,9 @@ fun FirelineApp() {
 
     if (showTrackSettings) {
         LaunchedEffect(Unit) {
-            cachedTerrain = withContext(Dispatchers.IO) { basemap.cachedBytes() }
+            cachedTerrain = withContext(Dispatchers.IO) {
+                basemap.cachedBytes() + contourLayer.cache.cachedBytes()
+            }
         }
         SettingsSheet(
             reporterName = reporterName,
@@ -875,7 +938,7 @@ fun FirelineApp() {
             cachedTerrainBytes = cachedTerrain,
             onClearTerrain = {
                 scope.launch {
-                    withContext(Dispatchers.IO) { basemap.clear() }
+                    withContext(Dispatchers.IO) { basemap.clear(); contourLayer.clear() }
                     cachedTerrain = 0L
                 }
             },
@@ -1109,6 +1172,11 @@ fun FirelineApp() {
                 positionIsSimulated = simulated != null,
                 dropPoints = if (segmentAtDropPoints) dropPoints else emptyList(),
                 basemap = basemap,
+                contours = contourSet.takeIf { contoursOn },
+                onViewBounds = { north, south, west, east, zoom ->
+                    viewBox = doubleArrayOf(north, south, west, east)
+                    viewZoom = zoom
+                },
                 measurePoints = measurePoints,
                 measureMode = measureMode,
                 markers = markers,
@@ -1188,6 +1256,8 @@ fun FirelineApp() {
                         hasTrack = liveTrack.recording,
                         hasSavedTracks = savedTracks.isNotEmpty(),
                         hasParcels = parcels.isNotEmpty(),
+                        contourInterval = contourSet.interval.describe()
+                            .takeIf { contoursOn && !contourSet.isEmpty },
                         hasDropPoints = segmentAtDropPoints && dropPoints.isNotEmpty(),
                         hasSearch = searchRegion != null,
                         simulated = simulated != null,
@@ -1475,3 +1545,33 @@ private fun ToolButton(
         }
     }
 }
+
+/**
+ * What the contour switch should say about itself.
+ *
+ * The interval is not a fixed property of the layer -- it changes with zoom
+ * and with how much relief is on screen -- so the only honest label is the one
+ * that reports what is being drawn right now.
+ */
+private fun contourDescription(
+    on: Boolean,
+    status: ContourStatus,
+    set: com.rhecyee.firelinemap.terrain.ContourSet
+): String = when {
+    !on -> "Cut from USGS elevation. Lines tighten as you zoom in."
+    status == ContourStatus.MISSING ->
+        "No elevation held for this ground yet. It downloads first when you " +
+            "have a connection."
+    status == ContourStatus.WORKING -> "Cutting lines…"
+    set.isEmpty -> "This ground is flat: nothing crosses a ${set.interval.feet} ft line."
+    status == ContourStatus.PARTIAL -> "${set.interval.describe()} · part of this view is missing"
+    else -> "${set.interval.describe()} · ${set.lowestFeet}–${set.highestFeet} ft in view"
+}
+
+/**
+ * How many elevation tiles to take at each level around the operator.
+ *
+ * Deliberately modest. The point of the radius download is to have the ground
+ * nearby when the signal goes, not to mirror a state onto a phone.
+ */
+private const val DEM_TILES_PER_LEVEL = 64

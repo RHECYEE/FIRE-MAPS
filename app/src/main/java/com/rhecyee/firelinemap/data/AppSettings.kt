@@ -75,6 +75,18 @@ class AppSettings(context: Context) {
         get() = preferences.getBoolean(KEY_TOPO, true)
         set(value) = preferences.edit().putBoolean(KEY_TOPO, value).apply()
 
+    /**
+     * Whether contours are cut and drawn.
+     *
+     * Separate from the topographic basemap, which only has somebody else's
+     * lines painted into a picture. These are cut here from elevation data, so
+     * they follow the zoom and can be labelled -- and they cost a download of
+     * their own, which is why they are their own switch.
+     */
+    var contoursEnabled: Boolean
+        get() = preferences.getBoolean(KEY_CONTOURS, true)
+        set(value) = preferences.edit().putBoolean(KEY_CONTOURS, value).apply()
+
     var landOwnershipEnabled: Boolean
         get() = preferences.getBoolean(KEY_OWNERSHIP, true)
         set(value) = preferences.edit().putBoolean(KEY_OWNERSHIP, value).apply()
@@ -141,6 +153,7 @@ class AppSettings(context: Context) {
         private const val KEY_RADIUS = "auto_download_radius_miles"
         private const val KEY_WIFI_ONLY = "auto_download_wifi_only"
         private const val KEY_TOPO = "topography_enabled"
+        private const val KEY_CONTOURS = "contours_enabled"
         private const val KEY_OWNERSHIP = "land_ownership_enabled"
         private const val KEY_CHROME_TIMEOUT = "chrome_timeout_seconds"
         private const val KEY_LOCATION_INTERVAL = "location_interval_seconds"

@@ -87,6 +87,8 @@ fun MapCanvas(
     searchRegion: SearchRegion? = null,
     parcels: List<com.rhecyee.firelinemap.parcels.Parcel> = emptyList(),
     parcelOpacity: Float = 0.65f,
+    contours: com.rhecyee.firelinemap.terrain.ContourSet? = null,
+    onViewBounds: ((north: Double, south: Double, west: Double, east: Double, zoom: Int) -> Unit)? = null,
     centreOn: Pair<Double, Double>? = null,
     onCentred: () -> Unit = {},
     onInteraction: () -> Unit = {},
@@ -225,6 +227,60 @@ fun MapCanvas(
                 axis(candidate.x, from.x, maxX),
                 axis(candidate.y, from.y, maxY)
             )
+        }
+
+        /**
+         * The ground currently on screen, and the tile zoom it amounts to.
+         *
+         * Computed from the same numbers the draw uses, but outside it: the
+         * contour layer needs to know what to cut, and it cannot be told from
+         * inside a draw pass without invalidating the frame being drawn.
+         */
+        fun viewBounds(): Triple<DoubleArray, Int, Boolean>? {
+            val frame = map.frame ?: return null
+            if (viewport.width <= 0 || viewport.height <= 0) return null
+            if (pageWidthPoints <= 0 || pageHeightPoints <= 0) return null
+
+            val drawWidth = image.width * fitScale() * scale
+            val drawHeight = image.height * fitScale() * scale
+            if (drawWidth <= 0f || drawHeight <= 0f) return null
+            val ox = (viewport.width - drawWidth) / 2f + offset.x
+            val oy = (viewport.height - drawHeight) / 2f + offset.y
+
+            fun geo(x: Float, y: Float) = frame.pageToGeo(
+                ((x - ox) / drawWidth) * pageWidthPoints.toDouble(),
+                (1f - (y - oy) / drawHeight) * pageHeightPoints.toDouble()
+            )
+
+            val topLeft = geo(0f, 0f) ?: return null
+            val bottomRight = geo(viewport.width.toFloat(), viewport.height.toFloat())
+                ?: return null
+
+            val north = maxOf(topLeft.latitude, bottomRight.latitude)
+            val south = minOf(topLeft.latitude, bottomRight.latitude)
+            val west = minOf(topLeft.longitude, bottomRight.longitude)
+            val east = maxOf(topLeft.longitude, bottomRight.longitude)
+            if (north <= south || east <= west) return null
+
+            val centre = (north + south) / 2.0
+            val spanMeters = com.rhecyee.firelinemap.map.MapCoverage.distanceMeters(
+                centre, west, centre, east
+            )
+            if (spanMeters <= 0.0) return null
+            val zoom = BasemapTileCache.zoomFor(centre, spanMeters / viewport.width)
+            return Triple(doubleArrayOf(north, south, west, east), zoom.coerceIn(4, 18), true)
+        }
+
+        // Reported once the view settles rather than while it moves. Cutting
+        // contours mid-pan would be work thrown away several times a second,
+        // and the settle is short enough not to be noticed as a wait.
+        val reportBounds by rememberUpdatedState(onViewBounds)
+        androidx.compose.runtime.LaunchedEffect(scale, offset, viewport, map.id) {
+            if (reportBounds == null) return@LaunchedEffect
+            kotlinx.coroutines.delay(VIEW_SETTLE_MILLIS)
+            val bounds = viewBounds() ?: return@LaunchedEffect
+            val (box, zoom, _) = bounds
+            reportBounds?.invoke(box[0], box[1], box[2], box[3], zoom)
         }
 
         fun screenToPagePoints(point: Offset): Pair<Double, Double>? {
@@ -427,6 +483,24 @@ fun MapCanvas(
             )
 
             val frame = map.frame
+
+            // Contours sit directly on the terrain and under everything else.
+            // They are ground, not incident information: a line of a crew's
+            // making must never be mistakable for a line of the earth's.
+            if (contours != null && !contours.isEmpty && frame != null &&
+                pageWidthPoints > 0 && pageHeightPoints > 0
+            ) {
+                drawContours(
+                    set = contours,
+                    frame = frame,
+                    pageWidthPoints = pageWidthPoints,
+                    pageHeightPoints = pageHeightPoints,
+                    originX = originX,
+                    originY = originY,
+                    drawWidth = drawWidth,
+                    drawHeight = drawHeight
+                )
+            }
 
             // Parcels sit above terrain and below everything the incident owns.
             if (parcels.isNotEmpty() && frame != null &&
@@ -634,6 +708,9 @@ fun MapCanvas(
 }
 
 private const val OFF_SHEET_PAN_ALLOWANCE = 1.5f
+
+/** How long the view has to hold still before contours are re-cut. */
+private const val VIEW_SETTLE_MILLIS = 300L
 
 /** Carries the tile level between draws so a pinch cannot make it flip. */
 internal class TileZoomHolder(var value: Int? = null)
@@ -901,6 +978,105 @@ private fun DrawScope.drawBasemap(
         }
     }
 }
+
+/**
+ * Contour lines, cut to the zoom and labelled where they are index lines.
+ *
+ * Drawn in the brown of a printed quadrangle rather than in any of the colours
+ * the incident uses. On a map where a purple line is a track someone drove and
+ * a yellow one is a measurement, terrain has to be unmistakably neither.
+ *
+ * Only index lines carry a number, and only once each. Labelling every line
+ * fills the screen with figures nobody reads; labelling every occurrence of an
+ * index line does the same on ground that folds back on itself.
+ */
+private fun DrawScope.drawContours(
+    set: com.rhecyee.firelinemap.terrain.ContourSet,
+    frame: com.rhecyee.firelinemap.geopdf.MapFrame,
+    pageWidthPoints: Int,
+    pageHeightPoints: Int,
+    originX: Float,
+    originY: Float,
+    drawWidth: Float,
+    drawHeight: Float
+) {
+    fun project(latitude: Double, longitude: Double): Offset? {
+        val page = frame.geoToPage(latitude, longitude) ?: return null
+        return Offset(
+            originX + (page.first / pageWidthPoints).toFloat() * drawWidth,
+            originY + (1f - (page.second / pageHeightPoints).toFloat()) * drawHeight
+        )
+    }
+
+    // Room off screen so a line entering the view is not clipped at its first
+    // point, which would leave a visible notch at the edge.
+    val margin = 120f
+    val labelled = mutableSetOf<Int>()
+
+    for (line in set.lines) {
+        val path = Path()
+        var started = false
+        var onScreen = false
+        for ((latitude, longitude) in line.points) {
+            val point = project(latitude, longitude) ?: continue
+            if (point.x > -margin && point.x < size.width + margin &&
+                point.y > -margin && point.y < size.height + margin
+            ) {
+                onScreen = true
+            }
+            if (started) path.lineTo(point.x, point.y) else {
+                path.moveTo(point.x, point.y)
+                started = true
+            }
+        }
+        if (!started || !onScreen) continue
+
+        drawPath(
+            path = path,
+            color = if (line.isIndex) INDEX_CONTOUR else CONTOUR,
+            style = Stroke(width = if (line.isIndex) 2.6f else 1.4f),
+            alpha = if (line.isIndex) 0.95f else 0.75f
+        )
+
+        if (!line.isIndex || !labelled.add(line.elevationFeet)) continue
+        val anchor = line.labelAnchor() ?: continue
+        val at = project(anchor.first, anchor.second) ?: continue
+        if (at.x < 40f || at.x > size.width - 40f || at.y < 30f || at.y > size.height - 30f) {
+            continue
+        }
+
+        // Laid along the contour the way it is on a paper quad, and never
+        // upside down: a number read the wrong way up is a number misread.
+        var degrees = -anchor.third.toFloat()
+        if (degrees > 90f) degrees -= 180f
+        if (degrees < -90f) degrees += 180f
+
+        rotate(degrees = degrees, pivot = at) {
+            drawContext.canvas.nativeCanvas.apply {
+                val paint = android.graphics.Paint().apply {
+                    textAlign = android.graphics.Paint.Align.CENTER
+                    textSize = 24f
+                    isAntiAlias = true
+                    isFakeBoldText = true
+                }
+                // Punched out of the line rather than laid over it, so the
+                // contour is not made ambiguous by its own label.
+                paint.style = android.graphics.Paint.Style.STROKE
+                paint.strokeWidth = 6f
+                paint.color = android.graphics.Color.argb(210, 250, 246, 238)
+                drawText("${line.elevationFeet}", at.x, at.y + 8f, paint)
+
+                paint.style = android.graphics.Paint.Style.FILL
+                paint.color = INDEX_CONTOUR_ARGB
+                drawText("${line.elevationFeet}", at.x, at.y + 8f, paint)
+            }
+        }
+    }
+}
+
+private val CONTOUR = Color(0xFF9A6634)
+private val INDEX_CONTOUR = Color(0xFF6E3F14)
+private const val INDEX_CONTOUR_ARGB = 0xFF6E3F14.toInt()
 
 /** A resource pin: a coloured plate carrying its abbreviation, with the
  * identifier beneath it. */

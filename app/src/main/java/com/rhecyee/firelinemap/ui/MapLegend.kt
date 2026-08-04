@@ -40,6 +40,7 @@ fun MapLegend(
     hasTrack: Boolean,
     hasSavedTracks: Boolean,
     hasParcels: Boolean,
+    contourInterval: String?,
     hasDropPoints: Boolean,
     hasSearch: Boolean,
     simulated: Boolean,
@@ -95,6 +96,32 @@ fun MapLegend(
                     style = MaterialTheme.typography.labelSmall
                 )
             }
+        }
+        if (contourInterval != null) {
+            // Spelled out rather than shown as a swatch. A contour's colour is
+            // not what needs explaining -- how far apart the lines are is, and
+            // it changes as the operator zooms, so it has to be read off the
+            // key rather than remembered.
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(
+                    modifier = Modifier
+                        .size(16.dp, 12.dp)
+                        .background(Color(0xFF9A6634), RoundedCornerShape(2.dp))
+                ) {}
+                Text(
+                    "Contours",
+                    modifier = Modifier.padding(start = 8.dp),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelSmall
+                )
+            }
+            Text(
+                contourInterval,
+                modifier = Modifier.padding(start = 24.dp),
+                color = Color(0xFFE0B07A),
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.labelSmall
+            )
         }
         Text(
             "tap to hide",

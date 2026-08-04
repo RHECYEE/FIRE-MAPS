@@ -48,6 +48,9 @@ fun LayersSheet(
     onSelectMap: (com.rhecyee.firelinemap.geopdf.ImportedMap) -> Unit,
     topographyOn: Boolean,
     onToggleTopography: (Boolean) -> Unit,
+    contoursOn: Boolean,
+    onToggleContours: (Boolean) -> Unit,
+    contourSummary: String,
     landOwnershipOn: Boolean,
     onToggleLandOwnership: (Boolean) -> Unit,
     packages: List<LayerPackageEntity>,
@@ -126,6 +129,17 @@ fun LayersSheet(
                         "Tiles are kept once seen.",
                     checked = topographyOn,
                     onCheckedChange = onToggleTopography
+                )
+                ToggleRow(
+                    title = "Contour lines",
+                    subtitle = contourSummary,
+                    checked = contoursOn,
+                    onCheckedChange = onToggleContours
+                )
+                Text(
+                    com.rhecyee.firelinemap.terrain.DemTileCache.ATTRIBUTION,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 ToggleRow(
                     title = "Land ownership",
