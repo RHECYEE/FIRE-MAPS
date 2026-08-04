@@ -72,6 +72,22 @@ object DropPointDetector {
      * @param pixels ARGB pixels of the rendered page, row-major.
      * @param frame the map frame whose neatline bounds the search.
      */
+    /**
+     * Settings rescaled for a sheet scanned at a fraction of its size.
+     *
+     * The plate thresholds are in pixels, so halving the scan resolution
+     * halves every plate. Scanning a whole page at full size costs an integer
+     * per pixel on top of the bitmap it came from -- forty odd megabytes for
+     * one import, which is what took the app down when several arrived
+     * together. Scanning at half and halving the thresholds finds the same
+     * plates for a quarter of the memory.
+     */
+    fun DropPointSettings.scaledBy(stride: Int): DropPointSettings =
+        if (stride <= 1) this else copy(
+            minHeightPixels = (minHeightPixels / stride).coerceAtLeast(3),
+            maxHeightPixels = (maxHeightPixels / stride).coerceAtLeast(6)
+        )
+
     fun detect(
         pixels: IntArray,
         width: Int,

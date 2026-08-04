@@ -103,8 +103,15 @@ fun MapCanvas(
     onMapTap: ((latitude: Double, longitude: Double) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
-    var scale by remember(map?.id) { mutableFloatStateOf(1f) }
-    var offset by remember(map?.id) { mutableStateOf(Offset.Zero) }
+    // Keyed on the projection, not the map.
+    //
+    // A sheet arrives a moment after the map that owns it -- the page has to be
+    // rendered first -- so the view spends that moment on plain ground, whose
+    // content is a different size in different units and allows a different
+    // zoom. Carrying a scale and a pan across that switch lands the view
+    // nowhere, which reads as the map having jumped away on import.
+    var scale by remember(projection) { mutableFloatStateOf(1f) }
+    var offset by remember(projection) { mutableStateOf(Offset.Zero) }
     var viewport by remember { mutableStateOf(IntSize.Zero) }
     var draggingMarkerId by remember { mutableStateOf<String?>(null) }
     var dragPoint by remember { mutableStateOf(Offset.Zero) }
@@ -119,7 +126,7 @@ fun MapCanvas(
      * is the other thing people need, and a map that hauls itself back under
      * the finger cannot be read at all.
      */
-    var following by remember(map?.id) { mutableStateOf(false) }
+    var following by remember(projection) { mutableStateOf(false) }
 
     /**
      * Where a pinch is anchored, while one is happening.
@@ -137,7 +144,7 @@ fun MapCanvas(
     // holder rather than snapshot state on purpose: this is written during the
     // draw pass, and writing snapshot state there would invalidate the frame
     // that is being drawn and loop.
-    val tileZoom = remember(map?.id) { TileZoomHolder() }
+    val tileZoom = remember(projection) { TileZoomHolder() }
 
     // Held in updated state so the gesture handler below can key on the map
     // alone. Putting these in the pointerInput keys restarts the gesture
@@ -899,13 +906,22 @@ private fun DrawScope.drawBasemap(
     fun screenToGeo(x: Float, y: Float): Pair<Double, Double>? =
         projection.toGeo((x - originX) / drawWidth, (y - originY) / drawHeight)
 
-    val topLeft = screenToGeo(0f, 0f) ?: return
-    val bottomRight = screenToGeo(size.width, size.height) ?: return
+    // All four corners. A sheet is not obliged to be north-up, and two
+    // opposite corners of a rotated view describe a box that need not contain
+    // what is actually on screen -- so the tiles fetched would be for ground
+    // beside the one being looked at.
+    val corners = listOfNotNull(
+        screenToGeo(0f, 0f),
+        screenToGeo(size.width, 0f),
+        screenToGeo(0f, size.height),
+        screenToGeo(size.width, size.height)
+    )
+    if (corners.size < 4) return
 
-    val north = maxOf(topLeft.first, bottomRight.first)
-    val south = minOf(topLeft.first, bottomRight.first)
-    val west = minOf(topLeft.second, bottomRight.second)
-    val east = maxOf(topLeft.second, bottomRight.second)
+    val north = corners.maxOf { it.first }
+    val south = corners.minOf { it.first }
+    val west = corners.minOf { it.second }
+    val east = corners.maxOf { it.second }
     if (north <= south || east <= west) return
     if (!north.isFinite() || !south.isFinite() || !west.isFinite() || !east.isFinite()) return
 
@@ -942,17 +958,72 @@ private fun DrawScope.drawBasemap(
     // back from eviction, so there is always something to draw. Soft is not
     // the same as absent.
     val baseZoom = (zoom - BASE_LAYER_STEPS).coerceAtLeast(0)
+    var drawn = 0
     if (baseZoom < zoom) {
-        drawTileLayer(
+        drawn += drawTileLayer(
             basemap, projection, baseZoom, north, south, west, east,
             originX, originY, drawWidth, drawHeight
         )
     }
 
-    drawTileLayer(
+    drawn += drawTileLayer(
         basemap, projection, zoom, north, south, west, east,
         originX, originY, drawWidth, drawHeight
     )
+
+    // Last resort: draw whatever is held, wherever it lands.
+    //
+    // If neither the wanted level nor the coarse one under it produced a
+    // single tile, the alternative is an empty screen -- and an empty screen
+    // is the one outcome this layer must never produce, because it is
+    // indistinguishable from the app being broken. Anything in memory that
+    // overlaps the view is better than nothing, however soft or however odd
+    // the level it came from. The cache is a couple of hundred entries, so
+    // looking through all of it costs nothing.
+    if (drawn == 0) {
+        drawHeldTiles(basemap, projection, originX, originY, drawWidth, drawHeight)
+    }
+}
+
+/** Draws every decoded tile that lands on screen, at whatever level it is. */
+private fun DrawScope.drawHeldTiles(
+    basemap: BasemapTileCache,
+    projection: MapProjection,
+    originX: Float,
+    originY: Float,
+    drawWidth: Float,
+    drawHeight: Float
+) {
+    // Coarsest first, so finer detail lands on top of it.
+    for ((zoom, x, y) in basemap.cached().sortedBy { it.first }) {
+        val bitmap = basemap.peek(zoom, x, y) ?: continue
+        val topLeftUnit = projection.toUnit(
+            BasemapTileCache.tileNorth(y, zoom), BasemapTileCache.tileWest(x, zoom)
+        ) ?: continue
+        val bottomRightUnit = projection.toUnit(
+            BasemapTileCache.tileNorth(y + 1, zoom), BasemapTileCache.tileWest(x + 1, zoom)
+        ) ?: continue
+
+        val left = originX + topLeftUnit.first * drawWidth
+        val top = originY + topLeftUnit.second * drawHeight
+        val right = originX + bottomRightUnit.first * drawWidth
+        val bottom = originY + bottomRightUnit.second * drawHeight
+        if (!left.isFinite() || !top.isFinite() || !right.isFinite() || !bottom.isFinite()) {
+            continue
+        }
+        if (right < 0f || left > size.width || bottom < 0f || top > size.height) continue
+
+        val width = (right - left).roundToInt()
+        val height = (bottom - top).roundToInt()
+        if (width <= 0 || height <= 0 || width > MAX_TILE_PIXELS || height > MAX_TILE_PIXELS) {
+            continue
+        }
+        drawImage(
+            image = bitmap.asImageBitmap(),
+            dstOffset = IntOffset(left.roundToInt(), top.roundToInt()),
+            dstSize = IntSize(width + 1, height + 1)
+        )
+    }
 }
 
 private fun tileCount(
@@ -982,12 +1053,13 @@ private fun DrawScope.drawTileLayer(
     originY: Float,
     drawWidth: Float,
     drawHeight: Float
-) {
+): Int {
+    var drawn = 0
     val minX = BasemapTileCache.tileX(west, zoom)
     val maxX = BasemapTileCache.tileX(east, zoom)
     val minY = BasemapTileCache.tileY(north, zoom)
     val maxY = BasemapTileCache.tileY(south, zoom)
-    if ((maxX - minX + 1).toLong() * (maxY - minY + 1).toLong() > MAX_TILES_PER_FRAME) return
+    if ((maxX - minX + 1).toLong() * (maxY - minY + 1).toLong() > MAX_TILES_PER_FRAME) return 0
 
     for (x in minX..maxX) {
         for (y in minY..maxY) {
@@ -1029,8 +1101,10 @@ private fun DrawScope.drawTileLayer(
                 // independently and rounding leaves hairline seams otherwise.
                 dstSize = IntSize(width + 1, height + 1)
             )
+            drawn++
         }
     }
+    return drawn
 }
 
 /**

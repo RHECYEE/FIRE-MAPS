@@ -75,6 +75,7 @@ import com.rhecyee.firelinemap.resources.ResourceRepository
 import com.rhecyee.firelinemap.resources.ResourceSymbol
 import com.rhecyee.firelinemap.geopdf.DropPoint
 import com.rhecyee.firelinemap.geopdf.DropPointDetector
+import com.rhecyee.firelinemap.geopdf.DropPointSettings
 import com.rhecyee.firelinemap.geopdf.ImportedMap
 import com.rhecyee.firelinemap.geopdf.MapDocumentRepository
 import com.rhecyee.firelinemap.geopdf.MapUrlImporter
@@ -366,12 +367,33 @@ fun FirelineApp() {
         val map = activeMap
         if (map == null) {
             bitmap = null
+            dropPoints = emptyList()
             return@LaunchedEffect
         }
-        val rendered = withContext(Dispatchers.IO) {
-            MapDocumentRepository.pageSize(map.file) to
-                MapDocumentRepository.renderPage(map.file, targetWidth = 2048)
+        // Dropped before the next one is rendered. A page raster is twenty odd
+        // megabytes; holding the old one while building the new doubles the
+        // peak for no reason, and importing several sheets in a row is exactly
+        // when that matters.
+        bitmap = null
+
+        val outcome = runCatching {
+            withContext(Dispatchers.IO) {
+                MapDocumentRepository.pageSize(map.file) to
+                    MapDocumentRepository.renderPage(map.file, targetWidth = 2048)
+            }
         }
+        val rendered = outcome.getOrNull()
+        if (rendered?.second == null) {
+            // Including running out of memory, which is a message rather than
+            // a reason to take the app down with the incident data in it.
+            statusMessage = if (outcome.exceptionOrNull() is OutOfMemoryError) {
+                "Not enough memory to open that sheet. Close other apps and try again."
+            } else {
+                "That sheet could not be rendered."
+            }
+            return@LaunchedEffect
+        }
+
         pageWidth = rendered.first?.first ?: 0
         pageHeight = rendered.first?.second ?: 0
         bitmap = rendered.second
@@ -384,23 +406,44 @@ fun FirelineApp() {
         dropPoints = if (frameForScan == null || rasterised == null) {
             emptyList()
         } else {
-            withContext(Dispatchers.Default) {
-                val pixels = IntArray(rasterised.width * rasterised.height)
-                rasterised.getPixels(
-                    pixels, 0, rasterised.width, 0, 0, rasterised.width, rasterised.height
-                )
-                DropPointDetector.detect(
-                    pixels = pixels,
-                    width = rasterised.width,
-                    height = rasterised.height,
-                    frame = frameForScan,
-                    pageWidthPoints = (rendered.first?.first ?: 0).toDouble(),
-                    pageHeightPoints = (rendered.first?.second ?: 0).toDouble()
-                )
-            }
+            runCatching {
+                withContext(Dispatchers.Default) {
+                    // Sampled down rather than read whole. A full page is an
+                    // integer per pixel on top of the bitmap it came from.
+                    val stride = DROP_POINT_SCAN_STRIDE
+                    val scanWidth = rasterised.width / stride
+                    val scanHeight = rasterised.height / stride
+                    if (scanWidth < 8 || scanHeight < 8) {
+                        emptyList()
+                    } else {
+                        val pixels = IntArray(scanWidth * scanHeight)
+                        val row = IntArray(rasterised.width)
+                        for (y in 0 until scanHeight) {
+                            rasterised.getPixels(
+                                row, 0, rasterised.width, 0, y * stride, rasterised.width, 1
+                            )
+                            for (x in 0 until scanWidth) {
+                                pixels[y * scanWidth + x] = row[x * stride]
+                            }
+                        }
+                        DropPointDetector.detect(
+                            pixels = pixels,
+                            width = scanWidth,
+                            height = scanHeight,
+                            frame = frameForScan,
+                            pageWidthPoints = (rendered.first?.first ?: 0).toDouble(),
+                            pageHeightPoints = (rendered.first?.second ?: 0).toDouble(),
+                            settings = with(DropPointDetector) {
+                                DropPointSettings().scaledBy(stride)
+                            }
+                        )
+                    }
+                }
+            }.getOrDefault(emptyList())
         }
         app.dropPoints = dropPoints.map { SegmentAnchor(it.id, it.latitude, it.longitude) }
     }
+
 
     val displayLatitude = simulated?.first ?: gpsLocation?.latitude
     val displayLongitude = simulated?.second ?: gpsLocation?.longitude
@@ -1563,3 +1606,13 @@ private data class MapView(
     val east: Double,
     val zoom: Int
 )
+
+/**
+ * How coarsely the sheet is scanned for drop points.
+ *
+ * Half. The plate thresholds scale with it, so the same plates are found for a
+ * quarter of the memory -- and the memory is the point: a full-page scan costs
+ * an integer per pixel on top of the page raster itself, which is what took
+ * the app down when several sheets were imported together.
+ */
+private const val DROP_POINT_SCAN_STRIDE = 2

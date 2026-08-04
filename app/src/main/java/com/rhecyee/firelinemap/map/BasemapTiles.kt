@@ -216,6 +216,25 @@ class BasemapTileCache(context: Context) {
     /** Overridable so the back-off can be tested without waiting a minute. */
     internal var now: () -> Long = { System.currentTimeMillis() }
 
+    /**
+     * Every tile currently decoded, as level, column, row.
+     *
+     * For the last-resort pass: when nothing at the wanted level or its
+     * ancestors is available, whatever is held gets drawn instead. Bounded by
+     * [TILES_HELD], so scanning it is nothing.
+     */
+    fun cached(): List<Triple<Int, Int, Int>> = tiles.keys.mapNotNull { key ->
+        val parts = key.split('/')
+        if (parts.size != 3) return@mapNotNull null
+        val z = parts[0].toIntOrNull() ?: return@mapNotNull null
+        val x = parts[1].toIntOrNull() ?: return@mapNotNull null
+        val y = parts[2].toIntOrNull() ?: return@mapNotNull null
+        Triple(z, x, y)
+    }
+
+    /** A held tile without marking it used, for the last-resort pass. */
+    fun peek(zoom: Int, x: Int, y: Int): Bitmap? = tiles[key(zoom, x, y)]
+
     /** A held tile, marked as used so it survives the next eviction. */
     private fun held(key: String): Bitmap? {
         val bitmap = tiles[key] ?: return null

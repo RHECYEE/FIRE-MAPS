@@ -165,11 +165,15 @@ class TrackRecordingService : Service() {
             "FirelineMap:travel"
         ).apply {
             setReferenceCounted(false)
-            // No timeout: a shift is as long as it is, and a lock that expired
-            // mid-afternoon would lose exactly the part nobody was watching.
-            // The foreground notification is what makes this honest -- it is
-            // on screen the whole time it is held.
-            runCatching { acquire() }
+            // A long timeout rather than none.
+            //
+            // A shift is as long as it is, so this has to outlast one -- but a
+            // lock with no timeout at all survives the service wedging, and
+            // then the processor is held awake by something that has stopped
+            // doing anything with it. That is a flat battery and a phone that
+            // keeps reporting itself unresponsive after the app is closed.
+            // Sixteen hours covers any shift and still lets go eventually.
+            runCatching { acquire(WAKE_LOCK_MILLIS) }
         }
     }
 
@@ -385,6 +389,9 @@ class TrackRecordingService : Service() {
         const val ACTION_STOP = "com.rhecyee.firelinemap.STOP_TRACK"
         const val EXTRA_INCIDENT_ID = "incident_id"
         private const val CHANNEL_ID = "travel_recording"
+
+        /** Longer than any shift, shorter than forever. */
+        private const val WAKE_LOCK_MILLIS = 16L * 60 * 60 * 1000
         private const val NOTIFICATION_ID = 4102
 
         /** A minute or so at the default rate; less often if the rate is slower. */
