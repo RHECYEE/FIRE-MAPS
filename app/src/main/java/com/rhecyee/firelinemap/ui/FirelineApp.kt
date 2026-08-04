@@ -164,6 +164,7 @@ fun FirelineApp() {
 
     val counties = remember { CountyCatalog(context) }
     var showLayers by remember { mutableStateOf(false) }
+    var showLegend by remember { mutableStateOf(true) }
     var countyQuery by remember { mutableStateOf("") }
     var showCountySearch by remember { mutableStateOf(false) }
     var chosenCounty by remember { mutableStateOf<CountyRecord?>(null) }
@@ -1037,6 +1038,19 @@ fun FirelineApp() {
                     onClick = { touched(); openMedicalReport() },
                     modifier = Modifier.align(Alignment.BottomStart).padding(10.dp)
                 )
+
+                if (chromeVisible && showLegend) {
+                    MapLegend(
+                        hasTrack = liveTrack.recording,
+                        hasSavedTracks = savedTracks.isNotEmpty(),
+                        hasParcels = parcels.isNotEmpty(),
+                        hasDropPoints = segmentAtDropPoints && dropPoints.isNotEmpty(),
+                        hasSearch = searchRegion != null,
+                        simulated = simulated != null,
+                        onDismiss = { showLegend = false },
+                        modifier = Modifier.align(Alignment.TopStart).padding(6.dp)
+                    )
+                }
 
                 if (!chromeVisible) {
                     CompactStatusStrip(
