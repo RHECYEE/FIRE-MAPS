@@ -82,7 +82,9 @@ fun UrlImportDialog(
 fun RemoteListingDialog(
     entries: List<RemotePdf>,
     busy: Boolean,
+    progress: String? = null,
     onDismiss: () -> Unit,
+    onImportAll: () -> Unit,
     onSelect: (RemotePdf) -> Unit
 ) {
     AlertDialog(
@@ -90,9 +92,18 @@ fun RemoteListingDialog(
         title = { Text("${entries.size} products") },
         text = {
             if (busy) {
-                CircularProgressIndicator()
+                Column {
+                    CircularProgressIndicator()
+                    if (progress != null) {
+                        Text(
+                            progress,
+                            modifier = Modifier.padding(top = 10.dp),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
             } else {
-                LazyColumn(Modifier.heightIn(max = 380.dp)) {
+                LazyColumn(Modifier.heightIn(max = 340.dp)) {
                     items(entries) { entry ->
                         Text(
                             entry.name,
@@ -108,7 +119,11 @@ fun RemoteListingDialog(
                 }
             }
         },
-        confirmButton = {},
+        confirmButton = {
+            TextButton(onClick = onImportAll, enabled = !busy) {
+                Text("Import all ${entries.size}")
+            }
+        },
         dismissButton = {
             TextButton(onClick = onDismiss, enabled = !busy) { Text("Close") }
         }

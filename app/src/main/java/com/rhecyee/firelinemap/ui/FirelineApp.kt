@@ -74,6 +74,7 @@ import com.rhecyee.firelinemap.location.LocationRepository
 import com.rhecyee.firelinemap.location.TrackRecordingService
 import com.rhecyee.firelinemap.location.SegmentAnchor
 import com.rhecyee.firelinemap.location.TrackSettingsStore
+import com.rhecyee.firelinemap.map.BasemapTileCache
 import com.rhecyee.firelinemap.map.GeoBounds
 import com.rhecyee.firelinemap.map.IncidentMapCoverage
 import com.rhecyee.firelinemap.map.MapCoverage
@@ -105,6 +106,7 @@ fun FirelineApp() {
 
     val repository = remember { MapDocumentRepository(context) }
     val urlImporter = remember { MapUrlImporter(context.cacheDir) }
+    val basemap = remember { BasemapTileCache(context) }
     var activeMap by remember { mutableStateOf<ImportedMap?>(null) }
     var bitmap by remember { mutableStateOf<Bitmap?>(null) }
     var pageWidth by remember { mutableIntStateOf(0) }
@@ -295,7 +297,42 @@ fun FirelineApp() {
         RemoteListingDialog(
             entries = listing,
             busy = urlBusy,
+            progress = urlError,
             onDismiss = { listing = emptyList() },
+            onImportAll = {
+                urlBusy = true
+                scope.launch {
+                    var imported = 0
+                    var failed = 0
+                    var last: ImportedMap? = null
+                    for ((index, entry) in listing.withIndex()) {
+                        urlError = "Importing ${index + 1} of ${listing.size}…"
+                        val result = withContext(Dispatchers.IO) { urlImporter.download(entry) }
+                        if (result is UrlProbe.Downloaded) {
+                            val map = withContext(Dispatchers.IO) {
+                                repository.importFromFile(result.file, result.name)
+                            }
+                            if (map != null) {
+                                imported++
+                                last = map
+                            } else {
+                                failed++
+                            }
+                        } else {
+                            failed++
+                        }
+                    }
+                    urlBusy = false
+                    urlError = null
+                    listing = emptyList()
+                    if (last != null) activeMap = last
+                    statusMessage = if (failed == 0) {
+                        null
+                    } else {
+                        "Imported $imported, $failed could not be read."
+                    }
+                }
+            },
             onSelect = { entry ->
                 urlBusy = true
                 scope.launch {
@@ -398,6 +435,7 @@ fun FirelineApp() {
                 longitude = displayLongitude,
                 positionIsSimulated = simulated != null,
                 dropPoints = if (segmentAtDropPoints) dropPoints else emptyList(),
+                basemap = basemap,
                 onMapTap = { lat, lon -> simulated = lat to lon },
                 modifier = Modifier.weight(1f)
             )
