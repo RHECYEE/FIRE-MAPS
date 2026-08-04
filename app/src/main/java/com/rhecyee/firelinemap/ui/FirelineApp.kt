@@ -85,6 +85,8 @@ import com.rhecyee.firelinemap.medical.MedicalRepository
 import com.rhecyee.firelinemap.medical.RadioReadout
 import com.rhecyee.firelinemap.data.LayerPackageEntity
 import com.rhecyee.firelinemap.medical.PlaceNamer
+import com.rhecyee.firelinemap.land.LandOwner
+import com.rhecyee.firelinemap.land.LandOwnershipService
 import com.rhecyee.firelinemap.parcels.CountyCatalog
 import com.rhecyee.firelinemap.parcels.CountyRecord
 import com.rhecyee.firelinemap.parcels.Parcel
@@ -171,6 +173,10 @@ fun FirelineApp() {
     var chosenCounty by remember { mutableStateOf<CountyRecord?>(null) }
     var parcels by remember { mutableStateOf<List<Parcel>>(emptyList()) }
     var tappedParcel by remember { mutableStateOf<Parcel?>(null) }
+    val landOwnership = remember { LandOwnershipService() }
+    var landOwner by remember { mutableStateOf<LandOwner?>(null) }
+    var landLookupAt by remember { mutableStateOf<Pair<Double, Double>?>(null) }
+    var landLookupBusy by remember { mutableStateOf(false) }
 
     var medicalReport by remember { mutableStateOf<MedicalReport?>(null) }
     var showReadout by remember { mutableStateOf(false) }
@@ -733,6 +739,15 @@ fun FirelineApp() {
         )
     }
 
+    landLookupAt?.let { (lat, lon) ->
+        LandOwnerDialog(
+            owner = landOwner,
+            busy = landLookupBusy,
+            coordinates = CoordinateFormatter.format(lat, lon, coordinateFormat),
+            onDismiss = { landLookupAt = null; landOwner = null }
+        )
+    }
+
     tappedParcel?.let { parcel ->
         ParcelDetailDialog(parcel = parcel, onDismiss = { tappedParcel = null })
     }
@@ -1019,8 +1034,22 @@ fun FirelineApp() {
                             }
                             elevationPending = false
                         }
-                    } else if (activeParcelLayer != null) {
+                    } else if (activeParcelLayer != null &&
+                        parcels.any { it.geometry.contains(lat, lon) }
+                    ) {
                         tappedParcel = parcels.firstOrNull { it.geometry.contains(lat, lon) }
+                    } else {
+                        // Nothing else claimed the tap: ask whose ground it is.
+                        landLookupAt = lat to lon
+                        landOwner = null
+                        landLookupBusy = true
+                        scope.launch {
+                            val found = withContext(Dispatchers.IO) {
+                                landOwnership.ownerAt(lat, lon)
+                            }
+                            landOwner = found
+                            landLookupBusy = false
+                        }
                     }
                     // With no tool armed and no parcel layer, a tap does
                     // nothing. It used to drop a simulated position, which

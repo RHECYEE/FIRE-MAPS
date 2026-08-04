@@ -282,3 +282,69 @@ fun ParcelDetailDialog(
         confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } }
     )
 }
+
+/** Whose ground a tapped position is on. */
+@Composable
+fun LandOwnerDialog(
+    owner: com.rhecyee.firelinemap.land.LandOwner?,
+    busy: Boolean,
+    coordinates: String,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Land status") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(coordinates, fontWeight = FontWeight.Bold)
+                when {
+                    busy -> Text("Looking up…")
+                    owner == null -> Text(
+                        "No answer. This needs a connection; there is no offline " +
+                            "ownership package yet."
+                    )
+                    else -> {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(
+                                modifier = Modifier
+                                    .background(
+                                        Color(owner.agency.colorArgb),
+                                        RoundedCornerShape(6.dp)
+                                    )
+                                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                            ) {
+                                Text(
+                                    owner.agency.shortLabel,
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Black
+                                )
+                            }
+                            Text(
+                                owner.summary(),
+                                modifier = Modifier.padding(start = 10.dp),
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        owner.stateCode?.let {
+                            Text("State: $it", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Text(
+                            if (owner.agency.isFederal) "Federal land."
+                            else if (owner.isPrivate) "Private land."
+                            else "Not federal.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Text(
+                            "From the BLM Surface Management Agency layer, which is " +
+                                "generalised for national display. Near a boundary it can " +
+                                "name the neighbour. Not a land status record.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } }
+    )
+}
