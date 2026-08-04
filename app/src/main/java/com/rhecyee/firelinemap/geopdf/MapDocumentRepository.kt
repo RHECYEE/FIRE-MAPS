@@ -62,6 +62,19 @@ class MapDocumentRepository(private val context: Context) {
         return ImportedMap(id, name, target, document)
     }
 
+    /** Takes a file already on disk, such as one fetched from a URL. */
+    fun importFromFile(source: File, displayName: String): ImportedMap? {
+        if (!source.exists() || source.length() == 0L) return null
+        val id = "${System.currentTimeMillis()}-${displayName.hashCode().toUInt().toString(16)}"
+        val target = File(mapsDir, "$id.pdf")
+        val copied = runCatching { source.copyTo(target, overwrite = true) }.isSuccess
+        if (!copied) return null
+
+        val document = runCatching { GeoPdfReader.read(target) }
+            .getOrDefault(GeoPdfDocument(emptyList(), PdfKind.PLAIN))
+        return ImportedMap(id, displayName, target, document)
+    }
+
     fun imported(): List<ImportedMap> =
         mapsDir.listFiles { f -> f.extension.equals("pdf", ignoreCase = true) }
             ?.sortedByDescending { it.lastModified() }
