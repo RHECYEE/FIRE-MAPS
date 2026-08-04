@@ -183,7 +183,7 @@ private fun ToggleRow(
 /** Whose ground a tapped position is on. */
 @Composable
 fun LandOwnerDialog(
-    owner: com.rhecyee.firelinemap.land.LandOwner?,
+    status: com.rhecyee.firelinemap.land.LandStatus,
     busy: Boolean,
     coordinates: String,
     onDismiss: () -> Unit
@@ -192,52 +192,126 @@ fun LandOwnerDialog(
         onDismissRequest = onDismiss,
         title = { Text("Land status") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 Text(coordinates, fontWeight = FontWeight.Bold)
+
                 when {
                     busy -> Text("Looking up…")
-                    owner == null -> Text(
+                    status.isEmpty -> Text(
                         "No answer. This needs a connection; there is no offline " +
                             "ownership package yet."
                     )
                     else -> {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Column(
-                                modifier = Modifier
-                                    .background(
-                                        Color(owner.agency.colorArgb),
-                                        RoundedCornerShape(6.dp)
+                        val agency = status.agency()
+                        if (agency != null) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(
+                                    modifier = Modifier
+                                        .background(
+                                            Color(agency.colorArgb),
+                                            RoundedCornerShape(6.dp)
+                                        )
+                                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                                ) {
+                                    Text(
+                                        agency.shortLabel,
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Black
                                     )
-                                    .padding(horizontal = 10.dp, vertical = 6.dp)
-                            ) {
+                                }
                                 Text(
-                                    owner.agency.shortLabel,
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Black
+                                    status.headline().orEmpty(),
+                                    modifier = Modifier.padding(start = 10.dp),
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+
+                        // The named unit, which is the thing anyone would
+                        // actually say over a radio.
+                        status.unit?.let { unit ->
+                            HorizontalDivider()
+                            SectionHeading("UNIT")
+                            Text(unit.name, fontWeight = FontWeight.Bold)
+                            val descriptors = listOfNotNull(
+                                unit.designationLabel(),
+                                unit.localOwner?.takeIf { !it.equals(unit.name, true) },
+                                when {
+                                    unit.isFederal -> "Federal"
+                                    unit.isState -> "State"
+                                    else -> null
+                                }
+                            )
+                            if (descriptors.isNotEmpty()) {
+                                Text(
+                                    descriptors.joinToString(" · "),
+                                    style = MaterialTheme.typography.bodySmall
                                 )
                             }
                             Text(
-                                owner.summary(),
-                                modifier = Modifier.padding(start = 10.dp),
-                                fontWeight = FontWeight.Bold
+                                com.rhecyee.firelinemap.land.LandStatusParser
+                                    .PROTECTED_ATTRIBUTION,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                        owner.stateCode?.let {
-                            Text("State: $it", style = MaterialTheme.typography.bodySmall)
+
+                        status.owner?.let { owner ->
+                            HorizontalDivider()
+                            SectionHeading("SURFACE")
+                            Text(owner.summary(), fontWeight = FontWeight.Bold)
+                            Text(
+                                if (owner.agency.isFederal) "Federal land."
+                                else if (owner.isPrivate) "Private land."
+                                else "Not federal.",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Text(
+                                "BLM Surface Management Agency, generalised for national " +
+                                    "display. Near a boundary it can name the neighbour. " +
+                                    "Not a land status record.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
-                        Text(
-                            if (owner.agency.isFederal) "Federal land."
-                            else if (owner.isPrivate) "Private land."
-                            else "Not federal.",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                        Text(
-                            "From the BLM Surface Management Agency layer, which is " +
-                                "generalised for national display. Near a boundary it can " +
-                                "name the neighbour. Not a land status record.",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+
+                        // Who dispatches, and who to ring for mutual aid. The
+                        // one part of this that answers on private ground.
+                        status.county?.let { county ->
+                            HorizontalDivider()
+                            SectionHeading("JURISDICTION")
+                            Text(county.label, fontWeight = FontWeight.Bold)
+                            val extra = listOfNotNull(
+                                county.stateName,
+                                county.fips?.let { "FIPS $it" }
+                            )
+                            if (extra.isNotEmpty()) {
+                                Text(
+                                    extra.joinToString(" · "),
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                            Text(
+                                com.rhecyee.firelinemap.land.LandStatusParser
+                                    .COUNTY_ATTRIBUTION,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        if (status.unit == null && status.owner?.isPrivate != false) {
+                            HorizontalDivider()
+                            Text(
+                                "No public land record here, which usually means private " +
+                                    "ground. Deed and parcel records are not available to " +
+                                    "this app.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
             }

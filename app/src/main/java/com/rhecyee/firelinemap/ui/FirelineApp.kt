@@ -87,8 +87,8 @@ import com.rhecyee.firelinemap.medical.MedicalReport
 import com.rhecyee.firelinemap.medical.MedicalRepository
 import com.rhecyee.firelinemap.medical.RadioReadout
 import com.rhecyee.firelinemap.medical.PlaceNamer
-import com.rhecyee.firelinemap.land.LandOwner
 import com.rhecyee.firelinemap.land.LandOwnershipService
+import com.rhecyee.firelinemap.land.LandStatus
 import java.io.File
 import com.rhecyee.firelinemap.medical.ReporterProfile
 import com.rhecyee.firelinemap.location.TrackRecordingService
@@ -200,7 +200,7 @@ fun FirelineApp() {
     var importedMaps by remember { mutableStateOf<List<com.rhecyee.firelinemap.geopdf.ImportedMap>>(emptyList()) }
     var keypadOpen by remember { mutableStateOf(true) }
     val landOwnership = remember { LandOwnershipService() }
-    var landOwner by remember { mutableStateOf<LandOwner?>(null) }
+    var landStatus by remember { mutableStateOf(LandStatus()) }
     var landLookupAt by remember { mutableStateOf<Pair<Double, Double>?>(null) }
     var landLookupBusy by remember { mutableStateOf(false) }
 
@@ -824,10 +824,10 @@ fun FirelineApp() {
 
     landLookupAt?.let { (lat, lon) ->
         LandOwnerDialog(
-            owner = landOwner,
+            status = landStatus,
             busy = landLookupBusy,
             coordinates = CoordinateFormatter.format(lat, lon, coordinateFormat),
-            onDismiss = { landLookupAt = null; landOwner = null }
+            onDismiss = { landLookupAt = null; landStatus = LandStatus() }
         )
     }
 
@@ -1174,13 +1174,13 @@ fun FirelineApp() {
                     } else if (landOwnershipOn) {
                         // Nothing else claimed the tap: ask whose ground it is.
                         landLookupAt = lat to lon
-                        landOwner = null
+                        landStatus = LandStatus()
                         landLookupBusy = true
                         scope.launch {
                             val found = withContext(Dispatchers.IO) {
-                                landOwnership.ownerAt(lat, lon)
+                                landOwnership.statusAt(lat, lon)
                             }
-                            landOwner = found
+                            landStatus = found
                             landLookupBusy = false
                         }
                     }

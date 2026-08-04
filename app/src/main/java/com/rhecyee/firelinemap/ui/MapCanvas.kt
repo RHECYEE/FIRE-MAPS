@@ -654,6 +654,15 @@ fun MapCanvas(
 
 private const val OFF_SHEET_PAN_ALLOWANCE = 1.5f
 
+/**
+ * The most terrain tiles worth drawing in one frame.
+ *
+ * A screenful at a matched level is a few dozen. This is the ceiling that
+ * catches a level left too fine, and being over it coarsens the level rather
+ * than abandoning the frame.
+ */
+private const val MAX_TILES_PER_FRAME = 220L
+
 /** How long the view has to hold still before contours are re-cut. */
 private const val VIEW_SETTLE_MILLIS = 300L
 
@@ -785,21 +794,36 @@ private fun DrawScope.drawBasemap(
         centreLatitude, west, centreLatitude, east
     )
     if (spanMeters <= 0.0) return
-    val zoom = BasemapTileCache.zoomForStable(
+    var zoom = BasemapTileCache.zoomForStable(
         latitude = centreLatitude,
         targetMetersPerPixel = spanMeters / size.width,
         previous = held.value
     ).coerceIn(4, 15)
+
+    // Step coarser until the view is a sane number of tiles, rather than
+    // giving up on it.
+    //
+    // This used to return outright above the limit, drawing nothing at all --
+    // not even the coarse fallback. Zooming out reaches that state routinely:
+    // the level is held back a step so it cannot flicker, and a level held one
+    // step too fine is four times the tiles. The map went grey and stayed grey
+    // until something reset the view, which is exactly what pressing follow
+    // did. A slightly coarse picture is always better than no picture.
+    var minX = BasemapTileCache.tileX(west, zoom)
+    var maxX = BasemapTileCache.tileX(east, zoom)
+    var minY = BasemapTileCache.tileY(north, zoom)
+    var maxY = BasemapTileCache.tileY(south, zoom)
+    while (
+        zoom > 0 &&
+        (maxX - minX + 1).toLong() * (maxY - minY + 1).toLong() > MAX_TILES_PER_FRAME
+    ) {
+        zoom--
+        minX = BasemapTileCache.tileX(west, zoom)
+        maxX = BasemapTileCache.tileX(east, zoom)
+        minY = BasemapTileCache.tileY(north, zoom)
+        maxY = BasemapTileCache.tileY(south, zoom)
+    }
     held.value = zoom
-
-    val minX = BasemapTileCache.tileX(west, zoom)
-    val maxX = BasemapTileCache.tileX(east, zoom)
-    val minY = BasemapTileCache.tileY(north, zoom)
-    val maxY = BasemapTileCache.tileY(south, zoom)
-
-    // A viewport this wide means something is wrong with the transform;
-    // fetching thousands of tiles would be worse than drawing nothing.
-    if ((maxX - minX + 1).toLong() * (maxY - minY + 1).toLong() > 200) return
 
     for (x in minX..maxX) {
         for (y in minY..maxY) {
