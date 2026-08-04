@@ -22,6 +22,11 @@ android {
 
     buildFeatures { compose = true }
 
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
     }
@@ -44,4 +49,10 @@ dependencies {
     implementation("com.google.android.gms:play-services-location:21.3.0")
 
     testImplementation("junit:junit:4.13.2")
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
 }
