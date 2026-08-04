@@ -107,9 +107,6 @@ fun MapCanvas(
     var draggingMarkerId by remember { mutableStateOf<String?>(null) }
     var dragPoint by remember { mutableStateOf(Offset.Zero) }
 
-    /** True while a finger is down, which suspends terrain fetching. */
-    var gestureActive by remember { mutableStateOf(false) }
-
     /**
      * Whether the map keeps itself on the operator.
      *
@@ -308,6 +305,52 @@ fun MapCanvas(
             return null
         }
 
+        /**
+         * The ground currently on screen, and the tile level it amounts to.
+         *
+         * Computed from the same numbers the draw uses, but outside it: the
+         * contour layer needs to know what to cut, and it cannot be told from
+         * inside a draw pass without invalidating the frame being drawn.
+         */
+        fun viewBounds(): Pair<DoubleArray, Int>? {
+            if (viewport.width <= 0 || viewport.height <= 0) return null
+            val (width, height) = contentSize(scale)
+            if (width <= 0f || height <= 0f) return null
+            val at = origin(scale)
+
+            fun geo(x: Float, y: Float) =
+                projection.toGeo((x - at.x) / width, (y - at.y) / height)
+
+            val topLeft = geo(0f, 0f) ?: return null
+            val bottomRight = geo(viewport.width.toFloat(), viewport.height.toFloat())
+                ?: return null
+
+            val north = maxOf(topLeft.first, bottomRight.first)
+            val south = minOf(topLeft.first, bottomRight.first)
+            val west = minOf(topLeft.second, bottomRight.second)
+            val east = maxOf(topLeft.second, bottomRight.second)
+            if (north <= south || east <= west) return null
+
+            val centre = (north + south) / 2.0
+            val spanMeters = com.rhecyee.firelinemap.map.MapCoverage.distanceMeters(
+                centre, west, centre, east
+            )
+            if (spanMeters <= 0.0) return null
+            val zoom = BasemapTileCache.zoomFor(centre, spanMeters / viewport.width)
+            return doubleArrayOf(north, south, west, east) to zoom.coerceIn(4, 18)
+        }
+
+        // Reported once the view settles rather than while it moves. Cutting
+        // contours mid-pan would be work thrown away several times a second,
+        // and the settle is short enough not to be noticed as a wait.
+        val reportBounds by rememberUpdatedState(onViewBounds)
+        androidx.compose.runtime.LaunchedEffect(scale, offset, viewport, projection) {
+            if (reportBounds == null) return@LaunchedEffect
+            kotlinx.coroutines.delay(VIEW_SETTLE_MILLIS)
+            val (box, zoom) = viewBounds() ?: return@LaunchedEffect
+            reportBounds?.invoke(box[0], box[1], box[2], box[3], zoom)
+        }
+
         /** Puts the current position in the middle of the view. */
         fun centreOnPosition(): Boolean {
             if (latitude == null || longitude == null) return false
@@ -376,50 +419,42 @@ fun MapCanvas(
 
                         var travelled = 0f
                         var pointers = 1
-                        gestureActive = true
                         val canvasCentre = Offset(size.width / 2f, size.height / 2f)
-                        // Guarded: a cancelled gesture that left this set would
-                        // stop terrain being fetched for the rest of the
-                        // session, and the map would quietly stop filling in.
-                        try {
-                            do {
-                                val event = awaitPointerEvent()
-                                pointers = maxOf(pointers, event.changes.count { it.pressed })
-                                val zoomChange = event.calculateZoom()
-                                val panChange = event.calculatePan()
-                                val centroid = event.calculateCentroid(useCurrent = false)
-                                travelled += panChange.getDistance() + abs(1f - zoomChange) * 200f
+                        do {
+                            val event = awaitPointerEvent()
+                            pointers = maxOf(pointers, event.changes.count { it.pressed })
+                            val zoomChange = event.calculateZoom()
+                            val panChange = event.calculatePan()
+                            val centroid = event.calculateCentroid(useCurrent = false)
+                            travelled += panChange.getDistance() + abs(1f - zoomChange) * 200f
 
-                                if (travelled > viewConfiguration.touchSlop) {
-                                    // Moving the map by hand is a statement
-                                    // about where to look, so it ends follow.
-                                    following = false
-                                    val next = (scale * zoomChange).coerceIn(1f, 12f)
-                                    // The ratio actually applied, which is not the
-                                    // one asked for once the limits are reached.
-                                    // Using the requested ratio there slides the
-                                    // sheet sideways while the zoom sits pinned.
-                                    val applied = if (scale > 0f) next / scale else 1f
-                                    scale = next
+                            if (travelled > viewConfiguration.touchSlop) {
+                                // Moving the map by hand is a statement
+                                // about where to look, so it ends follow.
+                                following = false
+                                val next = (scale * zoomChange).coerceIn(1f, projection.maxScale)
+                                // The ratio actually applied, which is not the
+                                // one asked for once the limits are reached.
+                                // Using the requested ratio there slides the
+                                // sheet sideways while the zoom sits pinned.
+                                val applied = if (scale > 0f) next / scale else 1f
+                                scale = next
 
-                                    // Zoom about the fingers, not about the middle
-                                    // of the screen. The sheet is drawn from the
-                                    // centre outward, so growing it moves every
-                                    // point away from the centre in proportion --
-                                    // and the pan has to grow with it or the ground
-                                    // under the pinch shoots off across the view.
-                                    // That was the map appearing to teleport.
-                                    val focus = centroid.takeIf { pointers > 1 } ?: canvasCentre
-                                    val zoomed = offset * applied +
-                                        (focus - canvasCentre) * (1f - applied)
+                                // Zoom about the fingers, not about the middle
+                                // of the screen. The sheet is drawn from the
+                                // centre outward, so growing it moves every
+                                // point away from the centre in proportion --
+                                // and the pan has to grow with it or the ground
+                                // under the pinch shoots off across the view.
+                                // That was the map appearing to teleport.
+                                val focus = centroid.takeIf { pointers > 1 } ?: canvasCentre
+                                val zoomed = offset * applied +
+                                    (focus - canvasCentre) * (1f - applied)
 
-                                    offset = clamp(zoomed + panChange, next, from = zoomed)
-                                    event.changes.forEach { if (it.positionChanged()) it.consume() }
-                                }
-                            } while (event.changes.any { it.pressed })
-                        } finally {
-                            gestureActive = false
-                        }
+                                offset = clamp(zoomed + panChange, next, from = zoomed)
+                                event.changes.forEach { if (it.positionChanged()) it.consume() }
+                            }
+                        } while (event.changes.any { it.pressed })
 
                         if (travelled <= viewConfiguration.touchSlop && pointers == 1) {
                             if (trackHit != null) {
@@ -456,8 +491,7 @@ fun MapCanvas(
                     originY = originY,
                     drawWidth = drawWidth,
                     drawHeight = drawHeight,
-                    held = tileZoom,
-                    fetch = !gestureActive
+                    held = tileZoom
                 )
             }
 
@@ -574,11 +608,7 @@ fun MapCanvas(
                 // rather than drawing nothing at all.
                 drawOffSheetArrow(
                     target = target,
-                    sheetCentre = Offset(originX + drawWidth / 2f, originY + drawHeight / 2f),
-                    left = originX,
-                    top = originY,
-                    right = originX + drawWidth,
-                    bottom = originY + drawHeight
+                    sheetCentre = Offset(originX + drawWidth / 2f, originY + drawHeight / 2f)
                 )
             }
         }
@@ -733,8 +763,7 @@ private fun DrawScope.drawBasemap(
     originY: Float,
     drawWidth: Float,
     drawHeight: Float,
-    held: TileZoomHolder,
-    fetch: Boolean
+    held: TileZoomHolder
 ) {
     if (drawWidth <= 0f || drawHeight <= 0f || size.width <= 0f) return
 
@@ -774,7 +803,7 @@ private fun DrawScope.drawBasemap(
 
     for (x in minX..maxX) {
         for (y in minY..maxY) {
-            val sample = basemap.sample(zoom, x, y, fetch = fetch) ?: continue
+            val sample = basemap.sample(zoom, x, y) ?: continue
             val tileNorth = BasemapTileCache.tileNorth(y, zoom)
             val tileSouth = BasemapTileCache.tileNorth(y + 1, zoom)
             val tileWest = BasemapTileCache.tileWest(x, zoom)
@@ -964,18 +993,31 @@ private fun DrawScope.drawPositionDot(center: Offset, simulated: Boolean) {
  */
 private fun DrawScope.drawOffSheetArrow(
     target: Offset,
-    sheetCentre: Offset,
-    left: Float,
-    top: Float,
-    right: Float,
-    bottom: Float
+    sheetCentre: Offset
 ) {
+    // Pinned to the edge of the screen, not the edge of the content.
+    //
+    // It used to be clamped to the content rectangle, which is the same thing
+    // only while that rectangle is on screen. Zoomed in and panned away it is
+    // not, so the marker saying where the operator is got drawn somewhere
+    // nobody could see it -- it simply vanished. This is the one thing on the
+    // map that must never do that.
+    val margin = 26f
     val anchor = Offset(
-        target.x.coerceIn(left + 18f, right - 18f),
-        target.y.coerceIn(top + 18f, bottom - 18f)
+        target.x.coerceIn(margin, (size.width - margin).coerceAtLeast(margin)),
+        target.y.coerceIn(margin, (size.height - margin).coerceAtLeast(margin))
     )
+    // Point from the middle of the screen toward the position, for the same
+    // reason: the content's centre may be nowhere in view.
+    val from = if (
+        sheetCentre.x in 0f..size.width && sheetCentre.y in 0f..size.height
+    ) {
+        sheetCentre
+    } else {
+        Offset(size.width / 2f, size.height / 2f)
+    }
     val angle = Math.toDegrees(
-        atan2((target.y - sheetCentre.y).toDouble(), (target.x - sheetCentre.x).toDouble())
+        atan2((target.y - from.y).toDouble(), (target.x - from.x).toDouble())
     ).toFloat()
 
     drawCircle(Color.White, radius = 17f, center = anchor)

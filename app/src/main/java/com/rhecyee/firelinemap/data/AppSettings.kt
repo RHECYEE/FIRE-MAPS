@@ -169,15 +169,17 @@ class AppSettings(context: Context) {
      * Whether the ground currently on screen may be fetched.
      *
      * Separate from [mayAutoDownload], which asks whether to keep a radius of
-     * ground the operator is not looking at. This is a bounded fetch for what
-     * is in front of them, so it only has to answer to the metered-connection
-     * preference.
+     * ground the operator is not looking at. This is what is on the screen
+     * right now: a few dozen tiles, the same handful the terrain picture is
+     * already fetching unconditionally.
+     *
+     * It deliberately does not consult the Wi-Fi-only preference. That setting
+     * exists to stop the app spending a hotspot allowance on ground nobody
+     * asked for, and it was quietly stopping contours from ever appearing on a
+     * cellular connection while the basemap picture arrived beside them --
+     * which reads as the contour layer being broken.
      */
-    fun mayFetchForView(): Boolean {
-        val (connected, unmetered) = connectionState()
-        if (!connected) return false
-        return unmetered || !autoDownloadWifiOnly
-    }
+    fun mayFetchForView(): Boolean = connectionState().first
 
     /** Whether terrain may be fetched right now. */
     fun mayAutoDownload(): Boolean {

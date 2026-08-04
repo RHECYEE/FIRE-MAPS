@@ -151,6 +151,31 @@ class BasemapTileCache(context: Context) {
         return null
     }
 
+    /**
+     * Puts a tile on disk without decoding it.
+     *
+     * The radius preload walks thousands of tiles across several levels. Sent
+     * through [tile] they would each be decoded and inserted into the memory
+     * cache, evicting everything the operator is actually looking at -- the
+     * map goes grey while ground nobody is looking at streams past behind it.
+     * The preload only ever wanted the files.
+     */
+    suspend fun prefetch(zoom: Int, x: Int, y: Int): Boolean {
+        val file = File(root, "$zoom/$x/$y.png")
+        if (file.length() > 0L) return true
+        val key = key(zoom, x, y)
+        synchronized(inFlight) {
+            val failed = failedAt[key]
+            if (failed != null && now() - failed < RETRY_AFTER_MILLIS) return false
+        }
+        limiter.withPermit { download(zoom, x, y, file) }
+        val ok = file.length() > 0L
+        synchronized(inFlight) {
+            if (ok) failedAt.remove(key) else failedAt[key] = now()
+        }
+        return ok
+    }
+
     /** Overridable so the back-off can be tested without waiting a minute. */
     internal var now: () -> Long = { System.currentTimeMillis() }
 

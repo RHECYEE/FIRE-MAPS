@@ -615,7 +615,10 @@ fun FirelineApp() {
                 for (x in minX..maxX) {
                     for (y in minY..maxY) {
                         if (requested > 4_000) break
-                        basemap.tile(zoom, x, y)
+                        // Straight to disk. Decoding these would evict the
+                        // tiles on screen and leave the map grey while ground
+                        // nobody is looking at streamed past behind it.
+                        basemap.prefetch(zoom, x, y)
                         requested++
                     }
                 }
