@@ -17,10 +17,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         BasemapRegionEntity::class,
         MedicalReportEntity::class,
         MedicalReportUpdateEntity::class,
-        LayerPackageEntity::class,
         OfflineRegionEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = true
 )
 abstract class FirelineDatabase : RoomDatabase() {
@@ -181,6 +180,24 @@ abstract class FirelineDatabase : RoomDatabase() {
          * SQLite has no ADD COLUMN IF NOT EXISTS, and a migration must not
          * take the app down for having already been applied.
          */
+        /**
+         * Drops the parcel layer table.
+         *
+         * The layer is gone: no free source of parcel geometry exists, and a
+         * switch that can never be turned on is worse than no switch. The
+         * table goes with it rather than being left behind, because a schema
+         * carrying tables nothing writes is a schema nobody can read.
+         *
+         * Nothing field-collected lives here -- a layer package was a pointer
+         * to an imported file, not a record of anything anyone observed -- so
+         * this is the one table that can be dropped without losing work.
+         */
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("DROP TABLE IF EXISTS layer_packages")
+            }
+        }
+
         private fun addColumnIfMissing(
             db: SupportSQLiteDatabase,
             table: String,
@@ -203,7 +220,9 @@ abstract class FirelineDatabase : RoomDatabase() {
                 context.applicationContext,
                 FirelineDatabase::class.java,
                 "fireline-map.db"
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+            ).addMigrations(
+                MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6
+            )
                 .build()
     }
 }

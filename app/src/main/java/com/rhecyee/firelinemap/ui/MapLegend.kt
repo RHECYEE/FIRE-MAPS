@@ -39,7 +39,6 @@ private data class LegendEntry(
 fun MapLegend(
     hasTrack: Boolean,
     hasSavedTracks: Boolean,
-    hasParcels: Boolean,
     contourInterval: String?,
     hasDropPoints: Boolean,
     hasSearch: Boolean,
@@ -60,7 +59,6 @@ fun MapLegend(
         add(LegendEntry(Color(0xFFFFC400), "Measurement"))
         if (hasSearch) add(LegendEntry(Color(0xFF40C4FF), "Search area"))
         if (hasDropPoints) add(LegendEntry(Color(0xFF00E5FF), "Drop point read off sheet", true))
-        if (hasParcels) add(LegendEntry(Color(0xFF8D6E63), "Property boundary"))
         add(LegendEntry(Color(0xFFD50000), "Medical", round = true))
         add(LegendEntry(Color(0xFFB3261E), "Off this sheet"))
     }

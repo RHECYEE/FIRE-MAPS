@@ -20,8 +20,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CenterFocusStrong
+import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -85,8 +87,6 @@ fun MapCanvas(
     trackPoints: List<Pair<Double, Double>> = emptyList(),
     savedTracks: List<SavedTrack> = emptyList(),
     searchRegion: SearchRegion? = null,
-    parcels: List<com.rhecyee.firelinemap.parcels.Parcel> = emptyList(),
-    parcelOpacity: Float = 0.65f,
     contours: com.rhecyee.firelinemap.terrain.ContourSet? = null,
     onViewBounds: ((north: Double, south: Double, west: Double, east: Double, zoom: Int) -> Unit)? = null,
     centreOn: Pair<Double, Double>? = null,
@@ -106,6 +106,18 @@ fun MapCanvas(
 
     /** True while a finger is down, which suspends terrain fetching. */
     var gestureActive by remember { mutableStateOf(false) }
+
+    /**
+     * Whether the map keeps itself on the operator.
+     *
+     * A mode rather than a one-shot press: on a moving vehicle the useful
+     * thing is for the map to keep up, and pressing a button every few seconds
+     * to make it do so is not something anyone can manage while driving a
+     * line. Panning or pinching turns it off, because looking ahead up a road
+     * is the other thing people need, and a map that hauls itself back under
+     * the finger cannot be read at all.
+     */
+    var following by remember(map?.id) { mutableStateOf(false) }
 
     // The tile level last drawn at, so it can be held across a pinch. A plain
     // holder rather than snapshot state on purpose: this is written during the
@@ -147,6 +159,17 @@ fun MapCanvas(
         }
 
         val image = remember(bitmap) { bitmap.asImageBitmap() }
+
+        // Projected when the lines change, not when the view does. Panning and
+        // zooming only move an origin and a scale after this.
+        val projectedContours = remember(contours, map.id, pageWidthPoints, pageHeightPoints) {
+            val frame = map.frame
+            if (contours == null || contours.isEmpty || frame == null) {
+                emptyList()
+            } else {
+                projectContours(contours, frame, pageWidthPoints, pageHeightPoints)
+            }
+        }
 
         // An external request to bring a position into view, used by the
         // search so a found region can be looked at without hunting for it.
@@ -352,6 +375,33 @@ fun MapCanvas(
             return geo.latitude to geo.longitude
         }
 
+        /** Puts the current position in the middle of the view. */
+        fun centreOnPosition(): Boolean {
+            val frame = map.frame ?: return false
+            if (latitude == null || longitude == null) return false
+            if (pageWidthPoints <= 0 || pageHeightPoints <= 0) return false
+            val page = frame.geoToPage(latitude, longitude) ?: return false
+            val fx = (page.first / pageWidthPoints).toFloat()
+            val fy = 1f - (page.second / pageHeightPoints).toFloat()
+            // Zoomed in enough that centring can take effect: at a
+            // fit-to-view scale the pan clamp pins the sheet in place.
+            val next = maxOf(scale, 4f)
+            scale = next
+            val width = image.width * fitScale() * next
+            val height = image.height * fitScale() * next
+            // Set directly rather than through the pan clamp: when the
+            // position is off the sheet the clamp would stop short of it,
+            // which is precisely the case this control exists for.
+            offset = Offset(width * (0.5f - fx), height * (0.5f - fy))
+            return true
+        }
+
+        // While following, every fix re-centres. Keyed on the position so it
+        // happens when the operator moves rather than on a timer.
+        androidx.compose.runtime.LaunchedEffect(following, latitude, longitude, viewport) {
+            if (following) centreOnPosition()
+        }
+
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
@@ -413,6 +463,9 @@ fun MapCanvas(
                                 travelled += panChange.getDistance() + abs(1f - zoomChange) * 200f
 
                                 if (travelled > viewConfiguration.touchSlop) {
+                                    // Moving the map by hand is a statement
+                                    // about where to look, so it ends follow.
+                                    following = false
                                     val next = (scale * zoomChange).coerceIn(1f, 12f)
                                     // The ratio actually applied, which is not the
                                     // one asked for once the limits are reached.
@@ -487,36 +540,13 @@ fun MapCanvas(
             // Contours sit directly on the terrain and under everything else.
             // They are ground, not incident information: a line of a crew's
             // making must never be mistakable for a line of the earth's.
-            if (contours != null && !contours.isEmpty && frame != null &&
-                pageWidthPoints > 0 && pageHeightPoints > 0
-            ) {
+            if (projectedContours.isNotEmpty()) {
                 drawContours(
-                    set = contours,
-                    frame = frame,
-                    pageWidthPoints = pageWidthPoints,
-                    pageHeightPoints = pageHeightPoints,
+                    lines = projectedContours,
                     originX = originX,
                     originY = originY,
                     drawWidth = drawWidth,
                     drawHeight = drawHeight
-                )
-            }
-
-            // Parcels sit above terrain and below everything the incident owns.
-            if (parcels.isNotEmpty() && frame != null &&
-                pageWidthPoints > 0 && pageHeightPoints > 0
-            ) {
-                drawParcels(
-                    parcels = parcels,
-                    frame = frame,
-                    pageWidthPoints = pageWidthPoints,
-                    pageHeightPoints = pageHeightPoints,
-                    originX = originX,
-                    originY = originY,
-                    drawWidth = drawWidth,
-                    drawHeight = drawHeight,
-                    opacity = parcelOpacity,
-                    showLabels = scale >= 4f
                 )
             }
 
@@ -670,35 +700,29 @@ fun MapCanvas(
         ) {
             FilledTonalIconButton(
                 onClick = {
-                    // Centre the sheet on the current position, zooming in
-                    // enough that centring can actually take effect: at a
-                    // fit-to-view scale the pan clamp pins the sheet in place.
-                    val frame = map.frame
-                    if (frame != null && latitude != null && longitude != null &&
-                        pageWidthPoints > 0 && pageHeightPoints > 0
-                    ) {
-                        val page = frame.geoToPage(latitude, longitude)
-                        if (page != null) {
-                            val fx = (page.first / pageWidthPoints).toFloat()
-                            val fy = 1f - (page.second / pageHeightPoints).toFloat()
-                            val next = maxOf(scale, 4f)
-                            scale = next
-                            val drawWidth = image.width * fitScale() * next
-                            val drawHeight = image.height * fitScale() * next
-                            // Set directly rather than through the pan clamp:
-                            // when the position is off the sheet the clamp
-                            // would stop short of it, which is precisely the
-                            // case this control exists for.
-                            offset = Offset(
-                                drawWidth * (0.5f - fx),
-                                drawHeight * (0.5f - fy)
-                            )
-                        }
-                    }
+                    following = !following
+                    // Act at once rather than waiting for the next fix, which
+                    // at a slow update rate is half a minute away.
+                    if (following) centreOnPosition()
                 },
-                enabled = latitude != null && longitude != null
+                enabled = latitude != null && longitude != null,
+                colors = if (following) {
+                    IconButtonDefaults.filledTonalIconButtonColors(
+                        containerColor = Color(0xFF1565C0),
+                        contentColor = Color.White
+                    )
+                } else {
+                    IconButtonDefaults.filledTonalIconButtonColors()
+                }
             ) {
-                Icon(Icons.Default.MyLocation, contentDescription = "Centre on my position")
+                Icon(
+                    if (following) Icons.Default.GpsFixed else Icons.Default.MyLocation,
+                    contentDescription = if (following) {
+                        "Following your position — tap to stop"
+                    } else {
+                        "Follow your position"
+                    }
+                )
             }
             FilledTonalIconButton(onClick = { scale = 1f; offset = Offset.Zero }) {
                 Icon(Icons.Default.CenterFocusStrong, contentDescription = "Fit sheet to view")
@@ -746,66 +770,6 @@ private fun distanceToSegment(point: Offset, start: Offset, end: Offset): Float 
     return (point - Offset(start.x + t * dx, start.y + t * dy)).getDistance()
 }
 
-/**
- * Draws parcel boundaries.
- *
- * Lines only, no fill: a filled parcel layer buries the map underneath it, and
- * what is wanted is where the line runs. Numbers appear only once zoomed
- * enough to read them.
- */
-private fun DrawScope.drawParcels(
-    parcels: List<com.rhecyee.firelinemap.parcels.Parcel>,
-    frame: com.rhecyee.firelinemap.geopdf.MapFrame,
-    pageWidthPoints: Int,
-    pageHeightPoints: Int,
-    originX: Float,
-    originY: Float,
-    drawWidth: Float,
-    drawHeight: Float,
-    opacity: Float,
-    showLabels: Boolean
-) {
-    val colour = Color(0xFF8D6E63)
-    for (parcel in parcels) {
-        for (polygon in parcel.geometry.polygons) {
-            for (ring in polygon) {
-                if (ring.size < 3) continue
-                val path = Path()
-                var started = false
-                for ((longitude, latitude) in ring) {
-                    val page = frame.geoToPage(latitude, longitude) ?: continue
-                    val x = originX + (page.first / pageWidthPoints).toFloat() * drawWidth
-                    val y = originY +
-                        (1f - (page.second / pageHeightPoints).toFloat()) * drawHeight
-                    if (started) path.lineTo(x, y) else { path.moveTo(x, y); started = true }
-                }
-                if (!started) continue
-                path.close()
-                drawPath(path, colour, alpha = opacity, style = Stroke(width = 2f))
-            }
-        }
-
-        if (!showLabels) continue
-        val label = parcel.shortLabel ?: continue
-        val centreLatitude = (parcel.geometry.minLatitude + parcel.geometry.maxLatitude) / 2
-        val centreLongitude = (parcel.geometry.minLongitude + parcel.geometry.maxLongitude) / 2
-        val page = frame.geoToPage(centreLatitude, centreLongitude) ?: continue
-        val x = originX + (page.first / pageWidthPoints).toFloat() * drawWidth
-        val y = originY + (1f - (page.second / pageHeightPoints).toFloat()) * drawHeight
-        drawContext.canvas.nativeCanvas.drawText(
-            label,
-            x,
-            y,
-            android.graphics.Paint().apply {
-                color = android.graphics.Color.rgb(93, 64, 55)
-                textAlign = android.graphics.Paint.Align.CENTER
-                textSize = 20f
-                isAntiAlias = true
-                setShadowLayer(4f, 0f, 0f, android.graphics.Color.WHITE)
-            }
-        )
-    }
-}
 
 /** Draws the recorded travel line. */
 private fun DrawScope.drawTrack(
@@ -980,6 +944,108 @@ private fun DrawScope.drawBasemap(
 }
 
 /**
+ * A contour already turned into page fractions.
+ *
+ * Projecting geographic points is expensive -- a Transverse Mercator forward
+ * for every point -- and the answer does not change when the map is panned or
+ * zoomed, only when the lines themselves do. Doing it per frame made the
+ * interface stop responding while zooming, which is what it looked like from
+ * the outside when the app died. Held as flat float arrays because a screenful
+ * of contours is tens of thousands of points and boxed pairs of them are more
+ * garbage than the frame budget can carry.
+ */
+internal class ProjectedContour(
+    val elevationFeet: Int,
+    val isIndex: Boolean,
+    val xs: FloatArray,
+    val ys: FloatArray,
+    /** Where the label goes, in the same fractions, and which way it lies. */
+    val labelX: Float,
+    val labelY: Float,
+    val labelDegrees: Float,
+    val hasLabel: Boolean
+)
+
+/**
+ * Turns a contour set into page fractions, once.
+ *
+ * A ceiling on total points is applied because a pathological elevation grid
+ * -- a corrupt tile, a nodata band read as terrain -- can ask for far more
+ * line than any screen can show, and drawing it would take the app down rather
+ * than merely look wrong.
+ */
+internal fun projectContours(
+    set: com.rhecyee.firelinemap.terrain.ContourSet,
+    frame: com.rhecyee.firelinemap.geopdf.MapFrame,
+    pageWidthPoints: Int,
+    pageHeightPoints: Int,
+    maxPoints: Int = MAX_CONTOUR_POINTS
+): List<ProjectedContour> {
+    if (pageWidthPoints <= 0 || pageHeightPoints <= 0) return emptyList()
+    val width = pageWidthPoints.toDouble()
+    val height = pageHeightPoints.toDouble()
+    val out = ArrayList<ProjectedContour>(set.lines.size)
+    var budget = maxPoints
+
+    // Index lines first, so a set too large to draw whole keeps the lines that
+    // carry the numbers rather than whichever happened to be traced first.
+    for (line in set.lines.sortedByDescending { it.isIndex }) {
+        if (budget <= 0) break
+        val count = minOf(line.points.size, budget)
+        if (count < 2) continue
+        val xs = FloatArray(count)
+        val ys = FloatArray(count)
+        var kept = 0
+        for (index in 0 until count) {
+            val (latitude, longitude) = line.points[index]
+            val page = frame.geoToPage(latitude, longitude) ?: continue
+            val x = (page.first / width).toFloat()
+            val y = 1f - (page.second / height).toFloat()
+            if (!x.isFinite() || !y.isFinite()) continue
+            xs[kept] = x
+            ys[kept] = y
+            kept++
+        }
+        budget -= count
+        if (kept < 2) continue
+
+        var labelX = 0f
+        var labelY = 0f
+        var labelDegrees = 0f
+        var hasLabel = false
+        if (line.isIndex && kept >= 3) {
+            val middle = kept / 2
+            labelX = xs[middle]
+            labelY = ys[middle]
+            val before = middle - 1
+            val after = (middle + 1).coerceAtMost(kept - 1)
+            // Screen space, so the angle is the one the reader sees rather
+            // than the one the ground makes.
+            var degrees = Math.toDegrees(
+                atan2((ys[after] - ys[before]).toDouble(), (xs[after] - xs[before]).toDouble())
+            ).toFloat()
+            // Never upside down: a number read the wrong way up is misread.
+            if (degrees > 90f) degrees -= 180f
+            if (degrees < -90f) degrees += 180f
+            labelDegrees = degrees
+            hasLabel = true
+        }
+
+        out += ProjectedContour(
+            elevationFeet = line.elevationFeet,
+            isIndex = line.isIndex,
+            xs = if (kept == xs.size) xs else xs.copyOf(kept),
+            ys = if (kept == ys.size) ys else ys.copyOf(kept),
+            labelX = labelX,
+            labelY = labelY,
+            labelDegrees = labelDegrees,
+            hasLabel = hasLabel
+        )
+    }
+    return out
+}
+
+/**
  * Contour lines, cut to the zoom and labelled where they are index lines.
  *
  * Drawn in the brown of a printed quadrangle rather than in any of the colours
@@ -991,45 +1057,32 @@ private fun DrawScope.drawBasemap(
  * index line does the same on ground that folds back on itself.
  */
 private fun DrawScope.drawContours(
-    set: com.rhecyee.firelinemap.terrain.ContourSet,
-    frame: com.rhecyee.firelinemap.geopdf.MapFrame,
-    pageWidthPoints: Int,
-    pageHeightPoints: Int,
+    lines: List<ProjectedContour>,
     originX: Float,
     originY: Float,
     drawWidth: Float,
     drawHeight: Float
 ) {
-    fun project(latitude: Double, longitude: Double): Offset? {
-        val page = frame.geoToPage(latitude, longitude) ?: return null
-        return Offset(
-            originX + (page.first / pageWidthPoints).toFloat() * drawWidth,
-            originY + (1f - (page.second / pageHeightPoints).toFloat()) * drawHeight
-        )
-    }
-
     // Room off screen so a line entering the view is not clipped at its first
     // point, which would leave a visible notch at the edge.
     val margin = 120f
     val labelled = mutableSetOf<Int>()
+    val path = Path()
 
-    for (line in set.lines) {
-        val path = Path()
-        var started = false
+    for (line in lines) {
+        path.reset()
         var onScreen = false
-        for ((latitude, longitude) in line.points) {
-            val point = project(latitude, longitude) ?: continue
-            if (point.x > -margin && point.x < size.width + margin &&
-                point.y > -margin && point.y < size.height + margin
+        for (index in line.xs.indices) {
+            val x = originX + line.xs[index] * drawWidth
+            val y = originY + line.ys[index] * drawHeight
+            if (!onScreen && x > -margin && x < size.width + margin &&
+                y > -margin && y < size.height + margin
             ) {
                 onScreen = true
             }
-            if (started) path.lineTo(point.x, point.y) else {
-                path.moveTo(point.x, point.y)
-                started = true
-            }
+            if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
         }
-        if (!started || !onScreen) continue
+        if (!onScreen) continue
 
         drawPath(
             path = path,
@@ -1038,20 +1091,17 @@ private fun DrawScope.drawContours(
             alpha = if (line.isIndex) 0.95f else 0.75f
         )
 
-        if (!line.isIndex || !labelled.add(line.elevationFeet)) continue
-        val anchor = line.labelAnchor() ?: continue
-        val at = project(anchor.first, anchor.second) ?: continue
+        if (!line.hasLabel || !labelled.add(line.elevationFeet)) continue
+        val at = Offset(
+            originX + line.labelX * drawWidth,
+            originY + line.labelY * drawHeight
+        )
         if (at.x < 40f || at.x > size.width - 40f || at.y < 30f || at.y > size.height - 30f) {
+            labelled.remove(line.elevationFeet)
             continue
         }
 
-        // Laid along the contour the way it is on a paper quad, and never
-        // upside down: a number read the wrong way up is a number misread.
-        var degrees = -anchor.third.toFloat()
-        if (degrees > 90f) degrees -= 180f
-        if (degrees < -90f) degrees += 180f
-
-        rotate(degrees = degrees, pivot = at) {
+        rotate(degrees = line.labelDegrees, pivot = at) {
             drawContext.canvas.nativeCanvas.apply {
                 val paint = android.graphics.Paint().apply {
                     textAlign = android.graphics.Paint.Align.CENTER
@@ -1073,6 +1123,9 @@ private fun DrawScope.drawContours(
         }
     }
 }
+
+/** More line than any screen can show; past this something is wrong upstream. */
+private const val MAX_CONTOUR_POINTS = 120_000
 
 private val CONTOUR = Color(0xFF9A6634)
 private val INDEX_CONTOUR = Color(0xFF6E3F14)

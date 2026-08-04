@@ -93,15 +93,6 @@ interface FirelineDao {
     suspend fun deleteOfflineRegion(id: String)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsertLayerPackage(layer: LayerPackageEntity)
-
-    @Query("SELECT * FROM layer_packages ORDER BY kind, name")
-    fun observeLayerPackages(): Flow<List<LayerPackageEntity>>
-
-    @Query("DELETE FROM layer_packages WHERE id = :id")
-    suspend fun deleteLayerPackage(id: String)
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertBasemapRegion(region: BasemapRegionEntity)
 
     @Query("SELECT * FROM basemap_regions ORDER BY downloadedAt DESC")

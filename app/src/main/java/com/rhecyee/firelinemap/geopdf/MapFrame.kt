@@ -67,6 +67,18 @@ data class MapFrame(
     }
 
     /**
+     * The page-to-projected transform, inverted once.
+     *
+     * This used to be inverted inside [geoToPage], allocating a fresh matrix
+     * for every point projected. Measured, that is roughly half again to three
+     * times the cost of a projection, and it does not change once the frame is
+     * built, so there was never a reason to pay it. The larger cost is the
+     * projection itself, which is why callers with many points to place are
+     * expected to do it once rather than on every frame.
+     */
+    private val inverseAffine: Affine? by lazy { affine?.invert() }
+
+    /**
      * Page position of a geographic point, or null when it falls outside this
      * frame's coverage.
      */
@@ -75,7 +87,7 @@ data class MapFrame(
         val point = if (affine != null) {
             val projection = projection ?: return null
             val (easting, northing) = projection.forward(latitude, longitude)
-            affine.invert()?.apply(easting, northing) ?: return null
+            inverseAffine?.apply(easting, northing) ?: return null
         } else {
             bilinearGeoToPage(latitude, longitude) ?: return null
         }

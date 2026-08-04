@@ -192,44 +192,6 @@ data class OfflineRegionEntity(
 )
 
 /**
- * An optional map layer held on local storage.
- *
- * Parcels and topography are the same shape of thing: a licensed or bulky
- * package, downloaded or imported deliberately, belonging to a shared library
- * rather than to one incident. Two districts working the same county should
- * not each hold a copy, so these carry no foreign key to an incident and are
- * attached by reference.
- *
- * Nothing here loads unless it is switched on.
- */
-@Entity(tableName = "layer_packages")
-data class LayerPackageEntity(
-    @PrimaryKey val id: String,
-    /** PARCELS or TOPOGRAPHIC. */
-    val kind: String,
-    val name: String,
-    val countyFips: String? = null,
-    val stateCode: String? = null,
-    val filePath: String,
-    /** GEOPACKAGE or MBTILES. */
-    val format: String,
-    val source: String? = null,
-    val sourceUpdatedAt: Long? = null,
-    val importedAt: Long,
-    val sizeBytes: Long = 0,
-    val enabled: Boolean = false,
-    val opacity: Float = 0.65f,
-    /**
-     * Owner names are off unless switched on deliberately.
-     *
-     * Boundaries and parcel numbers are operationally useful; names, mailing
-     * addresses and values carry a privacy and licensing weight that should
-     * not arrive by default.
-     */
-    val showOwner: Boolean = false
-)
-
-/**
  * A preloaded terrain basemap region held on local storage.
  *
  * Intentionally has no foreign key to an incident. Terrain is shared

@@ -65,6 +65,15 @@ class DemTileCache(context: Context) {
         if (file.length() <= 0L) return null
         val bitmap = runCatching { BitmapFactory.decodeFile(file.absolutePath) }.getOrNull()
             ?: return null
+        // A tile that is not the size the sampler assumes would be read past
+        // its end. Rather than trust the file, drop it and let it be fetched
+        // again -- a missing tile draws as a hole, which is recoverable, and
+        // reading off the end of the array is not.
+        if (bitmap.width != TILE_SIZE || bitmap.height != TILE_SIZE) {
+            bitmap.recycle()
+            runCatching { file.delete() }
+            return null
+        }
         val values = decodeTerrarium(bitmap)
         bitmap.recycle()
         synchronized(decoded) { decoded[key] = values }

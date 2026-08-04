@@ -7,6 +7,13 @@ import com.rhecyee.firelinemap.location.SegmentAnchor
 class FirelineApplication : Application() {
     val database: FirelineDatabase by lazy { FirelineDatabase.create(this) }
 
+    override fun onCreate() {
+        super.onCreate()
+        // Installed before anything else can fail, so a crash on the way up is
+        // caught too. There is no console on a fireline.
+        CrashLog.install(this)
+    }
+
     /**
      * Drop points read off the active sheet.
      *

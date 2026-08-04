@@ -52,6 +52,9 @@ fun SettingsSheet(
     onWifiOnly: (Boolean) -> Unit,
     cachedTerrainBytes: Long,
     onClearTerrain: () -> Unit,
+    crashReport: String?,
+    onCopyCrash: () -> Unit,
+    onClearCrash: () -> Unit,
     chromeTimeoutSeconds: Int,
     onChromeTimeout: (Int) -> Unit,
     locationIntervalSeconds: Int,
@@ -205,6 +208,45 @@ fun SettingsSheet(
                         fontWeight = FontWeight.Bold,
                         style = MaterialTheme.typography.labelMedium
                     )
+                }
+
+                if (crashReport != null) {
+                    HorizontalDivider()
+                    Heading("LAST CRASH")
+                    Text(
+                        "The app died and this is why. Copy it and send it on -- " +
+                            "nothing is transmitted anywhere on its own.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        crashReport,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(
+                                MaterialTheme.colorScheme.errorContainer,
+                                RoundedCornerShape(6.dp)
+                            )
+                            .padding(8.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        Text(
+                            "COPY",
+                            modifier = Modifier.clickable { onCopyCrash() },
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                        Text(
+                            "DISMISS",
+                            modifier = Modifier.clickable { onClearCrash() },
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                    }
                 }
 
                 HorizontalDivider()
