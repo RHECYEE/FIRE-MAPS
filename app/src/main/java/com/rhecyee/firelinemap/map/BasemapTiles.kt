@@ -98,12 +98,11 @@ class BasemapTileCache(context: Context) {
      * checkerboard of gaps is worse than soft terrain: it reads as the map
      * being broken rather than as detail still arriving.
      *
-     * [fetch] is false while a finger is down. Mid-pinch the view sweeps
-     * through several zoom levels in under a second, and fetching at each one
-     * puts hundreds of requests in flight for ground that is already off
-     * screen by the time they land -- which the operator sees as the map
-     * swapping under them. Whatever is cached is drawn instead, and the level
-     * that was actually settled on is fetched once the hand comes off.
+     * The climb stops at [ANCESTOR_DEPTH], which is why the caller also draws
+     * a coarse layer underneath: an ancestor only helps if it is still in
+     * memory, and a pinch sweeping through several levels evicts the ones it
+     * passed. The coarse layer is held back from eviction so there is always
+     * something to scale up.
      */
     fun sample(zoom: Int, x: Int, y: Int, fetch: Boolean = true): TileSample? {
         val exact = if (fetch) tile(zoom, x, y) else held(key(zoom, x, y))
@@ -226,6 +225,7 @@ class BasemapTileCache(context: Context) {
 
     private fun put(key: String, bitmap: Bitmap) {
         tiles[key] = bitmap
+        val guard = protectedLevel
         val evicted = synchronized(recent) {
             recent[key] = Unit
             val over = recent.size - TILES_HELD
@@ -233,8 +233,13 @@ class BasemapTileCache(context: Context) {
                 emptyList()
             } else {
                 // The eldest by last use, which during a zoom is the level
-                // that was left behind rather than the one being looked at.
-                val going = recent.keys.take(over).toList()
+                // that was left behind rather than the one being looked at --
+                // except the coarse band, which is deliberately kept so there
+                // is always something to scale up while detail arrives.
+                val going = recent.keys.asSequence()
+                    .filter { levelOf(it) > guard }
+                    .take(over)
+                    .toList()
                 going.forEach { recent.remove(it) }
                 going
             }
@@ -317,6 +322,25 @@ class BasemapTileCache(context: Context) {
     @Volatile
     var lastFailure: String? = null
 
+    /**
+     * Levels at or below this are never evicted.
+     *
+     * The coarse layer is what stands in while a finer one is arriving, so
+     * evicting it is what turns "soft for a moment" into "blank for a moment".
+     * There are few of these -- three levels coarser is a sixty-fourth of the
+     * tiles -- so holding them costs almost nothing and is the difference
+     * between a map that dims during a pinch and one that disappears.
+     */
+    @Volatile
+    private var protectedLevel: Int = -1
+
+    fun protectBelow(level: Int) {
+        protectedLevel = level
+    }
+
+    private fun levelOf(key: String): Int =
+        key.substringBefore('/').toIntOrNull() ?: Int.MAX_VALUE
+
     fun cachedBytes(): Long =
         root.walkTopDown().filter { it.isFile }.sumOf { it.length() }
 
@@ -339,12 +363,16 @@ class BasemapTileCache(context: Context) {
         /**
          * How many decoded tiles to keep in memory.
          *
-         * A quarter of a megabyte each, so this is about forty megabytes --
-         * comfortably more than any one screen needs, which is a few dozen,
-         * and far below what an unbounded cache reached after a few minutes
-         * of zooming.
+         * A quarter of a megabyte each, so this is about fifty-five
+         * megabytes. Sized so one screenful at its own level, the coarse
+         * layer beneath it, and the level most recently left all fit at once
+         * -- a wide view alone can be over a hundred tiles, and a cache that
+         * only just holds one view evicts the level a pinch came from before
+         * the level it is going to has arrived. Far below what an unbounded
+         * cache reached after a few minutes of zooming, which was the fault
+         * this bound was introduced for.
          */
-        const val TILES_HELD = 160
+        const val TILES_HELD = 220
 
         /** How many zoom levels to climb looking for something to draw. */
         const val ANCESTOR_DEPTH = 4

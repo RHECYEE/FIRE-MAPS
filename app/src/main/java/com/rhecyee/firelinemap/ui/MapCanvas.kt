@@ -764,6 +764,21 @@ fun MapCanvas(
  */
 private const val MAX_TILES_PER_FRAME = 220L
 
+/**
+ * How many levels coarser the always-present base layer sits.
+ *
+ * Three, which is a sixty-fourth of the tiles: a handful for any view, cheap
+ * to hold in memory and cheap to fetch, and never more than eight times
+ * softer than what is wanted.
+ */
+private const val BASE_LAYER_STEPS = 3
+
+/** How far off screen a tile may be before it is not worth drawing. */
+private const val TILE_MARGIN = 400f
+
+/** A tile drawn larger than this means the transform has come apart. */
+private const val MAX_TILE_PIXELS = 20_000
+
 /** How long the view has to hold still before contours are re-cut. */
 private const val VIEW_SETTLE_MILLIS = 300L
 
@@ -892,13 +907,15 @@ private fun DrawScope.drawBasemap(
     val west = minOf(topLeft.second, bottomRight.second)
     val east = maxOf(topLeft.second, bottomRight.second)
     if (north <= south || east <= west) return
+    if (!north.isFinite() || !south.isFinite() || !west.isFinite() || !east.isFinite()) return
 
     val centreLatitude = (north + south) / 2.0
     // Match tile resolution to what is actually on screen.
     val spanMeters = com.rhecyee.firelinemap.map.MapCoverage.distanceMeters(
         centreLatitude, west, centreLatitude, east
     )
-    if (spanMeters <= 0.0) return
+    if (spanMeters <= 0.0 || !spanMeters.isFinite()) return
+
     var zoom = BasemapTileCache.zoomForStable(
         latitude = centreLatitude,
         targetMetersPerPixel = spanMeters / size.width,
@@ -906,30 +923,71 @@ private fun DrawScope.drawBasemap(
     ).coerceIn(4, 15)
 
     // Step coarser until the view is a sane number of tiles, rather than
-    // giving up on it.
-    //
-    // This used to return outright above the limit, drawing nothing at all --
-    // not even the coarse fallback. Zooming out reaches that state routinely:
-    // the level is held back a step so it cannot flicker, and a level held one
-    // step too fine is four times the tiles. The map went grey and stayed grey
-    // until something reset the view, which is exactly what pressing follow
-    // did. A slightly coarse picture is always better than no picture.
-    var minX = BasemapTileCache.tileX(west, zoom)
-    var maxX = BasemapTileCache.tileX(east, zoom)
-    var minY = BasemapTileCache.tileY(north, zoom)
-    var maxY = BasemapTileCache.tileY(south, zoom)
-    while (
-        zoom > 0 &&
-        (maxX - minX + 1).toLong() * (maxY - minY + 1).toLong() > MAX_TILES_PER_FRAME
-    ) {
+    // giving up on it. Giving up drew nothing at all, not even the fallback.
+    while (zoom > 0 && tileCount(north, south, west, east, zoom) > MAX_TILES_PER_FRAME) {
         zoom--
-        minX = BasemapTileCache.tileX(west, zoom)
-        maxX = BasemapTileCache.tileX(east, zoom)
-        minY = BasemapTileCache.tileY(north, zoom)
-        maxY = BasemapTileCache.tileY(south, zoom)
     }
     held.value = zoom
     basemap.lastLevel = zoom
+    basemap.protectBelow(zoom - BASE_LAYER_STEPS)
+
+    // A coarse layer underneath, always.
+    //
+    // This is the answer to the map going blank mid-pinch. A gesture sweeps
+    // through several levels in a second; each one loads a screenful of tiles
+    // and pushes the level before it out of memory, so by the time the gesture
+    // settles there is nothing left to scale up and the screen is empty until
+    // the new level arrives. Three levels coarser is a sixty-fourth of the
+    // tiles -- a handful, cheap to hold and cheap to fetch -- and it is held
+    // back from eviction, so there is always something to draw. Soft is not
+    // the same as absent.
+    val baseZoom = (zoom - BASE_LAYER_STEPS).coerceAtLeast(0)
+    if (baseZoom < zoom) {
+        drawTileLayer(
+            basemap, projection, baseZoom, north, south, west, east,
+            originX, originY, drawWidth, drawHeight
+        )
+    }
+
+    drawTileLayer(
+        basemap, projection, zoom, north, south, west, east,
+        originX, originY, drawWidth, drawHeight
+    )
+}
+
+private fun tileCount(
+    north: Double,
+    south: Double,
+    west: Double,
+    east: Double,
+    zoom: Int
+): Long {
+    val minX = BasemapTileCache.tileX(west, zoom)
+    val maxX = BasemapTileCache.tileX(east, zoom)
+    val minY = BasemapTileCache.tileY(north, zoom)
+    val maxY = BasemapTileCache.tileY(south, zoom)
+    return (maxX - minX + 1).toLong() * (maxY - minY + 1).toLong()
+}
+
+/** One level of terrain across the view. */
+private fun DrawScope.drawTileLayer(
+    basemap: BasemapTileCache,
+    projection: MapProjection,
+    zoom: Int,
+    north: Double,
+    south: Double,
+    west: Double,
+    east: Double,
+    originX: Float,
+    originY: Float,
+    drawWidth: Float,
+    drawHeight: Float
+) {
+    val minX = BasemapTileCache.tileX(west, zoom)
+    val maxX = BasemapTileCache.tileX(east, zoom)
+    val minY = BasemapTileCache.tileY(north, zoom)
+    val maxY = BasemapTileCache.tileY(south, zoom)
+    if ((maxX - minX + 1).toLong() * (maxY - minY + 1).toLong() > MAX_TILES_PER_FRAME) return
 
     for (x in minX..maxX) {
         for (y in minY..maxY) {
@@ -946,10 +1004,21 @@ private fun DrawScope.drawBasemap(
             val top = originY + topLeftUnit.second * drawHeight
             val right = originX + bottomRightUnit.first * drawWidth
             val bottom = originY + bottomRightUnit.second * drawHeight
+            if (!left.isFinite() || !top.isFinite() || !right.isFinite() || !bottom.isFinite()) {
+                continue
+            }
+            // Off screen entirely, or so large that the numbers have stopped
+            // meaning anything.
+            if (right < -TILE_MARGIN || left > size.width + TILE_MARGIN) continue
+            if (bottom < -TILE_MARGIN || top > size.height + TILE_MARGIN) continue
 
             val width = (right - left).roundToInt()
             val height = (bottom - top).roundToInt()
-            if (width <= 0 || height <= 0) continue
+            if (width <= 0 || height <= 0 || width > MAX_TILE_PIXELS ||
+                height > MAX_TILE_PIXELS
+            ) {
+                continue
+            }
 
             drawImage(
                 image = sample.bitmap.asImageBitmap(),
