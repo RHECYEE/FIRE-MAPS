@@ -53,6 +53,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.rhecyee.firelinemap.map.BasemapTileCache
 import com.rhecyee.firelinemap.map.MapProjection
+import com.rhecyee.firelinemap.map.ViewClamp
 import com.rhecyee.firelinemap.data.MarkerEntity
 import com.rhecyee.firelinemap.resources.ResourceSymbol
 import com.rhecyee.firelinemap.measure.MeasureMode
@@ -182,10 +183,15 @@ fun MapCanvas(
                 )
                 val next = maxOf(scale, minOf(6f, projection.maxScale))
                 scale = next
-                offset = Offset(
-                    contentWidth * fitNow * next * (0.5f - unit.first),
-                    contentHeight * fitNow * next * (0.5f - unit.second)
+                val (x, y) = ViewClamp.clamp(
+                    offsetX = contentWidth * fitNow * next * (0.5f - unit.first),
+                    offsetY = contentHeight * fitNow * next * (0.5f - unit.second),
+                    contentWidth = contentWidth * fitNow * next,
+                    contentHeight = contentHeight * fitNow * next,
+                    viewportWidth = viewport.width.toFloat(),
+                    viewportHeight = viewport.height.toFloat()
                 )
+                offset = Offset(x, y)
             }
             onCentred()
         }
@@ -236,19 +242,19 @@ fun MapCanvas(
          * edge, and pushing further did nothing -- the map felt like it did
          * not want to go that way.
          */
-        fun clamp(candidate: Offset, atScale: Float, from: Offset = offset): Offset {
+        fun clamp(candidate: Offset, atScale: Float): Offset {
             val (drawWidth, drawHeight) = contentSize(atScale)
-            val slackX = viewport.width * OFF_SHEET_PAN_ALLOWANCE
-            val slackY = viewport.height * OFF_SHEET_PAN_ALLOWANCE
-            val maxX = ((drawWidth - viewport.width) / 2f).coerceAtLeast(0f) + slackX
-            val maxY = ((drawHeight - viewport.height) / 2f).coerceAtLeast(0f) + slackY
-            val limitX = maxOf(maxX, abs(from.x))
-            val limitY = maxOf(maxY, abs(from.y))
-            return Offset(
-                candidate.x.coerceIn(-limitX, limitX),
-                candidate.y.coerceIn(-limitY, limitY)
+            val (x, y) = ViewClamp.clamp(
+                offsetX = candidate.x,
+                offsetY = candidate.y,
+                contentWidth = drawWidth,
+                contentHeight = drawHeight,
+                viewportWidth = viewport.width.toFloat(),
+                viewportHeight = viewport.height.toFloat()
             )
+            return Offset(x, y)
         }
+
 
         /** Ground to a point on screen. */
         fun screenPosition(latitude: Double, longitude: Double): Offset? {
@@ -306,6 +312,22 @@ fun MapCanvas(
             return null
         }
 
+        // The invariant, enforced continuously rather than only where the pan
+        // is written.
+        //
+        // Every write goes through the clamp, but the clamp depends on the
+        // viewport and on the scale, and both change independently of it --
+        // the first layout pass, a rotation, a zoom applied elsewhere. An
+        // offset that was legal a moment ago can stop being legal without
+        // anything touching it. Re-checking here is what makes "some of the
+        // sheet is always on screen" a property of the view rather than a
+        // property of four call sites remembering to ask.
+        androidx.compose.runtime.LaunchedEffect(viewport, scale, projection) {
+            if (viewport.width <= 0 || viewport.height <= 0) return@LaunchedEffect
+            val bounded = clamp(offset, scale)
+            if (bounded != offset) offset = bounded
+        }
+
         /**
          * The ground currently on screen, and the tile level it amounts to.
          *
@@ -361,10 +383,14 @@ fun MapCanvas(
             val next = maxOf(scale, minOf(4f, projection.maxScale))
             scale = next
             val (width, height) = contentSize(next)
-            // Set directly rather than through the pan clamp: when the
-            // position is off the sheet the clamp would stop short of it,
-            // which is precisely the case this control exists for.
-            offset = Offset(width * (0.5f - unit.first), height * (0.5f - unit.second))
+            // Clamped like any other pan. Centring on ground well off the
+            // sheet stops at the edge of what can be panned back from, and
+            // the arrow at the screen edge carries on pointing at the
+            // position from there.
+            offset = clamp(
+                Offset(width * (0.5f - unit.first), height * (0.5f - unit.second)),
+                next
+            )
             return true
         }
 
@@ -452,7 +478,7 @@ fun MapCanvas(
                                 val zoomed = offset * applied +
                                     (focus - canvasCentre) * (1f - applied)
 
-                                offset = clamp(zoomed + panChange, next, from = zoomed)
+                                offset = clamp(zoomed + panChange, next)
                                 event.changes.forEach { if (it.positionChanged()) it.consume() }
                             }
                         } while (event.changes.any { it.pressed })
@@ -667,8 +693,6 @@ fun MapCanvas(
     }
 }
 
-private const val OFF_SHEET_PAN_ALLOWANCE = 1.5f
-
 /**
  * The most terrain tiles worth drawing in one frame.
  *
@@ -843,6 +867,7 @@ private fun DrawScope.drawBasemap(
         maxY = BasemapTileCache.tileY(south, zoom)
     }
     held.value = zoom
+    basemap.lastLevel = zoom
 
     for (x in minX..maxX) {
         for (y in minY..maxY) {

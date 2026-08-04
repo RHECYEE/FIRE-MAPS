@@ -304,8 +304,13 @@ class BasemapTileCache(context: Context) {
         val (flight, waiting) = synchronized(inFlight) {
             inFlight.size to failedAt.count { now() < it.value }
         }
-        return "${tiles.size} held · $flight fetching · $waiting waiting"
+        return "${tiles.size} held · $flight fetching · $waiting waiting" +
+            (lastLevel?.let { " · level $it" } ?: "")
     }
+
+    /** The tile level last drawn at, for the same diagnostic. */
+    @Volatile
+    var lastLevel: Int? = null
 
     fun cachedBytes(): Long =
         root.walkTopDown().filter { it.isFile }.sumOf { it.length() }
