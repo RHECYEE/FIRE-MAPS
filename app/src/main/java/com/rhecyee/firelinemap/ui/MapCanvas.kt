@@ -82,7 +82,7 @@ fun MapCanvas(
     markers: List<MarkerEntity> = emptyList(),
     trackPoints: List<Pair<Double, Double>> = emptyList(),
     savedTracks: List<SavedTrack> = emptyList(),
-    searchTarget: Pair<Double, Double>? = null,
+    searchRegion: SearchRegion? = null,
     onTrackTap: ((SavedTrack) -> Unit)? = null,
     onMarkerTap: ((MarkerEntity) -> Unit)? = null,
     onMarkerMoved: ((MarkerEntity, Double, Double) -> Unit)? = null,
@@ -398,19 +398,45 @@ fun MapCanvas(
                 )
             }
 
-            // A searched coordinate, ringed so it stands out from placed pins.
-            if (searchTarget != null && frame != null &&
+            // Where the searched position could still be. A point when it is
+            // known, a line or a box while digits are missing.
+            if (searchRegion != null && frame != null &&
                 pageWidthPoints > 0 && pageHeightPoints > 0
             ) {
-                frame.geoToPage(searchTarget.first, searchTarget.second)?.let { page ->
-                    val sx = originX + (page.first / pageWidthPoints).toFloat() * drawWidth
-                    val sy = originY +
-                        (1f - (page.second / pageHeightPoints).toFloat()) * drawHeight
-                    drawCircle(Color.White, radius = 20f, center = Offset(sx, sy),
-                        style = Stroke(width = 4f))
-                    drawCircle(Color(0xFFFFC400), radius = 20f, center = Offset(sx, sy),
-                        style = Stroke(width = 2f))
-                    drawCircle(Color(0xFFFFC400), radius = 6f, center = Offset(sx, sy))
+                fun toScreen(latitude: Double, longitude: Double): Offset? {
+                    val page = frame.geoToPage(latitude, longitude) ?: return null
+                    return Offset(
+                        originX + (page.first / pageWidthPoints).toFloat() * drawWidth,
+                        originY + (1f - (page.second / pageHeightPoints).toFloat()) * drawHeight
+                    )
+                }
+
+                val southWest = toScreen(searchRegion.south, searchRegion.west)
+                val northEast = toScreen(searchRegion.north, searchRegion.east)
+                val northWest = toScreen(searchRegion.north, searchRegion.west)
+                val southEast = toScreen(searchRegion.south, searchRegion.east)
+
+                if (southWest != null && northEast != null &&
+                    northWest != null && southEast != null
+                ) {
+                    val accent = Color(0xFF40C4FF)
+                    if (searchRegion.isPoint) {
+                        drawCircle(Color.Black, radius = 22f, center = southWest, alpha = 0.5f)
+                        drawCircle(accent, radius = 20f, center = southWest,
+                            style = Stroke(width = 4f))
+                        drawCircle(accent, radius = 6f, center = southWest)
+                    } else {
+                        val ring = Path().apply {
+                            moveTo(southWest.x, southWest.y)
+                            lineTo(northWest.x, northWest.y)
+                            lineTo(northEast.x, northEast.y)
+                            lineTo(southEast.x, southEast.y)
+                            close()
+                        }
+                        drawPath(ring, accent, alpha = 0.22f)
+                        drawPath(ring, Color.Black, alpha = 0.5f, style = Stroke(width = 7f))
+                        drawPath(ring, accent, style = Stroke(width = 3.5f))
+                    }
                 }
             }
 
@@ -495,6 +521,17 @@ fun MapCanvas(
 }
 
 private const val OFF_SHEET_PAN_ALLOWANCE = 1.5f
+
+/** Where a searched position could be: a point, a line, or a box. */
+data class SearchRegion(
+    val south: Double,
+    val west: Double,
+    val north: Double,
+    val east: Double
+) {
+    val isPoint: Boolean
+        get() = north - south < 1e-9 && east - west < 1e-9
+}
 
 /** A completed track held against the incident. */
 data class SavedTrack(

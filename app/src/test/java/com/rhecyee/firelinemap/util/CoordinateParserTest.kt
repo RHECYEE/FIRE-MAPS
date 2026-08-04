@@ -163,7 +163,9 @@ class CoordinateParserTest {
 
     @Test
     fun strayLettersAreRejectedRatherThanIgnored() {
-        assertTrue(CoordinateParser.parse("45.7 x 117.2") is CoordinateParseResult.Invalid)
+        // X now means a missed digit, so it is no longer stray. Anything else is.
+        assertTrue(CoordinateParser.parse("45.7 q 117.2") is CoordinateParseResult.Invalid)
+        assertTrue(CoordinateParser.parse("45.7 abc 117.2") is CoordinateParseResult.Invalid)
     }
 
     @Test
@@ -189,5 +191,103 @@ class CoordinateParserTest {
         assertTrue("formatted as $formatted", formatted.contains("45°"))
         assertTrue("formatted as $formatted", formatted.startsWith("N"))
         assertTrue("formatted as $formatted", formatted.contains("W"))
+    }
+}
+
+/** Copying a position off a radio that was not fully caught. */
+class CoordinateSearchTest {
+
+    private fun success(input: String): ParsedCoordinate {
+        val result = CoordinateParser.parse(input)
+        assertTrue("$input did not parse: $result", result is CoordinateParseResult.Success)
+        return (result as CoordinateParseResult.Success).coordinate
+    }
+
+    @Test
+    fun aDroppedDecimalIsPutBackInMinutes() {
+        // "forty three one seven seven" with no decimal heard.
+        val parsed = success("45 43177 117 16040")
+        assertEquals(45.719620, parsed.latitude, 1e-5)
+        assertEquals(-117.267328, parsed.longitude, 1e-5)
+        assertTrue("should report the decimal was inferred", parsed.inferredDecimal)
+        assertEquals(SearchShape.POINT, parsed.shape)
+    }
+
+    @Test
+    fun aDroppedDecimalIsPutBackInDecimalDegrees() {
+        val parsed = success("45719620 117267328")
+        assertEquals(45.719620, parsed.latitude, 1e-5)
+        assertEquals(-117.267328, parsed.longitude, 1e-5)
+    }
+
+    @Test
+    fun anExactCoordinateIsAPoint() {
+        val parsed = success("45 43.177 117 16.040")
+        assertEquals(SearchShape.POINT, parsed.shape)
+        assertEquals(parsed.southLatitude, parsed.northLatitude, 1e-9)
+        assertTrue(!parsed.inferredDecimal)
+    }
+
+    @Test
+    fun oneMissedDigitInLatitudeGivesALine() {
+        // The last digit of the latitude minutes was not caught.
+        val parsed = success("45 43.17X 117 16.040")
+        assertEquals(SearchShape.LINE, parsed.shape)
+        assertTrue(parsed.northLatitude > parsed.southLatitude)
+        assertEquals(parsed.westLongitude, parsed.eastLongitude, 1e-9)
+        // Still bracketed tightly: a tenth of a minute is about 185 m.
+        assertTrue(parsed.northLatitude - parsed.southLatitude < 0.01)
+    }
+
+    @Test
+    fun missedDigitsOnBothAxesGiveAnArea() {
+        val parsed = success("45 43.1X7 117 16.0X0")
+        assertEquals(SearchShape.AREA, parsed.shape)
+        assertTrue(parsed.northLatitude > parsed.southLatitude)
+        assertTrue(parsed.eastLongitude > parsed.westLongitude)
+    }
+
+    @Test
+    fun aWhollyMissedSlotSpansItsRange() {
+        // The minutes were not caught at all.
+        val parsed = success("45 X 117 16.040")
+        assertEquals(SearchShape.LINE, parsed.shape)
+        // A whole degree of latitude, since any minute value is possible.
+        assertEquals(1.0, parsed.northLatitude - parsed.southLatitude, 0.01)
+    }
+
+    @Test
+    fun theSearchNarrowsAsDigitsArrive() {
+        val vague = success("45 4X.XXX 117 16.040")
+        val better = success("45 43.XXX 117 16.040")
+        val exact = success("45 43.177 117 16.040")
+
+        val vagueSpan = vague.northLatitude - vague.southLatitude
+        val betterSpan = better.northLatitude - better.southLatitude
+        val exactSpan = exact.northLatitude - exact.southLatitude
+
+        assertTrue("expected narrowing", vagueSpan > betterSpan)
+        assertTrue("expected narrowing", betterSpan > exactSpan)
+        assertEquals(0.0, exactSpan, 1e-9)
+    }
+
+    @Test
+    fun theTrueValueLiesInsideTheSearchedRange() {
+        val parsed = success("45 43.1X7 117 16.0X0")
+        assertTrue(45.719620 in parsed.southLatitude..parsed.northLatitude)
+        assertTrue(-117.267328 in parsed.westLongitude..parsed.eastLongitude)
+    }
+
+    @Test
+    fun wildcardsStillRespectHemisphere() {
+        val parsed = success("45 43.1X7 117 16.040")
+        assertTrue("latitude should be north", parsed.latitude > 0)
+        assertTrue("longitude should be west", parsed.longitude < 0)
+        assertTrue(parsed.eastLongitude <= 0)
+    }
+
+    @Test
+    fun rubbishIsStillRejected() {
+        assertTrue(CoordinateParser.parse("45 43 zz 117") is CoordinateParseResult.Invalid)
     }
 }

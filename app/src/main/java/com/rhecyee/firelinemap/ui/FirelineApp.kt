@@ -91,6 +91,8 @@ import com.rhecyee.firelinemap.map.IncidentMapCoverage
 import com.rhecyee.firelinemap.map.MapCoverage
 import com.rhecyee.firelinemap.util.CoordinateFormat
 import com.rhecyee.firelinemap.util.CoordinateFormatter
+import com.rhecyee.firelinemap.util.CoordinateParseResult
+import com.rhecyee.firelinemap.util.CoordinateParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -113,7 +115,14 @@ fun FirelineApp() {
     var stopThreshold by remember { mutableIntStateOf(trackSettings.stopThresholdSeconds) }
     var showTrackSettings by remember { mutableStateOf(false) }
     var showSearch by remember { mutableStateOf(false) }
-    var searchTarget by remember { mutableStateOf<Pair<Double, Double>?>(null) }
+    var searchQuery by remember { mutableStateOf("") }
+    val searchResult = remember(searchQuery) { CoordinateParser.parse(searchQuery) }
+    val searchCoordinate = (searchResult as? CoordinateParseResult.Success)?.coordinate
+    val searchRegion = remember(searchCoordinate) {
+        searchCoordinate?.let {
+            SearchRegion(it.southLatitude, it.westLongitude, it.northLatitude, it.eastLongitude)
+        }
+    }
     val liveTrack by TrackRecordingState.live.collectAsState()
     var segmentAtDropPoints by remember { mutableStateOf(trackSettings.segmentAtDropPoints) }
     var dropPoints by remember { mutableStateOf<List<DropPoint>>(emptyList()) }
@@ -341,18 +350,6 @@ fun FirelineApp() {
         )
     }
 
-    if (showSearch) {
-        CoordinateSearchDialog(
-            onDismiss = { showSearch = false },
-            onGo = { parsed ->
-                showSearch = false
-                searchTarget = parsed.latitude to parsed.longitude
-                selectedSymbol = ResourceSymbol.OTHER
-                pendingPlacement = parsed.latitude to parsed.longitude
-            }
-        )
-    }
-
     if (showTrackSettings) {
         TrackSettingsDialog(
             stopThresholdSeconds = stopThreshold,
@@ -483,7 +480,7 @@ fun FirelineApp() {
                     }
                 },
                 actions = {
-                    IconButton(onClick = { showSearch = true }) {
+                    IconButton(onClick = { showSearch = !showSearch }) {
                         Icon(Icons.Default.Search, contentDescription = "Go to coordinate")
                     }
                     IconButton(onClick = { showTrackSettings = true }) {
@@ -548,6 +545,21 @@ fun FirelineApp() {
                 OffMapBanner("OFF THIS SHEET — $distance, bearing $bearing° back onto it")
             }
 
+            if (showSearch) {
+                CoordinateSearchPanel(
+                    query = searchQuery,
+                    result = searchResult,
+                    onQueryChange = { searchQuery = it },
+                    onKeep = {
+                        searchCoordinate?.let {
+                            selectedSymbol = ResourceSymbol.OTHER
+                            pendingPlacement = it.latitude to it.longitude
+                        }
+                    },
+                    onClear = { searchQuery = ""; showSearch = false }
+                )
+            }
+
             if (watching || liveTrack.recording) {
                 TravelPanel(live = liveTrack, armed = watching, unit = distanceUnit)
             }
@@ -600,7 +612,7 @@ fun FirelineApp() {
                 markers = markers,
                 trackPoints = liveTrack.points,
                 savedTracks = savedTracks,
-                searchTarget = searchTarget,
+                searchRegion = searchRegion,
                 onTrackTap = { inspectingTrack = it },
                 onMarkerTap = { marker ->
                     inspecting = marker
