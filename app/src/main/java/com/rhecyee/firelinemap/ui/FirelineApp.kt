@@ -47,6 +47,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -116,6 +117,15 @@ fun FirelineApp() {
     var stopThreshold by remember { mutableIntStateOf(trackSettings.stopThresholdSeconds) }
     var showTrackSettings by remember { mutableStateOf(false) }
     var showSearch by remember { mutableStateOf(false) }
+
+    // The map runs full screen until it is touched. Everything else is a
+    // reason to look away from the ground.
+    var chromeVisible by remember { mutableStateOf(false) }
+    var lastInteraction by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    fun touched() {
+        chromeVisible = true
+        lastInteraction = System.currentTimeMillis()
+    }
     var searchQuery by remember { mutableStateOf("") }
     var centreRequest by remember { mutableStateOf<Pair<Double, Double>?>(null) }
     val searchResult = remember(searchQuery) { CoordinateParser.parse(searchQuery) }
@@ -288,6 +298,16 @@ fun FirelineApp() {
     val markers by (activeIncident?.id?.let { app.database.dao().observeMarkers(it) }
         ?: kotlinx.coroutines.flow.flowOf(emptyList()))
         .collectAsState(initial = emptyList())
+
+    val toolArmed = measuring || placingResources || simMode || showSearch
+    LaunchedEffect(lastInteraction, toolArmed, chromeVisible) {
+        // An armed tool holds the controls open; nothing is more irritating
+        // than a panel vanishing mid-measurement.
+        if (chromeVisible && !toolArmed) {
+            kotlinx.coroutines.delay(CHROME_TIMEOUT_MILLIS)
+            chromeVisible = false
+        }
+    }
 
     val frame = activeMap?.frame
 
@@ -474,7 +494,7 @@ fun FirelineApp() {
 
     Scaffold(
         topBar = {
-            TopAppBar(
+            if (chromeVisible) TopAppBar(
                 title = {
                     Column {
                         Text(activeIncident?.name ?: "Fireline Map", fontWeight = FontWeight.Bold)
@@ -505,7 +525,7 @@ fun FirelineApp() {
                 .padding(horizontal = 12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            CoordinateCard(
+            if (chromeVisible) CoordinateCard(
                 formatted = when {
                     displayLatitude != null && displayLongitude != null ->
                         CoordinateFormatter.format(
@@ -530,28 +550,28 @@ fun FirelineApp() {
                 }
             )
 
-            MapStatusRow(activeMap, statusMessage)
+            if (chromeVisible) MapStatusRow(activeMap, statusMessage)
 
-            if (simMode && simulated == null) {
+            if (chromeVisible && simMode && simulated == null) {
                 SimulatedBanner("SIM MODE — tap the map to set a test position")
             }
 
-            if (simulated != null) {
+            if (chromeVisible && simulated != null) {
                 SimulatedBanner("SIMULATED POSITION — NOT A GPS FIX · Sim off returns to GPS")
             }
 
-            if (coverage?.incident == IncidentMapCoverage.OFF_MAP) {
+            if (chromeVisible && coverage?.incident == IncidentMapCoverage.OFF_MAP) {
                 val meters = coverage.metersOffMap?.roundToInt() ?: 0
                 val bearing = coverage.bearingToMapDegrees?.roundToInt() ?: 0
                 val distance = if (meters >= 1000) "%.1f km".format(meters / 1000.0) else "$meters m"
                 OffMapBanner("OFF THIS SHEET — $distance, bearing $bearing° back onto it")
             }
 
-            if (watching || liveTrack.recording) {
+            if (chromeVisible && (watching || liveTrack.recording)) {
                 TravelPanel(live = liveTrack, armed = watching, unit = distanceUnit)
             }
 
-            if (placingResources) {
+            if (chromeVisible && placingResources) {
                 ResourcePalette(
                     symbols = ResourceSymbol.RESOURCES,
                     selected = selectedSymbol,
@@ -559,7 +579,7 @@ fun FirelineApp() {
                 )
             }
 
-            if (measuring) {
+            if (chromeVisible && measuring) {
                 MeasurePanel(
                     result = measureSession.result(),
                     mode = measureMode,
@@ -637,8 +657,31 @@ fun FirelineApp() {
                     // simulated position, which silently replaced the live GPS
                     // readout with a fake one from a stray touch.
                 },
+                    onInteraction = { touched() },
                     modifier = Modifier.fillMaxSize()
                 )
+
+                // The one thing that stays. Coordinates are what gets read
+                // over the radio, and hunting for them is not acceptable.
+                if (!chromeVisible) {
+                    CompactStatusStrip(
+                        coordinates = when {
+                            displayLatitude != null && displayLongitude != null ->
+                                CoordinateFormatter.format(
+                                    displayLatitude, displayLongitude, coordinateFormat
+                                )
+                            !hasLocationPermission -> "No location permission"
+                            else -> "Waiting for GPS…"
+                        },
+                        accuracy = if (simulated == null) gpsLocation?.accuracy else null,
+                        simulated = simulated != null,
+                        recording = liveTrack.recording,
+                        paused = liveTrack.paused,
+                        distanceMeters = liveTrack.distanceMeters,
+                        modifier = Modifier.align(Alignment.TopCenter).padding(6.dp),
+                        onTap = { touched() }
+                    )
+                }
 
                 // Overlaid rather than stacked above: the whole value of the
                 // search is watching the highlight narrow, and a panel that
@@ -665,7 +708,7 @@ fun FirelineApp() {
                 }
             }
 
-            Row(
+            if (chromeVisible) Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -675,6 +718,7 @@ fun FirelineApp() {
                     Modifier.weight(1f),
                     active = measuring
                 ) {
+                    touched()
                     measuring = !measuring
                     if (measuring) { placingResources = false; simMode = false }
                     if (!measuring) {
@@ -688,6 +732,7 @@ fun FirelineApp() {
                     Modifier.weight(1f),
                     active = placingResources
                 ) {
+                    touched()
                     placingResources = !placingResources
                     if (placingResources) {
                         measuring = false
@@ -702,6 +747,7 @@ fun FirelineApp() {
                     Modifier.weight(1f),
                     active = simMode
                 ) {
+                    touched()
                     simMode = !simMode
                     if (simMode) {
                         measuring = false
@@ -713,13 +759,14 @@ fun FirelineApp() {
                 }
             }
 
-            Button(
+            if (chromeVisible) Button(
                 onClick = {
                     val intent = Intent(context, TrackRecordingService::class.java).apply {
                         action = if (watching) TrackRecordingService.ACTION_STOP
                         else TrackRecordingService.ACTION_START
                         putExtra(TrackRecordingService.EXTRA_INCIDENT_ID, activeIncident?.id)
                     }
+                    touched()
                     ContextCompat.startForegroundService(context, intent)
                     watching = !watching
                 },
@@ -776,6 +823,9 @@ private fun parseLineString(geoJson: String): List<Pair<Double, Double>> {
         }
         .toList()
 }
+
+/** Twenty seconds of no touching and the controls fold away again. */
+private const val CHROME_TIMEOUT_MILLIS = 20_000L
 
 @Composable
 private fun MapStatusRow(map: ImportedMap?, message: String?) {

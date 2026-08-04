@@ -3,6 +3,7 @@ package com.rhecyee.firelinemap.ui
 import android.graphics.Bitmap
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroidSize
@@ -85,6 +86,7 @@ fun MapCanvas(
     searchRegion: SearchRegion? = null,
     centreOn: Pair<Double, Double>? = null,
     onCentred: () -> Unit = {},
+    onInteraction: () -> Unit = {},
     onTrackTap: ((SavedTrack) -> Unit)? = null,
     onMarkerTap: ((MarkerEntity) -> Unit)? = null,
     onMarkerMoved: ((MarkerEntity, Double, Double) -> Unit)? = null,
@@ -107,6 +109,7 @@ fun MapCanvas(
     val currentOnMarkerMoved by rememberUpdatedState(onMarkerMoved)
     val currentSavedTracks by rememberUpdatedState(savedTracks)
     val currentOnTrackTap by rememberUpdatedState(onTrackTap)
+    val currentOnInteraction by rememberUpdatedState(onInteraction)
 
     Box(
         modifier = modifier
@@ -269,6 +272,8 @@ fun MapCanvas(
                 .pointerInput(map.id, bitmap) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
+                        // Any touch on the map counts as being in use.
+                        currentOnInteraction()
                         val grabbed = if (currentOnMarkerMoved != null) {
                             markerAt(down.position)
                         } else {
@@ -872,5 +877,56 @@ fun SimulatedBanner(text: String, modifier: Modifier = Modifier) {
             .padding(horizontal = 12.dp, vertical = 8.dp)
     ) {
         Text(text, color = Color.White, fontWeight = FontWeight.Bold)
+    }
+}
+
+/**
+ * What remains on screen once the controls fold away.
+ *
+ * Position, accuracy, and whether travel is being recorded. Everything else
+ * can wait for a touch; these are the things someone would otherwise have to
+ * bring the whole interface back to check.
+ */
+@androidx.compose.runtime.Composable
+fun CompactStatusStrip(
+    coordinates: String,
+    accuracy: Float?,
+    simulated: Boolean,
+    recording: Boolean,
+    paused: Boolean,
+    distanceMeters: Double,
+    onTap: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    androidx.compose.foundation.layout.Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(Color(0xFF10161B).copy(alpha = 0.82f), RoundedCornerShape(9.dp))
+            .clickable { onTap() }
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                coordinates,
+                color = if (simulated) Color(0xFFFFB74D) else Color.White,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                buildString {
+                    append(accuracy?.let { "±%.0f m".format(it) } ?: "—")
+                    if (recording) {
+                        append(if (paused) "  ·  PAUSED  " else "  ·  RECORDING  ")
+                        append("%.2f mi".format(distanceMeters / 1609.344))
+                    }
+                },
+                color = when {
+                    paused -> Color(0xFFFFA000)
+                    recording -> Color(0xFFFF80AB)
+                    else -> Color.White.copy(alpha = 0.6f)
+                },
+                style = MaterialTheme.typography.labelSmall
+            )
+        }
     }
 }
