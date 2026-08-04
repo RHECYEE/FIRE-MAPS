@@ -82,6 +82,7 @@ fun MapCanvas(
     markers: List<MarkerEntity> = emptyList(),
     trackPoints: List<Pair<Double, Double>> = emptyList(),
     savedTracks: List<SavedTrack> = emptyList(),
+    searchTarget: Pair<Double, Double>? = null,
     onTrackTap: ((SavedTrack) -> Unit)? = null,
     onMarkerTap: ((MarkerEntity) -> Unit)? = null,
     onMarkerMoved: ((MarkerEntity, Double, Double) -> Unit)? = null,
@@ -395,6 +396,22 @@ fun MapCanvas(
                     drawWidth = drawWidth,
                     drawHeight = drawHeight
                 )
+            }
+
+            // A searched coordinate, ringed so it stands out from placed pins.
+            if (searchTarget != null && frame != null &&
+                pageWidthPoints > 0 && pageHeightPoints > 0
+            ) {
+                frame.geoToPage(searchTarget.first, searchTarget.second)?.let { page ->
+                    val sx = originX + (page.first / pageWidthPoints).toFloat() * drawWidth
+                    val sy = originY +
+                        (1f - (page.second / pageHeightPoints).toFloat()) * drawHeight
+                    drawCircle(Color.White, radius = 20f, center = Offset(sx, sy),
+                        style = Stroke(width = 4f))
+                    drawCircle(Color(0xFFFFC400), radius = 20f, center = Offset(sx, sy),
+                        style = Stroke(width = 2f))
+                    drawCircle(Color(0xFFFFC400), radius = 6f, center = Offset(sx, sy))
+                }
             }
 
             for (marker in markers) {

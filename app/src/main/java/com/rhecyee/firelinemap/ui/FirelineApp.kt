@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.AddLocationAlt
 import androidx.compose.material.icons.filled.Draw
 import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Straighten
@@ -111,6 +112,8 @@ fun FirelineApp() {
     var watching by remember { mutableStateOf(false) }
     var stopThreshold by remember { mutableIntStateOf(trackSettings.stopThresholdSeconds) }
     var showTrackSettings by remember { mutableStateOf(false) }
+    var showSearch by remember { mutableStateOf(false) }
+    var searchTarget by remember { mutableStateOf<Pair<Double, Double>?>(null) }
     val liveTrack by TrackRecordingState.live.collectAsState()
     var segmentAtDropPoints by remember { mutableStateOf(trackSettings.segmentAtDropPoints) }
     var dropPoints by remember { mutableStateOf<List<DropPoint>>(emptyList()) }
@@ -338,6 +341,18 @@ fun FirelineApp() {
         )
     }
 
+    if (showSearch) {
+        CoordinateSearchDialog(
+            onDismiss = { showSearch = false },
+            onGo = { parsed ->
+                showSearch = false
+                searchTarget = parsed.latitude to parsed.longitude
+                selectedSymbol = ResourceSymbol.OTHER
+                pendingPlacement = parsed.latitude to parsed.longitude
+            }
+        )
+    }
+
     if (showTrackSettings) {
         TrackSettingsDialog(
             stopThresholdSeconds = stopThreshold,
@@ -468,6 +483,9 @@ fun FirelineApp() {
                     }
                 },
                 actions = {
+                    IconButton(onClick = { showSearch = true }) {
+                        Icon(Icons.Default.Search, contentDescription = "Go to coordinate")
+                    }
                     IconButton(onClick = { showTrackSettings = true }) {
                         Icon(Icons.Default.Timer, contentDescription = "Track settings")
                     }
@@ -582,6 +600,7 @@ fun FirelineApp() {
                 markers = markers,
                 trackPoints = liveTrack.points,
                 savedTracks = savedTracks,
+                searchTarget = searchTarget,
                 onTrackTap = { inspectingTrack = it },
                 onMarkerTap = { marker ->
                     inspecting = marker
