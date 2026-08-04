@@ -38,6 +38,8 @@ fun CoordinateSearchReadout(
     result: CoordinateParseResult,
     onKeep: () -> Unit,
     onShow: () -> Unit,
+    keypadOpen: Boolean,
+    onToggleKeypad: () -> Unit,
     onClear: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -47,20 +49,25 @@ fun CoordinateSearchReadout(
         modifier = modifier
             .fillMaxWidth()
             .background(Color(0xFF14232E).copy(alpha = 0.94f), RoundedCornerShape(10.dp))
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // The keypad folds away so the map underneath can be looked at
+            // without losing the query.
             Text(
-                "SEARCH",
+                if (keypadOpen) "HIDE KEYS" else "KEYS",
+                modifier = Modifier
+                    .clickable { onToggleKeypad() }
+                    .padding(end = 10.dp, top = 6.dp, bottom = 6.dp),
                 color = Color(0xFF4FC3F7),
                 fontWeight = FontWeight.Black,
-                style = MaterialTheme.typography.labelLarge,
-                modifier = Modifier.weight(1f)
+                style = MaterialTheme.typography.labelMedium
             )
+            androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
             if (coordinate != null) {
                 Text(
                     "SHOW",
@@ -100,11 +107,11 @@ fun CoordinateSearchReadout(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(Color(0xFF0B171F), RoundedCornerShape(8.dp))
-                .padding(vertical = 12.dp, horizontal = 8.dp),
+                .padding(vertical = 9.dp, horizontal = 8.dp),
             color = if (query.isEmpty()) Color.White.copy(alpha = 0.35f) else Color.White,
             fontWeight = FontWeight.Bold,
             textAlign = TextAlign.Center,
-            fontSize = 25.sp,
+            fontSize = 23.sp,
             maxLines = 1
         )
 

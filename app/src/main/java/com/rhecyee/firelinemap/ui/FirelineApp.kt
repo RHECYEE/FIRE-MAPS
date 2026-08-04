@@ -165,6 +165,7 @@ fun FirelineApp() {
     val counties = remember { CountyCatalog(context) }
     var showLayers by remember { mutableStateOf(false) }
     var showLegend by remember { mutableStateOf(true) }
+    var keypadOpen by remember { mutableStateOf(true) }
     var countyQuery by remember { mutableStateOf("") }
     var showCountySearch by remember { mutableStateOf(false) }
     var chosenCounty by remember { mutableStateOf<CountyRecord?>(null) }
@@ -889,7 +890,7 @@ fun FirelineApp() {
                 .padding(horizontal = 12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            if (chromeVisible) CoordinateCard(
+            if (chromeVisible && !showSearch) CoordinateCard(
                 formatted = when {
                     displayLatitude != null && displayLongitude != null ->
                         CoordinateFormatter.format(
@@ -914,28 +915,28 @@ fun FirelineApp() {
                 }
             )
 
-            if (chromeVisible) MapStatusRow(activeMap, statusMessage)
+            if (chromeVisible && !showSearch) MapStatusRow(activeMap, statusMessage)
 
-            if (chromeVisible && simMode && simulated == null) {
+            if (chromeVisible && !showSearch && simMode && simulated == null) {
                 SimulatedBanner("SIM MODE — tap the map to set a test position")
             }
 
-            if (chromeVisible && simulated != null) {
+            if (chromeVisible && !showSearch && simulated != null) {
                 SimulatedBanner("SIMULATED POSITION — NOT A GPS FIX · Sim off returns to GPS")
             }
 
-            if (chromeVisible && coverage?.incident == IncidentMapCoverage.OFF_MAP) {
+            if (chromeVisible && !showSearch && coverage?.incident == IncidentMapCoverage.OFF_MAP) {
                 val meters = coverage.metersOffMap?.roundToInt() ?: 0
                 val bearing = coverage.bearingToMapDegrees?.roundToInt() ?: 0
                 val distance = if (meters >= 1000) "%.1f km".format(meters / 1000.0) else "$meters m"
                 OffMapBanner("OFF THIS SHEET — $distance, bearing $bearing° back onto it")
             }
 
-            if (chromeVisible && (watching || liveTrack.recording)) {
+            if (chromeVisible && !showSearch && (watching || liveTrack.recording)) {
                 TravelPanel(live = liveTrack, armed = watching, unit = distanceUnit)
             }
 
-            if (chromeVisible && placingResources) {
+            if (chromeVisible && !showSearch && placingResources) {
                 ResourcePalette(
                     symbols = ResourceSymbol.RESOURCES,
                     selected = selectedSymbol,
@@ -943,7 +944,7 @@ fun FirelineApp() {
                 )
             }
 
-            if (chromeVisible && measuring) {
+            if (chromeVisible && !showSearch && measuring) {
                 MeasurePanel(
                     result = measureSession.result(),
                     mode = measureMode,
@@ -1039,7 +1040,7 @@ fun FirelineApp() {
                     modifier = Modifier.align(Alignment.BottomStart).padding(10.dp)
                 )
 
-                if (chromeVisible && showLegend) {
+                if (chromeVisible && !showSearch && showLegend) {
                     MapLegend(
                         hasTrack = liveTrack.recording,
                         hasSavedTracks = savedTracks.isNotEmpty(),
@@ -1086,18 +1087,22 @@ fun FirelineApp() {
                             }
                         },
                         onShow = { centreRequest = searchCoordinate?.let { it.latitude to it.longitude } },
-                        onClear = { searchQuery = ""; showSearch = false },
+                        keypadOpen = keypadOpen,
+                        onToggleKeypad = { keypadOpen = !keypadOpen },
+                        onClear = { searchQuery = ""; showSearch = false; keypadOpen = true },
                         modifier = Modifier.align(Alignment.TopCenter).padding(6.dp)
                     )
-                    CoordinateKeypad(
-                        query = searchQuery,
-                        onQueryChange = { searchQuery = it },
-                        modifier = Modifier.align(Alignment.BottomCenter).padding(6.dp)
-                    )
+                    if (keypadOpen) {
+                        CoordinateKeypad(
+                            query = searchQuery,
+                            onQueryChange = { searchQuery = it },
+                            modifier = Modifier.align(Alignment.BottomCenter).padding(6.dp)
+                        )
+                    }
                 }
             }
 
-            if (chromeVisible) Row(
+            if (chromeVisible && !showSearch) Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -1150,7 +1155,7 @@ fun FirelineApp() {
                 }
             }
 
-            if (chromeVisible) Button(
+            if (chromeVisible && !showSearch) Button(
                 onClick = {
                     val intent = Intent(context, TrackRecordingService::class.java).apply {
                         action = if (watching) TrackRecordingService.ACTION_STOP
