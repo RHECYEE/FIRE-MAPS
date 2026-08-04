@@ -28,6 +28,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.rhecyee.firelinemap.data.MarkerEntity
+import com.rhecyee.firelinemap.measure.DistanceUnit
 import com.rhecyee.firelinemap.resources.ResourceSymbol
 
 /**
@@ -202,3 +203,48 @@ private fun relative(timeMillis: Long): String {
         else -> "${minutes / (60 * 24)} d ago"
     }
 }
+
+/** A completed track: how far, how long, and how fast on average. */
+@Composable
+fun TrackDetailDialog(
+    track: SavedTrack,
+    distanceUnit: DistanceUnit,
+    onDismiss: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val hours = track.elapsedSeconds / 3600.0
+    val miles = track.distanceMeters / 1609.344
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(track.name) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    "%.2f %s".format(
+                        distanceUnit.from(track.distanceMeters), distanceUnit.label
+                    ),
+                    fontWeight = FontWeight.Bold
+                )
+                Text("Elapsed ${clockOf(track.elapsedSeconds)}")
+                Text(
+                    if (hours > 0) "Average %.1f mph".format(miles / hours)
+                    else "Average —",
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    "${track.points.size} recorded positions",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDelete) {
+                Text("Delete", color = MaterialTheme.colorScheme.error)
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } }
+    )
+}
+
+private fun clockOf(seconds: Long): String =
+    "%02d:%02d:%02d".format(seconds / 3600, (seconds % 3600) / 60, seconds % 60)

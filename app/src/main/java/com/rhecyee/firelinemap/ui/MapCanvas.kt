@@ -81,6 +81,8 @@ fun MapCanvas(
     measureMode: MeasureMode = MeasureMode.DISTANCE,
     markers: List<MarkerEntity> = emptyList(),
     trackPoints: List<Pair<Double, Double>> = emptyList(),
+    savedTracks: List<SavedTrack> = emptyList(),
+    onTrackTap: ((SavedTrack) -> Unit)? = null,
     onMarkerTap: ((MarkerEntity) -> Unit)? = null,
     onMarkerMoved: ((MarkerEntity, Double, Double) -> Unit)? = null,
     onMapTap: ((latitude: Double, longitude: Double) -> Unit)? = null,
@@ -100,6 +102,8 @@ fun MapCanvas(
     val currentOnMapTap by rememberUpdatedState(onMapTap)
     val currentOnMarkerTap by rememberUpdatedState(onMarkerTap)
     val currentOnMarkerMoved by rememberUpdatedState(onMarkerMoved)
+    val currentSavedTracks by rememberUpdatedState(savedTracks)
+    val currentOnTrackTap by rememberUpdatedState(onTrackTap)
 
     Box(
         modifier = modifier
@@ -195,6 +199,33 @@ fun MapCanvas(
             (point - position).getDistance() <= 48f
         }
 
+        /** The saved track a tap lands on, if any. */
+        fun trackAt(point: Offset): SavedTrack? {
+            val frame = map.frame ?: return null
+            if (pageWidthPoints <= 0 || pageHeightPoints <= 0) return null
+            val drawWidth = image.width * fitScale() * scale
+            val drawHeight = image.height * fitScale() * scale
+            val originX = (viewport.width - drawWidth) / 2f + offset.x
+            val originY = (viewport.height - drawHeight) / 2f + offset.y
+
+            for (saved in currentSavedTracks) {
+                var previous: Offset? = null
+                for ((latitude, longitude) in saved.points) {
+                    val page = frame.geoToPage(latitude, longitude) ?: continue
+                    val current = Offset(
+                        originX + (page.first / pageWidthPoints).toFloat() * drawWidth,
+                        originY + (1f - (page.second / pageHeightPoints).toFloat()) * drawHeight
+                    )
+                    val start = previous
+                    if (start != null && distanceToSegment(point, start, current) <= 44f) {
+                        return saved
+                    }
+                    previous = current
+                }
+            }
+            return null
+        }
+
         fun screenToGeoPoint(point: Offset): Pair<Double, Double>? {
             val page = screenToPagePoints(point) ?: return null
             val geo = map.frame?.pageToGeo(page.first, page.second) ?: return null
@@ -237,6 +268,12 @@ fun MapCanvas(
                             return@awaitEachGesture
                         }
 
+                        val trackHit = if (currentOnTrackTap != null) {
+                            trackAt(down.position)
+                        } else {
+                            null
+                        }
+
                         var travelled = 0f
                         var pointers = 1
                         do {
@@ -255,8 +292,12 @@ fun MapCanvas(
                         } while (event.changes.any { it.pressed })
 
                         if (travelled <= viewConfiguration.touchSlop && pointers == 1) {
-                            val geo = screenToGeoPoint(down.position)
-                            if (geo != null) currentOnMapTap?.invoke(geo.first, geo.second)
+                            if (trackHit != null) {
+                                currentOnTrackTap?.invoke(trackHit)
+                            } else {
+                                val geo = screenToGeoPoint(down.position)
+                                if (geo != null) currentOnMapTap?.invoke(geo.first, geo.second)
+                            }
                         }
                     }
                 }
@@ -313,6 +354,22 @@ fun MapCanvas(
             val fy = 1f - (page.second / pageHeightPoints).toFloat()
             val target = Offset(originX + fx * drawWidth, originY + fy * drawHeight)
 
+            if (frame != null) {
+                for (saved in savedTracks) {
+                    drawTrack(
+                        points = saved.points,
+                        frame = frame,
+                        pageWidthPoints = pageWidthPoints,
+                        pageHeightPoints = pageHeightPoints,
+                        originX = originX,
+                        originY = originY,
+                        drawWidth = drawWidth,
+                        drawHeight = drawHeight,
+                        colour = Color(0xFF9C27B0)
+                    )
+                }
+            }
+
             if (trackPoints.size >= 2 && frame != null) {
                 drawTrack(
                     points = trackPoints,
@@ -354,7 +411,12 @@ fun MapCanvas(
                 )
             }
 
-            if (fx in 0f..1f && fy in 0f..1f) {
+            // Drawn wherever it lands, not only inside the neatline. Off the
+            // sheet there is terrain underneath now, and the whole question
+            // being asked of the screen is "where am I".
+            val onScreen = target.x >= -40f && target.x <= size.width + 40f &&
+                target.y >= -40f && target.y <= size.height + 40f
+            if (onScreen) {
                 drawPositionDot(target, positionIsSimulated)
             } else {
                 // Off the sheet: point at where the position actually is
@@ -417,6 +479,26 @@ fun MapCanvas(
 
 private const val OFF_SHEET_PAN_ALLOWANCE = 1.5f
 
+/** A completed track held against the incident. */
+data class SavedTrack(
+    val id: String,
+    val name: String,
+    val points: List<Pair<Double, Double>>,
+    val distanceMeters: Double,
+    val elapsedSeconds: Long
+)
+
+/** Shortest distance from a point to a line segment, in pixels. */
+private fun distanceToSegment(point: Offset, start: Offset, end: Offset): Float {
+    val dx = end.x - start.x
+    val dy = end.y - start.y
+    val lengthSquared = dx * dx + dy * dy
+    if (lengthSquared <= 0.0001f) return (point - start).getDistance()
+    val t = (((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared)
+        .coerceIn(0f, 1f)
+    return (point - Offset(start.x + t * dx, start.y + t * dy)).getDistance()
+}
+
 /** Draws the recorded travel line. */
 private fun DrawScope.drawTrack(
     points: List<Pair<Double, Double>>,
@@ -426,7 +508,8 @@ private fun DrawScope.drawTrack(
     originX: Float,
     originY: Float,
     drawWidth: Float,
-    drawHeight: Float
+    drawHeight: Float,
+    colour: Color = Color(0xFFE91E63)
 ) {
     if (pageWidthPoints <= 0 || pageHeightPoints <= 0) return
     val screen = points.mapNotNull { (latitude, longitude) ->
@@ -444,10 +527,10 @@ private fun DrawScope.drawTrack(
     }
     // Cased so the line stays readable over both pale terrain and dark shading.
     drawPath(path, Color.Black, alpha = 0.55f, style = Stroke(width = 9f))
-    drawPath(path, Color(0xFFE91E63), style = Stroke(width = 4.5f))
+    drawPath(path, colour, style = Stroke(width = 4.5f))
     // Mark where travel began, so a long track reads directionally.
     drawCircle(Color.White, radius = 7f, center = screen.first())
-    drawCircle(Color(0xFFE91E63), radius = 4.5f, center = screen.first())
+    drawCircle(colour, radius = 4.5f, center = screen.first())
 }
 
 /** Draws the in-progress measurement over the sheet. */
@@ -549,7 +632,7 @@ private fun DrawScope.drawBasemap(
 
     for (x in minX..maxX) {
         for (y in minY..maxY) {
-            val tile = basemap.tile(zoom, x, y) ?: continue
+            val sample = basemap.sample(zoom, x, y) ?: continue
             val tileNorth = BasemapTileCache.tileNorth(y, zoom)
             val tileSouth = BasemapTileCache.tileNorth(y + 1, zoom)
             val tileWest = BasemapTileCache.tileWest(x, zoom)
@@ -570,9 +653,13 @@ private fun DrawScope.drawBasemap(
             if (width <= 0 || height <= 0) continue
 
             drawImage(
-                image = tile.asImageBitmap(),
+                image = sample.bitmap.asImageBitmap(),
+                srcOffset = IntOffset(sample.sourceLeft, sample.sourceTop),
+                srcSize = IntSize(sample.sourceSize, sample.sourceSize),
                 dstOffset = IntOffset(left.roundToInt(), top.roundToInt()),
-                dstSize = IntSize(width, height)
+                // Overdraw by a pixel: adjacent tiles are positioned
+                // independently and rounding leaves hairline seams otherwise.
+                dstSize = IntSize(width + 1, height + 1)
             )
         }
     }

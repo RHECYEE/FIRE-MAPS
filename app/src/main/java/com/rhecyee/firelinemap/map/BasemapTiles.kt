@@ -34,6 +34,14 @@ import kotlin.math.tan
  * Tiles are only ever fetched for ground the operator has actually looked at,
  * and once cached they render offline.
  */
+/** A tile, or a crop of a coarser tile standing in for one. */
+data class TileSample(
+    val bitmap: Bitmap,
+    val sourceLeft: Int,
+    val sourceTop: Int,
+    val sourceSize: Int
+)
+
 class BasemapTileCache(context: Context) {
 
     private val root = File(context.filesDir, "basemap").apply { mkdirs() }
@@ -43,7 +51,43 @@ class BasemapTileCache(context: Context) {
     val tiles: SnapshotStateMap<String, Bitmap> = mutableStateMapOf()
 
     private val inFlight = mutableSetOf<String>()
-    private val limiter = Semaphore(4)
+    private val limiter = Semaphore(6)
+
+    /**
+     * A tile, or the matching piece of a coarser one that is already held.
+     *
+     * A missing tile is drawn from its nearest cached ancestor, blurred up,
+     * rather than left as a hole. Fetches lag badly in a moving vehicle, and a
+     * checkerboard of gaps is worse than soft terrain: it reads as the map
+     * being broken rather than as detail still arriving.
+     */
+    fun sample(zoom: Int, x: Int, y: Int): TileSample? {
+        tile(zoom, x, y)?.let { return TileSample(it, 0, 0, it.width) }
+
+        var depth = 1
+        while (depth <= ANCESTOR_DEPTH && zoom - depth >= 0) {
+            val ancestorZoom = zoom - depth
+            val ancestorX = x shr depth
+            val ancestorY = y shr depth
+            val ancestor = tiles[key(ancestorZoom, ancestorX, ancestorY)]
+            if (ancestor != null) {
+                val span = 1 shl depth
+                val size = ancestor.width / span
+                if (size > 0) {
+                    return TileSample(
+                        bitmap = ancestor,
+                        sourceLeft = (x - (ancestorX shl depth)) * size,
+                        sourceTop = (y - (ancestorY shl depth)) * size,
+                        sourceSize = size
+                    )
+                }
+            }
+            // Ask for it as well, so the fallback layer keeps existing.
+            if (depth == ANCESTOR_DEPTH) tile(ancestorZoom, ancestorX, ancestorY)
+            depth++
+        }
+        return null
+    }
 
     /** Returns the tile if it is ready, otherwise starts fetching it. */
     fun tile(zoom: Int, x: Int, y: Int): Bitmap? {
@@ -112,6 +156,9 @@ class BasemapTileCache(context: Context) {
         const val ATTRIBUTION = "USGS The National Map"
 
         const val TILE_SIZE = 256
+
+        /** How many zoom levels to climb looking for something to draw. */
+        const val ANCESTOR_DEPTH = 4
 
         /** Ground resolution of one tile pixel, in metres. */
         fun metersPerPixel(latitude: Double, zoom: Int): Double =

@@ -64,7 +64,6 @@ import com.rhecyee.firelinemap.FirelineApplication
 import com.rhecyee.firelinemap.data.IncidentEntity
 import com.rhecyee.firelinemap.data.MarkerEntity
 import com.rhecyee.firelinemap.resources.ResourceRepository
-import com.rhecyee.firelinemap.resources.ResourceCategory
 import com.rhecyee.firelinemap.resources.ResourceSymbol
 import com.rhecyee.firelinemap.geopdf.DropPoint
 import com.rhecyee.firelinemap.geopdf.DropPointDetector
@@ -127,7 +126,6 @@ fun FirelineApp() {
     var pendingPlacement by remember { mutableStateOf<Pair<Double, Double>?>(null) }
     var inspecting by remember { mutableStateOf<MarkerEntity?>(null) }
     var inspectingReports by remember { mutableIntStateOf(0) }
-    var dropping by remember { mutableStateOf(false) }
     var simMode by remember { mutableStateOf(false) }
 
     val measureSession = remember { MeasureSession() }
@@ -255,6 +253,24 @@ fun FirelineApp() {
 
     val displayLatitude = simulated?.first ?: gpsLocation?.latitude
     val displayLongitude = simulated?.second ?: gpsLocation?.longitude
+    val trackEntities by (activeIncident?.id?.let { app.database.dao().observeTracks(it) }
+        ?: kotlinx.coroutines.flow.flowOf(emptyList()))
+        .collectAsState(initial = emptyList())
+
+    val savedTracks = remember(trackEntities) {
+        trackEntities.filter { !it.isRecording }.mapNotNull { entity ->
+            val points = parseLineString(entity.geometryGeoJson)
+            if (points.size < 2) null else SavedTrack(
+                id = entity.id,
+                name = entity.name,
+                points = points,
+                distanceMeters = entity.distanceMeters,
+                elapsedSeconds = entity.elapsedSeconds
+            )
+        }
+    }
+    var inspectingTrack by remember { mutableStateOf<SavedTrack?>(null) }
+
     val markers by (activeIncident?.id?.let { app.database.dao().observeMarkers(it) }
         ?: kotlinx.coroutines.flow.flowOf(emptyList()))
         .collectAsState(initial = emptyList())
@@ -291,6 +307,19 @@ fun FirelineApp() {
                 }
             )
         }
+    }
+
+    inspectingTrack?.let { track ->
+        TrackDetailDialog(
+            track = track,
+            distanceUnit = distanceUnit,
+            onDismiss = { inspectingTrack = null },
+            onDelete = {
+                val id = track.id
+                inspectingTrack = null
+                scope.launch { app.database.dao().deleteTrack(id) }
+            }
+        )
     }
 
     inspecting?.let { marker ->
@@ -505,14 +534,6 @@ fun FirelineApp() {
                 TravelPanel(live = liveTrack, armed = watching, unit = distanceUnit)
             }
 
-            if (dropping) {
-                ResourcePalette(
-                    symbols = ResourceSymbol.POINTS,
-                    selected = selectedSymbol,
-                    onSelect = { selectedSymbol = it }
-                )
-            }
-
             if (placingResources) {
                 ResourcePalette(
                     symbols = ResourceSymbol.RESOURCES,
@@ -560,6 +581,8 @@ fun FirelineApp() {
                 measureMode = measureMode,
                 markers = markers,
                 trackPoints = liveTrack.points,
+                savedTracks = savedTracks,
+                onTrackTap = { inspectingTrack = it },
                 onMarkerTap = { marker ->
                     inspecting = marker
                     scope.launch { inspectingReports = resources.reportCount(marker.id) }
@@ -568,10 +591,7 @@ fun FirelineApp() {
                     scope.launch { resources.move(marker, lat, lon) }
                 },
                 onMapTap = { lat, lon ->
-                    if (dropping) {
-                        if (selectedSymbol == null) selectedSymbol = ResourceSymbol.OTHER
-                        pendingPlacement = lat to lon
-                    } else if (placingResources && selectedSymbol != null) {
+                    if (placingResources && selectedSymbol != null) {
                         pendingPlacement = lat to lon
                     } else if (simMode) {
                         simulated = lat to lon
@@ -610,26 +630,10 @@ fun FirelineApp() {
                     active = measuring
                 ) {
                     measuring = !measuring
-                    if (measuring) { placingResources = false; dropping = false; simMode = false }
+                    if (measuring) { placingResources = false; simMode = false }
                     if (!measuring) {
                         measureSession.clear()
                         measurePoints = emptyList()
-                    }
-                }
-                ToolButton(
-                    "Point",
-                    Icons.Default.AddLocationAlt,
-                    Modifier.weight(1f),
-                    active = dropping
-                ) {
-                    dropping = !dropping
-                    if (dropping) {
-                        measuring = false
-                        placingResources = false
-                        simMode = false
-                        if (selectedSymbol?.category != ResourceCategory.POINT) {
-                            selectedSymbol = ResourceSymbol.OTHER
-                        }
                     }
                 }
                 ToolButton(
@@ -640,11 +644,8 @@ fun FirelineApp() {
                 ) {
                     placingResources = !placingResources
                     if (placingResources) {
-                        if (selectedSymbol?.category == ResourceCategory.POINT) {
-                            selectedSymbol = null
-                        }
                         measuring = false
-                        dropping = false
+                        simMode = false
                     } else {
                         selectedSymbol = null
                     }
@@ -659,7 +660,6 @@ fun FirelineApp() {
                     if (simMode) {
                         measuring = false
                         placingResources = false
-                        dropping = false
                     } else {
                         // Leaving the mode returns the panel to the real fix.
                         simulated = null
@@ -706,6 +706,29 @@ fun FirelineApp() {
             Spacer(Modifier.height(6.dp))
         }
     }
+}
+
+/**
+ * Reads a GeoJSON LineString's coordinates.
+ *
+ * Hand-parsed rather than routed through a JSON library: the shape is fixed,
+ * it is written by this app, and org.json is only a stub on the unit test
+ * classpath.
+ */
+private fun parseLineString(geoJson: String): List<Pair<Double, Double>> {
+    val open = geoJson.indexOf("[[")
+    if (open < 0) return emptyList()
+    val close = geoJson.lastIndexOf("]]")
+    if (close <= open) return emptyList()
+    return Regex("""\[\s*(-?[0-9.eE+-]+)\s*,\s*(-?[0-9.eE+-]+)\s*\]""")
+        .findAll(geoJson.substring(open, close + 2))
+        .mapNotNull { match ->
+            // GeoJSON is longitude first.
+            val longitude = match.groupValues[1].toDoubleOrNull() ?: return@mapNotNull null
+            val latitude = match.groupValues[2].toDoubleOrNull() ?: return@mapNotNull null
+            latitude to longitude
+        }
+        .toList()
 }
 
 @Composable

@@ -51,9 +51,20 @@ enum class ResourceSymbol(
     companion object {
         fun byId(id: String?): ResourceSymbol = entries.firstOrNull { it.id == id } ?: OTHER
 
-        /** Operational resources: crews, equipment and facilities. */
-        val RESOURCES: List<ResourceSymbol> =
-            entries.filter { it.category != ResourceCategory.POINT }
+        /**
+         * The one palette.
+         *
+         * Crews and equipment lead because they are what gets placed most,
+         * with hazards and facilities behind them. A separate point tool was
+         * split off earlier and put back: two palettes meant deciding which
+         * kind of thing a mark was before placing it, which is a filing
+         * question asked at the worst possible moment.
+         */
+        val RESOURCES: List<ResourceSymbol> = listOf(
+            HAND_CREW, ENGINE, DOZER, MEDIC, HAZARD
+        ) + entries.filter {
+            it !in listOf(HAND_CREW, ENGINE, DOZER, MEDIC, HAZARD)
+        }
 
         /**
          * What the point tool offers.
