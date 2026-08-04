@@ -42,6 +42,8 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.rhecyee.firelinemap.map.BasemapTileCache
+import com.rhecyee.firelinemap.measure.MeasureMode
+import com.rhecyee.firelinemap.measure.MeasurePoint
 import com.rhecyee.firelinemap.geopdf.DropPoint
 import com.rhecyee.firelinemap.geopdf.ImportedMap
 import kotlin.math.atan2
@@ -64,6 +66,8 @@ fun MapCanvas(
     positionIsSimulated: Boolean = false,
     dropPoints: List<DropPoint> = emptyList(),
     basemap: BasemapTileCache? = null,
+    measurePoints: List<MeasurePoint> = emptyList(),
+    measureMode: MeasureMode = MeasureMode.DISTANCE,
     onMapTap: ((latitude: Double, longitude: Double) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
@@ -206,6 +210,20 @@ fun MapCanvas(
             val fy = 1f - (page.second / pageHeightPoints).toFloat()
             val target = Offset(originX + fx * drawWidth, originY + fy * drawHeight)
 
+            if (measurePoints.size >= 1) {
+                drawMeasurement(
+                    points = measurePoints,
+                    mode = measureMode,
+                    frame = frame,
+                    pageWidthPoints = pageWidthPoints,
+                    pageHeightPoints = pageHeightPoints,
+                    originX = originX,
+                    originY = originY,
+                    drawWidth = drawWidth,
+                    drawHeight = drawHeight
+                )
+            }
+
             if (fx in 0f..1f && fy in 0f..1f) {
                 drawPositionDot(target, positionIsSimulated)
             } else {
@@ -268,6 +286,49 @@ fun MapCanvas(
 }
 
 private const val OFF_SHEET_PAN_ALLOWANCE = 1.5f
+
+/** Draws the in-progress measurement over the sheet. */
+private fun DrawScope.drawMeasurement(
+    points: List<MeasurePoint>,
+    mode: MeasureMode,
+    frame: com.rhecyee.firelinemap.geopdf.MapFrame,
+    pageWidthPoints: Int,
+    pageHeightPoints: Int,
+    originX: Float,
+    originY: Float,
+    drawWidth: Float,
+    drawHeight: Float
+) {
+    if (pageWidthPoints <= 0 || pageHeightPoints <= 0) return
+    val screen = points.mapNotNull { point ->
+        val page = frame.geoToPage(point.latitude, point.longitude) ?: return@mapNotNull null
+        Offset(
+            originX + (page.first / pageWidthPoints).toFloat() * drawWidth,
+            originY + (1f - (page.second / pageHeightPoints).toFloat()) * drawHeight
+        )
+    }
+    if (screen.isEmpty()) return
+
+    val accent = Color(0xFFFFC400)
+    if (screen.size >= 2) {
+        val path = Path().apply {
+            moveTo(screen.first().x, screen.first().y)
+            screen.drop(1).forEach { lineTo(it.x, it.y) }
+            if (mode == MeasureMode.AREA && screen.size >= 3) close()
+        }
+        if (mode == MeasureMode.AREA && screen.size >= 3) {
+            drawPath(path, accent, alpha = 0.20f)
+        }
+        // A dark casing under the line keeps it readable over pale terrain
+        // and dark shading alike.
+        drawPath(path, Color.Black, alpha = 0.55f, style = Stroke(width = 7f))
+        drawPath(path, accent, style = Stroke(width = 3.5f))
+    }
+    screen.forEachIndexed { index, point ->
+        drawCircle(Color.Black, radius = 7.5f, center = point, alpha = 0.6f)
+        drawCircle(if (index == 0) Color.White else accent, radius = 5f, center = point)
+    }
+}
 
 /**
  * Fills the canvas with terrain tiles positioned through the sheet's own

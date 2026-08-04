@@ -75,6 +75,12 @@ import com.rhecyee.firelinemap.location.TrackRecordingService
 import com.rhecyee.firelinemap.location.SegmentAnchor
 import com.rhecyee.firelinemap.location.TrackSettingsStore
 import com.rhecyee.firelinemap.map.BasemapTileCache
+import com.rhecyee.firelinemap.measure.AreaUnit
+import com.rhecyee.firelinemap.measure.DistanceUnit
+import com.rhecyee.firelinemap.measure.ElevationService
+import com.rhecyee.firelinemap.measure.MeasureMode
+import com.rhecyee.firelinemap.measure.MeasurePoint
+import com.rhecyee.firelinemap.measure.MeasureSession
 import com.rhecyee.firelinemap.map.GeoBounds
 import com.rhecyee.firelinemap.map.IncidentMapCoverage
 import com.rhecyee.firelinemap.map.MapCoverage
@@ -107,6 +113,15 @@ fun FirelineApp() {
     val repository = remember { MapDocumentRepository(context) }
     val urlImporter = remember { MapUrlImporter(context.cacheDir) }
     val basemap = remember { BasemapTileCache(context) }
+    val elevations = remember { ElevationService() }
+
+    val measureSession = remember { MeasureSession() }
+    var measuring by remember { mutableStateOf(false) }
+    var measureMode by remember { mutableStateOf(MeasureMode.DISTANCE) }
+    var measurePoints by remember { mutableStateOf<List<MeasurePoint>>(emptyList()) }
+    var distanceUnit by remember { mutableStateOf(DistanceUnit.FEET) }
+    var areaUnit by remember { mutableStateOf(AreaUnit.ACRES) }
+    var elevationPending by remember { mutableStateOf(false) }
     var activeMap by remember { mutableStateOf<ImportedMap?>(null) }
     var bitmap by remember { mutableStateOf<Bitmap?>(null) }
     var pageWidth by remember { mutableIntStateOf(0) }
@@ -426,6 +441,35 @@ fun FirelineApp() {
                 OffMapBanner("OFF THIS SHEET — $distance, bearing $bearing° back onto it")
             }
 
+            if (measuring) {
+                MeasurePanel(
+                    result = measureSession.result(),
+                    mode = measureMode,
+                    distanceUnit = distanceUnit,
+                    areaUnit = areaUnit,
+                    elevationPending = elevationPending,
+                    onCycleDistanceUnit = { distanceUnit = distanceUnit.next() },
+                    onCycleAreaUnit = { areaUnit = areaUnit.next() },
+                    onToggleMode = {
+                        measureMode = if (measureMode == MeasureMode.AREA) {
+                            MeasureMode.DISTANCE
+                        } else {
+                            MeasureMode.AREA
+                        }
+                        measureSession.mode = measureMode
+                        measurePoints = measureSession.currentPoints
+                    },
+                    onUndo = {
+                        measureSession.undo()
+                        measurePoints = measureSession.currentPoints
+                    },
+                    onClear = {
+                        measureSession.clear()
+                        measurePoints = emptyList()
+                    }
+                )
+            }
+
             MapCanvas(
                 map = activeMap,
                 bitmap = bitmap,
@@ -436,7 +480,29 @@ fun FirelineApp() {
                 positionIsSimulated = simulated != null,
                 dropPoints = if (segmentAtDropPoints) dropPoints else emptyList(),
                 basemap = basemap,
-                onMapTap = { lat, lon -> simulated = lat to lon },
+                measurePoints = measurePoints,
+                measureMode = measureMode,
+                onMapTap = { lat, lon ->
+                    if (measuring) {
+                        measureSession.mode = measureMode
+                        measureSession.add(lat, lon)
+                        measurePoints = measureSession.currentPoints
+                        val index = measureSession.size - 1
+                        elevationPending = true
+                        scope.launch {
+                            val elevation = withContext(Dispatchers.IO) {
+                                elevations.elevationMeters(lat, lon)
+                            }
+                            if (elevation != null) {
+                                measureSession.setElevation(index, elevation)
+                                measurePoints = measureSession.currentPoints
+                            }
+                            elevationPending = false
+                        }
+                    } else {
+                        simulated = lat to lon
+                    }
+                },
                 modifier = Modifier.weight(1f)
             )
 
@@ -444,7 +510,17 @@ fun FirelineApp() {
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                ToolButton("Measure", Icons.Default.Straighten, Modifier.weight(1f))
+                ToolButton(
+                    if (measuring) "✕ Measure" else "Measure",
+                    Icons.Default.Straighten,
+                    Modifier.weight(1f)
+                ) {
+                    measuring = !measuring
+                    if (!measuring) {
+                        measureSession.clear()
+                        measurePoints = emptyList()
+                    }
+                }
                 ToolButton("Drop", Icons.Default.AddLocationAlt, Modifier.weight(1f))
                 ToolButton("Resources", Icons.Default.People, Modifier.weight(1f))
                 ToolButton(
