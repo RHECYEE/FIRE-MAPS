@@ -3,6 +3,7 @@ package com.rhecyee.firelinemap.ui
 import android.graphics.Bitmap
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Box
@@ -34,6 +35,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
@@ -42,6 +44,8 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.rhecyee.firelinemap.map.BasemapTileCache
+import com.rhecyee.firelinemap.data.MarkerEntity
+import com.rhecyee.firelinemap.resources.ResourceSymbol
 import com.rhecyee.firelinemap.measure.MeasureMode
 import com.rhecyee.firelinemap.measure.MeasurePoint
 import com.rhecyee.firelinemap.geopdf.DropPoint
@@ -68,12 +72,17 @@ fun MapCanvas(
     basemap: BasemapTileCache? = null,
     measurePoints: List<MeasurePoint> = emptyList(),
     measureMode: MeasureMode = MeasureMode.DISTANCE,
+    markers: List<MarkerEntity> = emptyList(),
+    onMarkerTap: ((MarkerEntity) -> Unit)? = null,
+    onMarkerMoved: ((MarkerEntity, Double, Double) -> Unit)? = null,
     onMapTap: ((latitude: Double, longitude: Double) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     var scale by remember(map?.id) { mutableFloatStateOf(1f) }
     var offset by remember(map?.id) { mutableStateOf(Offset.Zero) }
     var viewport by remember { mutableStateOf(IntSize.Zero) }
+    var draggingMarkerId by remember { mutableStateOf<String?>(null) }
+    var dragPoint by remember { mutableStateOf(Offset.Zero) }
 
     Box(
         modifier = modifier
@@ -137,9 +146,64 @@ fun MapCanvas(
             return fx * pageWidthPoints.toDouble() to (1f - fy) * pageHeightPoints.toDouble()
         }
 
+        fun markerScreenPosition(marker: MarkerEntity): Offset? {
+            val frame = map.frame ?: return null
+            if (pageWidthPoints <= 0 || pageHeightPoints <= 0) return null
+            val page = frame.geoToPage(marker.latitude, marker.longitude) ?: return null
+            val drawWidth = image.width * fit * scale
+            val drawHeight = image.height * fit * scale
+            val originX = (viewport.width - drawWidth) / 2f + offset.x
+            val originY = (viewport.height - drawHeight) / 2f + offset.y
+            return Offset(
+                originX + (page.first / pageWidthPoints).toFloat() * drawWidth,
+                originY + (1f - (page.second / pageHeightPoints).toFloat()) * drawHeight
+            )
+        }
+
+        fun markerAt(point: Offset): MarkerEntity? = markers.lastOrNull { marker ->
+            val position = markerScreenPosition(marker) ?: return@lastOrNull false
+            // Generous target: this gets used with gloves on.
+            (point - position).getDistance() <= 48f
+        }
+
+        fun screenToGeoPoint(point: Offset): Pair<Double, Double>? {
+            val page = screenToPagePoints(point) ?: return null
+            val geo = map.frame?.pageToGeo(page.first, page.second) ?: return null
+            return geo.latitude to geo.longitude
+        }
+
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
+                .pointerInput(map.id, markers, onMarkerMoved) {
+                    if (onMarkerMoved != null) {
+                        detectDragGestures(
+                            onDragStart = { start ->
+                                markerAt(start)?.let {
+                                    draggingMarkerId = it.id
+                                    dragPoint = start
+                                }
+                            },
+                            onDrag = { change, amount ->
+                                if (draggingMarkerId != null) {
+                                    change.consume()
+                                    dragPoint += amount
+                                }
+                            },
+                            onDragEnd = {
+                                val id = draggingMarkerId
+                                val marker = markers.firstOrNull { it.id == id }
+                                if (marker != null) {
+                                    screenToGeoPoint(dragPoint)?.let { (lat, lon) ->
+                                        onMarkerMoved(marker, lat, lon)
+                                    }
+                                }
+                                draggingMarkerId = null
+                            },
+                            onDragCancel = { draggingMarkerId = null }
+                        )
+                    }
+                }
                 .pointerInput(map.id) {
                     detectTransformGestures { _, pan, zoom, _ ->
                         val next = (scale * zoom).coerceIn(1f, 12f)
@@ -147,14 +211,20 @@ fun MapCanvas(
                         offset = clamp(offset + pan, next)
                     }
                 }
-                .pointerInput(map.id, onMapTap) {
-                    if (onMapTap != null) {
-                        detectTapGestures { point ->
-                            val page = screenToPagePoints(point) ?: return@detectTapGestures
-                            val geo = map.frame?.pageToGeo(page.first, page.second)
-                                ?: return@detectTapGestures
-                            onMapTap(geo.latitude, geo.longitude)
+                .pointerInput(map.id, markers, onMapTap, onMarkerTap) {
+                    detectTapGestures { point ->
+                        // A tap on a pin is about that pin, never about the
+                        // ground underneath it.
+                        val hit = markerAt(point)
+                        if (hit != null) {
+                            onMarkerTap?.invoke(hit)
+                            return@detectTapGestures
                         }
+                        val onTap = onMapTap ?: return@detectTapGestures
+                        val page = screenToPagePoints(point) ?: return@detectTapGestures
+                        val geo = map.frame?.pageToGeo(page.first, page.second)
+                            ?: return@detectTapGestures
+                        onTap(geo.latitude, geo.longitude)
                     }
                 }
         ) {
@@ -221,6 +291,20 @@ fun MapCanvas(
                     originY = originY,
                     drawWidth = drawWidth,
                     drawHeight = drawHeight
+                )
+            }
+
+            for (marker in markers) {
+                val position = if (marker.id == draggingMarkerId) {
+                    dragPoint
+                } else {
+                    markerScreenPosition(marker)
+                } ?: continue
+                drawResourcePin(
+                    center = position,
+                    symbol = ResourceSymbol.byId(marker.symbol),
+                    title = marker.title,
+                    lifted = marker.id == draggingMarkerId
                 )
             }
 
@@ -411,6 +495,61 @@ private fun DrawScope.drawBasemap(
                 dstOffset = IntOffset(left.roundToInt(), top.roundToInt()),
                 dstSize = IntSize(width, height)
             )
+        }
+    }
+}
+
+/** A resource pin: a coloured plate carrying its abbreviation, with the
+ * identifier beneath it. */
+private fun DrawScope.drawResourcePin(
+    center: Offset,
+    symbol: ResourceSymbol,
+    title: String,
+    lifted: Boolean
+) {
+    val halfWidth = 30f
+    val halfHeight = 19f
+    val scale = if (lifted) 1.18f else 1f
+    val left = center.x - halfWidth * scale
+    val top = center.y - halfHeight * scale
+
+    drawCircle(Color.Black, radius = 4f, center = center, alpha = 0.5f)
+    drawRoundRect(
+        color = Color.Black,
+        topLeft = Offset(left - 2f, top - 2f),
+        size = androidx.compose.ui.geometry.Size(
+            halfWidth * 2 * scale + 4f, halfHeight * 2 * scale + 4f
+        ),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(7f, 7f),
+        alpha = 0.55f
+    )
+    drawRoundRect(
+        color = Color(symbol.colorArgb),
+        topLeft = Offset(left, top),
+        size = androidx.compose.ui.geometry.Size(halfWidth * 2 * scale, halfHeight * 2 * scale),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(6f, 6f)
+    )
+
+    drawContext.canvas.nativeCanvas.apply {
+        val glyphPaint = android.graphics.Paint().apply {
+            color = android.graphics.Color.WHITE
+            textAlign = android.graphics.Paint.Align.CENTER
+            textSize = 22f * scale
+            isAntiAlias = true
+            isFakeBoldText = true
+        }
+        drawText(symbol.glyph, center.x, center.y + 8f * scale, glyphPaint)
+
+        if (title.isNotBlank()) {
+            val labelPaint = android.graphics.Paint().apply {
+                color = android.graphics.Color.WHITE
+                textAlign = android.graphics.Paint.Align.CENTER
+                textSize = 21f
+                isAntiAlias = true
+                isFakeBoldText = true
+                setShadowLayer(4f, 0f, 0f, android.graphics.Color.BLACK)
+            }
+            drawText(title.take(12), center.x, top + halfHeight * 2 * scale + 22f, labelPaint)
         }
     }
 }

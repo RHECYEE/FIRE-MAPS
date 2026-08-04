@@ -45,8 +45,23 @@ interface FirelineDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertMarker(marker: MarkerEntity)
 
+    @Query("SELECT * FROM markers WHERE incidentId = :incidentId ORDER BY updatedAt DESC")
+    fun observeMarkers(incidentId: String): Flow<List<MarkerEntity>>
+
+    @Query("DELETE FROM markers WHERE id = :markerId")
+    suspend fun deleteMarker(markerId: String)
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPositionHistory(position: ResourcePositionHistoryEntity)
+
+    @Query(
+        "SELECT * FROM resource_position_history WHERE markerId = :markerId " +
+            "ORDER BY recordedAt DESC"
+    )
+    suspend fun positionHistory(markerId: String): List<ResourcePositionHistoryEntity>
+
+    @Query("SELECT COUNT(*) FROM resource_position_history WHERE markerId = :markerId")
+    suspend fun positionHistoryCount(markerId: String): Int
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertBasemapRegion(region: BasemapRegionEntity)

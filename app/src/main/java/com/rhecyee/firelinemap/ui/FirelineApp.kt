@@ -62,6 +62,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.rhecyee.firelinemap.FirelineApplication
 import com.rhecyee.firelinemap.data.IncidentEntity
+import com.rhecyee.firelinemap.data.MarkerEntity
+import com.rhecyee.firelinemap.resources.ResourceRepository
+import com.rhecyee.firelinemap.resources.ResourceSymbol
 import com.rhecyee.firelinemap.geopdf.DropPoint
 import com.rhecyee.firelinemap.geopdf.DropPointDetector
 import com.rhecyee.firelinemap.geopdf.ImportedMap
@@ -114,6 +117,13 @@ fun FirelineApp() {
     val urlImporter = remember { MapUrlImporter(context.cacheDir) }
     val basemap = remember { BasemapTileCache(context) }
     val elevations = remember { ElevationService() }
+    val resources = remember { ResourceRepository(app.database.dao()) }
+
+    var placingResources by remember { mutableStateOf(false) }
+    var selectedSymbol by remember { mutableStateOf<ResourceSymbol?>(null) }
+    var pendingPlacement by remember { mutableStateOf<Pair<Double, Double>?>(null) }
+    var inspecting by remember { mutableStateOf<MarkerEntity?>(null) }
+    var inspectingReports by remember { mutableIntStateOf(0) }
 
     val measureSession = remember { MeasureSession() }
     var measuring by remember { mutableStateOf(false) }
@@ -240,6 +250,10 @@ fun FirelineApp() {
 
     val displayLatitude = simulated?.first ?: gpsLocation?.latitude
     val displayLongitude = simulated?.second ?: gpsLocation?.longitude
+    val markers by (activeIncident?.id?.let { app.database.dao().observeMarkers(it) }
+        ?: kotlinx.coroutines.flow.flowOf(emptyList()))
+        .collectAsState(initial = emptyList())
+
     val frame = activeMap?.frame
 
     val coverage = remember(activeMap?.id, displayLatitude, displayLongitude) {
@@ -251,6 +265,43 @@ fun FirelineApp() {
             val bounds = frame?.geographicBounds()?.let { GeoBounds(it[0], it[1], it[2], it[3]) }
             MapCoverage.resolve(lat, lon, bounds, emptyList())
         }
+    }
+
+    pendingPlacement?.let { (lat, lon) ->
+        val symbol = selectedSymbol
+        if (symbol == null) {
+            pendingPlacement = null
+        } else {
+            PlaceResourceDialog(
+                symbol = symbol,
+                onDismiss = { pendingPlacement = null },
+                onConfirm = { title, note ->
+                    val incident = activeIncident?.id
+                    pendingPlacement = null
+                    if (incident != null) {
+                        scope.launch {
+                            resources.place(incident, symbol, title, note, lat, lon)
+                        }
+                    }
+                }
+            )
+        }
+    }
+
+    inspecting?.let { marker ->
+        ResourceDetailDialog(
+            marker = marker,
+            reportCount = inspectingReports,
+            coordinates = CoordinateFormatter.format(
+                marker.latitude, marker.longitude, coordinateFormat
+            ),
+            onDismiss = { inspecting = null },
+            onDelete = {
+                val id = marker.id
+                inspecting = null
+                scope.launch { resources.delete(id) }
+            }
+        )
     }
 
     if (showTrackSettings) {
@@ -441,6 +492,13 @@ fun FirelineApp() {
                 OffMapBanner("OFF THIS SHEET — $distance, bearing $bearing° back onto it")
             }
 
+            if (placingResources) {
+                ResourcePalette(
+                    selected = selectedSymbol,
+                    onSelect = { selectedSymbol = it }
+                )
+            }
+
             if (measuring) {
                 MeasurePanel(
                     result = measureSession.result(),
@@ -482,8 +540,18 @@ fun FirelineApp() {
                 basemap = basemap,
                 measurePoints = measurePoints,
                 measureMode = measureMode,
+                markers = markers,
+                onMarkerTap = { marker ->
+                    inspecting = marker
+                    scope.launch { inspectingReports = resources.reportCount(marker.id) }
+                },
+                onMarkerMoved = { marker, lat, lon ->
+                    scope.launch { resources.move(marker, lat, lon) }
+                },
                 onMapTap = { lat, lon ->
-                    if (measuring) {
+                    if (placingResources && selectedSymbol != null) {
+                        pendingPlacement = lat to lon
+                    } else if (measuring) {
                         measureSession.mode = measureMode
                         measureSession.add(lat, lon)
                         measurePoints = measureSession.currentPoints
@@ -516,13 +584,25 @@ fun FirelineApp() {
                     Modifier.weight(1f)
                 ) {
                     measuring = !measuring
+                    if (measuring) placingResources = false
                     if (!measuring) {
                         measureSession.clear()
                         measurePoints = emptyList()
                     }
                 }
                 ToolButton("Drop", Icons.Default.AddLocationAlt, Modifier.weight(1f))
-                ToolButton("Resources", Icons.Default.People, Modifier.weight(1f))
+                ToolButton(
+                    if (placingResources) "✕ Resources" else "Resources",
+                    Icons.Default.People,
+                    Modifier.weight(1f)
+                ) {
+                    placingResources = !placingResources
+                    if (placingResources) {
+                        measuring = false
+                    } else {
+                        selectedSymbol = null
+                    }
+                }
                 ToolButton(
                     if (simulated != null) "✕ Sim" else "Draw",
                     Icons.Default.Draw,
