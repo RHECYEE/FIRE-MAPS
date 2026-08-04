@@ -82,6 +82,7 @@ import com.rhecyee.firelinemap.location.TrackRecordingState
 import com.rhecyee.firelinemap.medical.MedicalReport
 import com.rhecyee.firelinemap.medical.MedicalRepository
 import com.rhecyee.firelinemap.medical.RadioReadout
+import com.rhecyee.firelinemap.medical.PlaceNamer
 import com.rhecyee.firelinemap.medical.ReporterProfile
 import com.rhecyee.firelinemap.location.TrackRecordingService
 import com.rhecyee.firelinemap.location.SegmentAnchor
@@ -151,6 +152,8 @@ fun FirelineApp() {
     val resources = remember { ResourceRepository(app.database.dao()) }
     val medical = remember { MedicalRepository(app.database.dao()) }
     val reporter = remember { ReporterProfile(context) }
+    val placeNamer = remember { PlaceNamer(context) }
+    var typing by remember { mutableStateOf<DictationField?>(null) }
 
     var medicalReport by remember { mutableStateOf<MedicalReport?>(null) }
     var showReadout by remember { mutableStateOf(false) }
@@ -213,6 +216,7 @@ fun FirelineApp() {
                 DictationField.NATURE -> current.copy(natureOfInjury = spoken)
                 DictationField.ASSESSMENT -> current.copy(patientAssessment = spoken)
                 DictationField.HAZARDS -> current.copy(lzHazards = spoken)
+                DictationField.RADIO_NAME -> current.copy(radioNameOverride = spoken)
                 DictationField.UPDATE -> {
                     scope.launch { medical.addUpdate(current.id, spoken) }
                     current.copy(
@@ -242,6 +246,7 @@ fun FirelineApp() {
                     DictationField.ASSESSMENT -> "Patient assessment"
                     DictationField.HAZARDS -> "LZ hazards"
                     DictationField.UPDATE -> "Update"
+                    DictationField.RADIO_NAME -> "Radio name"
                 }
             )
         }
@@ -508,6 +513,51 @@ fun FirelineApp() {
         )
     }
 
+    typing?.let { field ->
+        val report = medicalReport
+        if (report == null) {
+            typing = null
+        } else {
+            TextEntryDialog(
+                label = when (field) {
+                    DictationField.NATURE -> "Nature of injury"
+                    DictationField.ASSESSMENT -> "Patient assessment"
+                    DictationField.HAZARDS -> "LZ hazards"
+                    DictationField.RADIO_NAME -> "Radio name"
+                    DictationField.UPDATE -> "Update"
+                },
+                initial = when (field) {
+                    DictationField.NATURE -> report.natureOfInjury.orEmpty()
+                    DictationField.ASSESSMENT -> report.patientAssessment.orEmpty()
+                    DictationField.HAZARDS -> report.lzHazards.orEmpty()
+                    DictationField.RADIO_NAME -> report.radioName
+                    DictationField.UPDATE -> ""
+                },
+                onDismiss = { typing = null },
+                onConfirm = { entered ->
+                    typing = null
+                    val updated = when (field) {
+                        DictationField.NATURE -> report.copy(natureOfInjury = entered)
+                        DictationField.ASSESSMENT -> report.copy(patientAssessment = entered)
+                        DictationField.HAZARDS -> report.copy(lzHazards = entered)
+                        DictationField.RADIO_NAME -> report.copy(radioNameOverride = entered)
+                        DictationField.UPDATE -> {
+                            scope.launch { medical.addUpdate(report.id, entered) }
+                            report.copy(
+                                updates = report.updates +
+                                    com.rhecyee.firelinemap.medical.ReportUpdate(
+                                        System.currentTimeMillis(), entered
+                                    )
+                            )
+                        }
+                    }
+                    medicalReport = updated
+                    scope.launch { medical.save(updated) }
+                }
+            )
+        }
+    }
+
     medicalReport?.let { report ->
         if (showReadout) {
             RadioReadoutDialog(
@@ -527,9 +577,24 @@ fun FirelineApp() {
                     medicalReport = updated
                     scope.launch { medical.save(updated) }
                 },
+                onType = { typing = it },
                 onDictate = { dictate(it) },
+                onNameNearby = {
+                    scope.launch {
+                        val name = withContext(Dispatchers.IO) {
+                            placeNamer.nearbyName(report.latitude, report.longitude)
+                        }
+                        if (name == null) {
+                            statusMessage = "No nearby place name available."
+                        } else {
+                            val updated = report.copy(radioNameOverride = name)
+                            medicalReport = updated
+                            medical.save(updated)
+                        }
+                    }
+                },
                 onReadout = { showReadout = true },
-                onAddUpdate = { dictate(DictationField.UPDATE) },
+                onAddUpdate = { typing = DictationField.UPDATE },
                 onDismiss = { medicalReport = null }
             )
         }

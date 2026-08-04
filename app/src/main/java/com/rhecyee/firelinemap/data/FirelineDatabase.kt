@@ -81,7 +81,8 @@ abstract class FirelineDatabase : RoomDatabase() {
                         `incidentCommander` TEXT, `medicalProvider` TEXT,
                         `groundContact` TEXT, `markerId` TEXT, `trackId` TEXT,
                         `photoCount` INTEGER NOT NULL, `format` TEXT NOT NULL,
-                        `hasPosition` INTEGER NOT NULL DEFAULT 1, `closedAt` INTEGER,
+                        `hasPosition` INTEGER NOT NULL DEFAULT 1,
+                        `radioNameOverride` TEXT, `closedAt` INTEGER,
                         PRIMARY KEY(`id`),
                         FOREIGN KEY(`incidentId`) REFERENCES `incidents`(`id`)
                             ON UPDATE NO ACTION ON DELETE CASCADE

@@ -74,8 +74,39 @@ class RadioReadoutTest {
     }
 
     @Test
-    fun elevationIsIncludedForTheAircraft() {
-        assertTrue(RadioReadout.spoken(report()).contains("elevation 1417 metres"))
+    fun elevationIsNotReadOut() {
+        // Dropped on request: it lengthens the transmission without helping
+        // anyone find the patient.
+        val script = RadioReadout.script(report())
+        assertFalse(script.contains("1417"))
+        assertFalse(script.lowercase().contains("elevation"))
+    }
+
+    @Test
+    fun theRadioNameDropsTheYearFromTheIncident() {
+        // "Burnt Creek 2026 Medical" is a mouthful; nobody says the year.
+        val named = report().copy(incidentName = "Burnt Creek 2026")
+        assertEquals("Burnt Creek", named.radioName)
+        assertTrue(RadioReadout.spoken(named).contains("Burnt Creek Medical"))
+        assertFalse(RadioReadout.spoken(named).contains("2026"))
+    }
+
+    @Test
+    fun anOverriddenRadioNameWins() {
+        val named = report().copy(
+            incidentName = "Burnt Creek 2026",
+            radioNameOverride = "Chico Creek"
+        )
+        assertEquals("Chico Creek", named.radioName)
+        assertTrue(RadioReadout.spoken(named).contains("Chico Creek Medical"))
+    }
+
+    @Test
+    fun aNameWithNoYearIsLeftAlone() {
+        assertEquals(
+            "Burnt Creek",
+            report().copy(incidentName = "Burnt Creek").radioName
+        )
     }
 
     @Test

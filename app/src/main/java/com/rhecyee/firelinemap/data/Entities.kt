@@ -136,6 +136,7 @@ data class MedicalReportEntity(
     val photoCount: Int = 0,
     val format: String = "MIR",
     val hasPosition: Boolean = true,
+    val radioNameOverride: String? = null,
     val closedAt: Long? = null
 )
 

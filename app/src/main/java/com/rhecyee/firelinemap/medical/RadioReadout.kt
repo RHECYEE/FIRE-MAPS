@@ -54,12 +54,10 @@ object RadioReadout {
         append(patients(report))
         report.natureOfInjury?.takeIf { it.isNotBlank() }?.let { append(" $it") }
         append(". ")
-        append("${report.incidentName} Medical. ")
+        append("${report.radioName} Medical. ")
         report.incidentCommander?.takeIf { it.isNotBlank() }?.let { append("IC $it. ") }
         report.medicalProvider?.takeIf { it.isNotBlank() }?.let { append("Patient care $it. ") }
-        append("Pickup at ${coordinates(report)}")
-        report.elevationMeters?.let { append(", elevation ${it.toInt()} metres") }
-        append(". ")
+        append("Pickup at ${coordinates(report)}. ")
         append("Request ${report.transport.spoken}")
         if (report.resources.isNotEmpty()) {
             append(" with ${spokenList(report.resources.map { it.spoken })}")
@@ -79,13 +77,12 @@ object RadioReadout {
             buildString {
                 append(patients(report).replaceFirstChar { it.uppercase() })
                 report.natureOfInjury?.takeIf { it.isNotBlank() }?.let { append(", $it") }
-                append(". ${report.incidentName} Medical.")
+                append(". ${report.radioName} Medical.")
                 report.incidentCommander?.takeIf { it.isNotBlank() }?.let { append(" IC $it.") }
                 report.medicalProvider?.takeIf { it.isNotBlank() }?.let {
                     append(" Medical provider $it.")
                 }
                 append(" Pickup ${coordinates(report)}.")
-                report.elevationMeters?.let { append(" Elevation ${it.toInt()} m.") }
             }
         ),
         ReadoutLine(
@@ -135,7 +132,7 @@ object RadioReadout {
         ReadoutLine(
             2, "Incident Status",
             buildString {
-                append("${report.incidentName} Medical. ")
+                append("${report.radioName} Medical. ")
                 append(patients(report).replaceFirstChar { it.uppercase() })
                 report.natureOfInjury?.takeIf { it.isNotBlank() }?.let { append(", $it") }
                 append(".")
@@ -160,7 +157,6 @@ object RadioReadout {
             buildString {
                 append("Request ${report.transport.spoken}. ")
                 append("Pickup ${coordinates(report)}.")
-                report.elevationMeters?.let { append(" Elevation ${it.toInt()} m.") }
                 report.groundContact?.takeIf { it.isNotBlank() }?.let {
                     append(" Ground contact $it.")
                 }

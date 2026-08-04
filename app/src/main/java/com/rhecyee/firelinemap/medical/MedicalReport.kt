@@ -91,8 +91,21 @@ data class MedicalReport(
      * coordinate that was never measured must never be read out as though it
      * were, so the readout says so and the report is not ready to transmit.
      */
-    val hasPosition: Boolean = true
+    val hasPosition: Boolean = true,
+
+    /**
+     * What this gets called on the radio.
+     *
+     * Separate from the incident's own name, which carries a year and other
+     * filing detail nobody says out loud. Defaults to the incident shortened,
+     * and can be replaced -- by hand or from a nearby place name -- because
+     * "Chico Creek Medical" locates a call for anyone listening in a way that
+     * "Incident Aug 4 Medical" does not.
+     */
+    val radioNameOverride: String? = null
 ) {
+    val radioName: String
+        get() = radioNameOverride?.takeIf { it.isNotBlank() } ?: shorten(incidentName)
     /** Fields that would leave a gap on the radio if left empty. */
     val missing: List<String>
         get() = buildList {
@@ -105,4 +118,13 @@ data class MedicalReport(
         }
 
     val isReadyToTransmit: Boolean get() = missing.isEmpty()
+
+    private companion object {
+        /** Drops a trailing year and anything past it. */
+        fun shorten(name: String): String {
+            val trimmed = name.trim()
+            val withoutYear = Regex("""\s+(19|20)\d{2}\b.*$""").replace(trimmed, "")
+            return withoutYear.ifBlank { trimmed }.take(28)
+        }
+    }
 }

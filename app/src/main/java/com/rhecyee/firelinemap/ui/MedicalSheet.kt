@@ -39,7 +39,9 @@ import com.rhecyee.firelinemap.medical.TransportMode
 fun MedicalSheet(
     report: MedicalReport,
     onChange: (MedicalReport) -> Unit,
+    onType: (field: DictationField) -> Unit,
     onDictate: (field: DictationField) -> Unit,
+    onNameNearby: () -> Unit,
     onReadout: () -> Unit,
     onAddUpdate: () -> Unit,
     onDismiss: () -> Unit
@@ -138,16 +140,31 @@ fun MedicalSheet(
                     }
                 }
 
-                Section("SPOKEN")
-                Dictated("Nature of injury", report.natureOfInjury) {
-                    onDictate(DictationField.NATURE)
+                Section("RADIO NAME")
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "${report.radioName} Medical",
+                        modifier = Modifier.weight(1f),
+                        fontWeight = FontWeight.Bold
+                    )
+                    Chip("Edit", selected = false) { onType(DictationField.RADIO_NAME) }
+                    Chip("Nearby", selected = false) { onNameNearby() }
                 }
-                Dictated("Patient assessment", report.patientAssessment) {
-                    onDictate(DictationField.ASSESSMENT)
-                }
-                Dictated("LZ hazards", report.lzHazards) {
-                    onDictate(DictationField.HAZARDS)
-                }
+
+                Section("DETAIL")
+                Entry("Nature of injury", report.natureOfInjury,
+                    onType = { onType(DictationField.NATURE) },
+                    onDictate = { onDictate(DictationField.NATURE) })
+                Entry("Patient assessment", report.patientAssessment,
+                    onType = { onType(DictationField.ASSESSMENT) },
+                    onDictate = { onDictate(DictationField.ASSESSMENT) })
+                Entry("LZ hazards", report.lzHazards,
+                    onType = { onType(DictationField.HAZARDS) },
+                    onDictate = { onDictate(DictationField.HAZARDS) })
 
                 if (report.updates.isNotEmpty()) {
                     Section("UPDATES")
@@ -162,7 +179,6 @@ fun MedicalSheet(
                             report.latitude, report.longitude,
                             com.rhecyee.firelinemap.util.CoordinateFormat.DDM
                         ) +
-                        (report.elevationMeters?.let { " · ${it.toInt()} m" } ?: "") +
                         (report.reporterName?.let { " · $it" } ?: ""),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -192,7 +208,34 @@ fun MedicalSheet(
     )
 }
 
-enum class DictationField { NATURE, ASSESSMENT, HAZARDS, UPDATE }
+enum class DictationField { NATURE, ASSESSMENT, HAZARDS, UPDATE, RADIO_NAME }
+
+/** Typed entry, which is the preferred way in; the microphone is the option. */
+@Composable
+fun TextEntryDialog(
+    label: String,
+    initial: String,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit
+) {
+    val text = androidx.compose.runtime.remember {
+        androidx.compose.runtime.mutableStateOf(initial)
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(label) },
+        text = {
+            androidx.compose.material3.OutlinedTextField(
+                value = text.value,
+                onValueChange = { text.value = it },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = false
+            )
+        },
+        confirmButton = { TextButton(onClick = { onConfirm(text.value) }) { Text("Save") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
 
 /** The generated script, ready to read. */
 @Composable
@@ -272,20 +315,34 @@ private fun Chip(
     )
 }
 
+/**
+ * A field with typing as the main action and the microphone beside it.
+ *
+ * Tapping the row types. Speech recognition mishears names and numbers and
+ * needs a connection, so it is the alternative rather than the default.
+ */
 @Composable
-private fun Dictated(label: String, value: String?, onDictate: () -> Unit) {
+private fun Entry(
+    label: String,
+    value: String?,
+    onType: () -> Unit,
+    onDictate: () -> Unit
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(7.dp))
-            .clickable { onDictate() }
-            .padding(10.dp),
+            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(7.dp)),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Column(Modifier.weight(1f)) {
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .clickable { onType() }
+                .padding(10.dp)
+        ) {
             Text(label, style = MaterialTheme.typography.labelSmall)
             Text(
-                value?.takeIf { it.isNotBlank() } ?: "Tap to speak",
+                value?.takeIf { it.isNotBlank() } ?: "Tap to type",
                 fontWeight = FontWeight.Bold,
                 color = if (value.isNullOrBlank()) {
                     MaterialTheme.colorScheme.onSurfaceVariant
@@ -294,7 +351,13 @@ private fun Dictated(label: String, value: String?, onDictate: () -> Unit) {
                 }
             )
         }
-        Text("🎤", style = MaterialTheme.typography.titleLarge)
+        Text(
+            "🎤",
+            modifier = Modifier
+                .clickable { onDictate() }
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            style = MaterialTheme.typography.titleLarge
+        )
     }
 }
 
