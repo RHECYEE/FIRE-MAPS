@@ -43,6 +43,13 @@ import com.rhecyee.firelinemap.parcels.CountyRecord
  */
 @Composable
 fun LayersSheet(
+    importedMaps: List<com.rhecyee.firelinemap.geopdf.ImportedMap>,
+    activeMapId: String?,
+    onSelectMap: (com.rhecyee.firelinemap.geopdf.ImportedMap) -> Unit,
+    topographyOn: Boolean,
+    onToggleTopography: (Boolean) -> Unit,
+    landOwnershipOn: Boolean,
+    onToggleLandOwnership: (Boolean) -> Unit,
     packages: List<LayerPackageEntity>,
     onToggle: (LayerPackageEntity, Boolean) -> Unit,
     onOpacity: (LayerPackageEntity, Float) -> Unit,
@@ -62,9 +69,78 @@ fun LayersSheet(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                SectionHeading("PRODUCT MAPS")
+                if (importedMaps.isEmpty()) {
+                    Text(
+                        "No maps imported yet.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                } else {
+                    importedMaps.forEach { map ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onSelectMap(map) }
+                                .padding(vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                if (map.id == activeMapId) "●" else "○",
+                                color = if (map.id == activeMapId) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                                fontWeight = FontWeight.Black
+                            )
+                            Column(Modifier.padding(start = 10.dp)) {
+                                Text(
+                                    map.displayName.take(40),
+                                    fontWeight = if (map.id == activeMapId) {
+                                        FontWeight.Bold
+                                    } else {
+                                        FontWeight.Normal
+                                    },
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                Text(
+                                    map.kindLabel,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (map.document.isGeoreferenced) {
+                                        Color(0xFF2E7D32)
+                                    } else {
+                                        Color(0xFF8A6D00)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                HorizontalDivider()
+                SectionHeading("TERRAIN AND OWNERSHIP")
+
+                ToggleRow(
+                    title = "Topographic basemap",
+                    subtitle = "USGS contours and shaded relief beneath the sheet. " +
+                        "Tiles are kept once seen.",
+                    checked = topographyOn,
+                    onCheckedChange = onToggleTopography
+                )
+                ToggleRow(
+                    title = "Land ownership",
+                    subtitle = "Tap bare ground for the administering agency. " +
+                        "Free BLM data; needs a connection.",
+                    checked = landOwnershipOn,
+                    onCheckedChange = onToggleLandOwnership
+                )
+
+                HorizontalDivider()
+                SectionHeading("PROPERTY PARCELS")
+
                 if (packages.isEmpty()) {
                     Text(
-                        "No optional layers installed.",
+                        "No parcel packages installed.",
                         fontWeight = FontWeight.Bold
                     )
                     Text(
@@ -171,6 +247,39 @@ fun LayersSheet(
             }
         }
     )
+}
+
+@Composable
+private fun SectionHeading(text: String) {
+    Text(
+        text,
+        color = MaterialTheme.colorScheme.primary,
+        fontWeight = FontWeight.Black,
+        style = MaterialTheme.typography.labelSmall
+    )
+}
+
+@Composable
+private fun ToggleRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, fontWeight = FontWeight.Bold)
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
 }
 
 /** County search, so a package can be identified before it can be fetched. */

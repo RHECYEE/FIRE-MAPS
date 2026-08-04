@@ -183,6 +183,15 @@ fun MapCanvas(
         // allowance for travelling off it. Being off the sheet is normal --
         // ICP and the drive in usually sit outside the neatline -- so the
         // operator has to be able to pan out there and see where they are.
+        /**
+         * Bounds a pan without ever hauling the view somewhere it was not.
+         *
+         * Centring on a position off the sheet sets the pan directly, so the
+         * view can legitimately sit far outside the normal range. A clamp that
+         * simply coerced into that range would snap it back on the first drag,
+         * which read as the map teleporting. Being outside is allowed; going
+         * further out is not, and moving back in always is.
+         */
         fun clamp(candidate: Offset, atScale: Float): Offset {
             val drawWidth = image.width * fitScale() * atScale
             val drawHeight = image.height * fitScale() * atScale
@@ -190,9 +199,15 @@ fun MapCanvas(
             val slackY = viewport.height * OFF_SHEET_PAN_ALLOWANCE
             val maxX = ((drawWidth - viewport.width) / 2f).coerceAtLeast(0f) + slackX
             val maxY = ((drawHeight - viewport.height) / 2f).coerceAtLeast(0f) + slackY
+
+            fun axis(next: Float, current: Float, max: Float): Float = when {
+                abs(next) <= max -> next
+                abs(next) < abs(current) -> next
+                else -> current
+            }
             return Offset(
-                candidate.x.coerceIn(-maxX, maxX),
-                candidate.y.coerceIn(-maxY, maxY)
+                axis(candidate.x, offset.x, maxX),
+                axis(candidate.y, offset.y, maxY)
             )
         }
 

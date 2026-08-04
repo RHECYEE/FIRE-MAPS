@@ -167,6 +167,9 @@ fun FirelineApp() {
     val counties = remember { CountyCatalog(context) }
     var showLayers by remember { mutableStateOf(false) }
     var showLegend by remember { mutableStateOf(true) }
+    var topographyOn by remember { mutableStateOf(true) }
+    var landOwnershipOn by remember { mutableStateOf(true) }
+    var importedMaps by remember { mutableStateOf<List<com.rhecyee.firelinemap.geopdf.ImportedMap>>(emptyList()) }
     var keypadOpen by remember { mutableStateOf(true) }
     var countyQuery by remember { mutableStateOf("") }
     var showCountySearch by remember { mutableStateOf(false) }
@@ -356,7 +359,8 @@ fun FirelineApp() {
                 )
             )
         }
-        if (activeMap == null) activeMap = repository.imported().firstOrNull()
+        importedMaps = repository.imported()
+        if (activeMap == null) activeMap = importedMaps.firstOrNull()
     }
 
     // Permission can also be granted from settings while the app is backgrounded.
@@ -370,6 +374,10 @@ fun FirelineApp() {
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    LaunchedEffect(activeMap?.id) {
+        importedMaps = withContext(Dispatchers.IO) { repository.imported() }
     }
 
     LaunchedEffect(activeMap?.id) {
@@ -698,6 +706,13 @@ fun FirelineApp() {
 
     if (showLayers) {
         LayersSheet(
+            importedMaps = importedMaps,
+            activeMapId = activeMap?.id,
+            onSelectMap = { activeMap = it; showLayers = false },
+            topographyOn = topographyOn,
+            onToggleTopography = { topographyOn = it },
+            landOwnershipOn = landOwnershipOn,
+            onToggleLandOwnership = { landOwnershipOn = it },
             packages = layerPackages,
             onToggle = { layer, on ->
                 scope.launch { app.database.dao().upsertLayerPackage(layer.copy(enabled = on)) }
@@ -1038,7 +1053,7 @@ fun FirelineApp() {
                         parcels.any { it.geometry.contains(lat, lon) }
                     ) {
                         tappedParcel = parcels.firstOrNull { it.geometry.contains(lat, lon) }
-                    } else {
+                    } else if (landOwnershipOn) {
                         // Nothing else claimed the tap: ask whose ground it is.
                         landLookupAt = lat to lon
                         landOwner = null
@@ -1174,10 +1189,10 @@ fun FirelineApp() {
                     openMedicalReport()
                 }
                 ToolButton(
-                    "Property",
+                    "Layers",
                     Icons.Default.Layers,
                     Modifier.weight(1f),
-                    active = activeParcelLayer != null
+                    active = showLayers
                 ) {
                     touched()
                     showLayers = true
