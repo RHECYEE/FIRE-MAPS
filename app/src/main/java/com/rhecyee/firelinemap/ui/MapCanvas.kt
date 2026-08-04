@@ -80,6 +80,7 @@ fun MapCanvas(
     measurePoints: List<MeasurePoint> = emptyList(),
     measureMode: MeasureMode = MeasureMode.DISTANCE,
     markers: List<MarkerEntity> = emptyList(),
+    trackPoints: List<Pair<Double, Double>> = emptyList(),
     onMarkerTap: ((MarkerEntity) -> Unit)? = null,
     onMarkerMoved: ((MarkerEntity, Double, Double) -> Unit)? = null,
     onMapTap: ((latitude: Double, longitude: Double) -> Unit)? = null,
@@ -303,6 +304,19 @@ fun MapCanvas(
             val fy = 1f - (page.second / pageHeightPoints).toFloat()
             val target = Offset(originX + fx * drawWidth, originY + fy * drawHeight)
 
+            if (trackPoints.size >= 2 && frame != null) {
+                drawTrack(
+                    points = trackPoints,
+                    frame = frame,
+                    pageWidthPoints = pageWidthPoints,
+                    pageHeightPoints = pageHeightPoints,
+                    originX = originX,
+                    originY = originY,
+                    drawWidth = drawWidth,
+                    drawHeight = drawHeight
+                )
+            }
+
             if (measurePoints.size >= 1) {
                 drawMeasurement(
                     points = measurePoints,
@@ -393,6 +407,39 @@ fun MapCanvas(
 }
 
 private const val OFF_SHEET_PAN_ALLOWANCE = 1.5f
+
+/** Draws the recorded travel line. */
+private fun DrawScope.drawTrack(
+    points: List<Pair<Double, Double>>,
+    frame: com.rhecyee.firelinemap.geopdf.MapFrame,
+    pageWidthPoints: Int,
+    pageHeightPoints: Int,
+    originX: Float,
+    originY: Float,
+    drawWidth: Float,
+    drawHeight: Float
+) {
+    if (pageWidthPoints <= 0 || pageHeightPoints <= 0) return
+    val screen = points.mapNotNull { (latitude, longitude) ->
+        val page = frame.geoToPage(latitude, longitude) ?: return@mapNotNull null
+        Offset(
+            originX + (page.first / pageWidthPoints).toFloat() * drawWidth,
+            originY + (1f - (page.second / pageHeightPoints).toFloat()) * drawHeight
+        )
+    }
+    if (screen.size < 2) return
+
+    val path = Path().apply {
+        moveTo(screen.first().x, screen.first().y)
+        screen.drop(1).forEach { lineTo(it.x, it.y) }
+    }
+    // Cased so the line stays readable over both pale terrain and dark shading.
+    drawPath(path, Color.Black, alpha = 0.55f, style = Stroke(width = 9f))
+    drawPath(path, Color(0xFFE91E63), style = Stroke(width = 4.5f))
+    // Mark where travel began, so a long track reads directionally.
+    drawCircle(Color.White, radius = 7f, center = screen.first())
+    drawCircle(Color(0xFFE91E63), radius = 4.5f, center = screen.first())
+}
 
 /** Draws the in-progress measurement over the sheet. */
 private fun DrawScope.drawMeasurement(

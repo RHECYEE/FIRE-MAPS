@@ -75,6 +75,7 @@ import com.rhecyee.firelinemap.geopdf.PdfKind
 import com.rhecyee.firelinemap.geopdf.RemotePdf
 import com.rhecyee.firelinemap.geopdf.UrlProbe
 import com.rhecyee.firelinemap.location.LocationRepository
+import com.rhecyee.firelinemap.location.TrackRecordingState
 import com.rhecyee.firelinemap.location.TrackRecordingService
 import com.rhecyee.firelinemap.location.SegmentAnchor
 import com.rhecyee.firelinemap.location.TrackSettingsStore
@@ -111,6 +112,7 @@ fun FirelineApp() {
     var watching by remember { mutableStateOf(false) }
     var stopThreshold by remember { mutableIntStateOf(trackSettings.stopThresholdSeconds) }
     var showTrackSettings by remember { mutableStateOf(false) }
+    val liveTrack by TrackRecordingState.live.collectAsState()
     var segmentAtDropPoints by remember { mutableStateOf(trackSettings.segmentAtDropPoints) }
     var dropPoints by remember { mutableStateOf<List<DropPoint>>(emptyList()) }
 
@@ -494,6 +496,10 @@ fun FirelineApp() {
                 OffMapBanner("OFF THIS SHEET — $distance, bearing $bearing° back onto it")
             }
 
+            if (watching || liveTrack.recording) {
+                TravelPanel(live = liveTrack, armed = watching, unit = distanceUnit)
+            }
+
             if (dropping) {
                 ResourcePalette(
                     symbols = ResourceSymbol.POINTS,
@@ -548,6 +554,7 @@ fun FirelineApp() {
                 measurePoints = measurePoints,
                 measureMode = measureMode,
                 markers = markers,
+                trackPoints = liveTrack.points,
                 onMarkerTap = { marker ->
                     inspecting = marker
                     scope.launch { inspectingReports = resources.reportCount(marker.id) }

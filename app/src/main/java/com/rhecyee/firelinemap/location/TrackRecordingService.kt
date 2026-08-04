@@ -43,6 +43,7 @@ class TrackRecordingService : Service() {
     private var incidentId: String? = null
     private var trackId: String? = null
     private var armed = false
+    private var fixesSincePersist = 0
 
     private val client by lazy { LocationServices.getFusedLocationProviderClient(this) }
     private val callback = object : LocationCallback() {
@@ -104,6 +105,7 @@ class TrackRecordingService : Service() {
     }
 
     private fun disarm() {
+        TrackRecordingState.clear()
         client.removeLocationUpdates(callback)
         armed = false
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -119,7 +121,10 @@ class TrackRecordingService : Service() {
             speedMetersPerSecond = if (location.hasSpeed()) location.speed.toDouble() else null
         )
 
-        when (val event = detector.onFix(fix)) {
+        val event = detector.onFix(fix)
+        publish(fix.timeMillis)
+
+        when (event) {
             is TrackEvent.Started -> {
                 trackId = UUID.randomUUID().toString()
                 updateNotification("Travel recording — 0.0 km")
@@ -129,15 +134,21 @@ class TrackRecordingService : Service() {
                 updateNotification(
                     "Travel recording — %.1f km".format(event.distanceMeters / 1000.0)
                 )
-                persist(
-                    startedAt = fix.timeMillis - detector.currentElapsedMillis(fix.timeMillis),
-                    endedAt = null,
-                    isRecording = true
+                // Writing the whole line on every fix would mean a growing
+                // JSON blob every few seconds for a whole shift. Once a minute
+                // is enough for the database's job, which is surviving a kill.
+                fixesSincePersist++
+                if (fixesSincePersist >= PERSIST_EVERY_FIXES) {
+                    fixesSincePersist = 0
+                    persist(detector.currentStartedAt, endedAt = null, isRecording = true)
+                }
+            }
+            is TrackEvent.Paused -> {
+                persist(detector.currentStartedAt, endedAt = null, isRecording = true)
+                updateNotification(
+                "Travel paused — %.1f km so far".format(detector.currentDistanceMeters / 1000.0)
                 )
             }
-            is TrackEvent.Paused -> updateNotification(
-                "Travel paused — %.1f km so far".format(detector.currentDistanceMeters / 1000.0)
-            )
             is TrackEvent.Resumed -> updateNotification(
                 "Travel recording — %.1f km".format(detector.currentDistanceMeters / 1000.0)
             )
@@ -204,7 +215,7 @@ class TrackRecordingService : Service() {
                     endedAt = endedAt,
                     elapsedSeconds = (now - startedAt).coerceAtLeast(0) / 1000,
                     distanceMeters = distance,
-                    geometryGeoJson = "{\"type\":\"LineString\",\"coordinates\":[]}",
+                    geometryGeoJson = traceGeometry(),
                     isRecording = isRecording
                 )
             )
@@ -217,6 +228,28 @@ class TrackRecordingService : Service() {
         val open = dao.getActiveTrack() ?: return
         dao.upsertTrack(open.copy(isRecording = false, endedAt = open.endedAt ?: open.startedAt))
     }
+
+    private fun publish(now: Long) {
+        TrackRecordingState.update(
+            LiveTrack(
+                recording = detector.isRecording,
+                paused = detector.isPaused,
+                startedAt = detector.currentStartedAt,
+                lastFixAt = now,
+                distanceMeters = detector.currentDistanceMeters,
+                movingMillis = detector.currentMovingMillis,
+                pausedMillis = detector.currentPausedMillis,
+                segmentCount = detector.currentSegmentCount,
+                points = detector.currentTrace
+            )
+        )
+    }
+
+    private fun traceGeometry(): String =
+        detector.currentTrace.joinToString(
+            prefix = "{\"type\":\"LineString\",\"coordinates\":[",
+            postfix = "]}"
+        ) { "[${it.second},${it.first}]" }
 
     private fun geometryOf(points: List<Fix>): String =
         points.joinToString(
@@ -265,6 +298,9 @@ class TrackRecordingService : Service() {
         const val EXTRA_INCIDENT_ID = "incident_id"
         private const val CHANNEL_ID = "travel_recording"
         private const val NOTIFICATION_ID = 4102
+
+        /** At a five second update this is roughly once a minute. */
+        private const val PERSIST_EVERY_FIXES = 12
         private val NAME_FORMAT = SimpleDateFormat("MMM d HH:mm", Locale.US)
     }
 }

@@ -183,6 +183,14 @@ class TrackDetector(
     val currentDistanceMeters: Double get() = distanceMeters
     val currentPointCount: Int get() = points.size
     val currentSegmentCount: Int get() = segments.size
+
+    /** Points recorded so far, for drawing the line as it is laid down. */
+    val currentTrace: List<Pair<Double, Double>>
+        get() = points.map { it.latitude to it.longitude }
+
+    val currentMovingMillis: Long get() = movingMillis
+    val currentPausedMillis: Long get() = pausedMillis
+    val currentStartedAt: Long get() = startedAt
     fun currentElapsedMillis(now: Long): Long =
         if (recording) (now - startedAt).coerceAtLeast(0) else 0
 
