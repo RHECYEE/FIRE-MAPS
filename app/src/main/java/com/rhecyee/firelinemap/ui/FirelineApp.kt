@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.AddLocationAlt
 import androidx.compose.material.icons.filled.Draw
 import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.MedicalServices
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.People
@@ -78,6 +79,10 @@ import com.rhecyee.firelinemap.geopdf.RemotePdf
 import com.rhecyee.firelinemap.geopdf.UrlProbe
 import com.rhecyee.firelinemap.location.LocationRepository
 import com.rhecyee.firelinemap.location.TrackRecordingState
+import com.rhecyee.firelinemap.medical.MedicalReport
+import com.rhecyee.firelinemap.medical.MedicalRepository
+import com.rhecyee.firelinemap.medical.RadioReadout
+import com.rhecyee.firelinemap.medical.ReporterProfile
 import com.rhecyee.firelinemap.location.TrackRecordingService
 import com.rhecyee.firelinemap.location.SegmentAnchor
 import com.rhecyee.firelinemap.location.TrackSettingsStore
@@ -144,6 +149,12 @@ fun FirelineApp() {
     val basemap = remember { BasemapTileCache(context) }
     val elevations = remember { ElevationService() }
     val resources = remember { ResourceRepository(app.database.dao()) }
+    val medical = remember { MedicalRepository(app.database.dao()) }
+    val reporter = remember { ReporterProfile(context) }
+
+    var medicalReport by remember { mutableStateOf<MedicalReport?>(null) }
+    var showReadout by remember { mutableStateOf(false) }
+    var dictating by remember { mutableStateOf<DictationField?>(null) }
 
     var placingResources by remember { mutableStateOf(false) }
     var selectedSymbol by remember { mutableStateOf<ResourceSymbol?>(null) }
@@ -185,6 +196,59 @@ fun FirelineApp() {
         // point is what left the panel stuck on "waiting for GPS".
         hasLocationPermission = grants.values.any { it }
         if (hasLocationPermission) locationRepository.start()
+    }
+
+    val speechLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { activityResult ->
+        val spoken = activityResult.data
+            ?.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS)
+            ?.firstOrNull()
+            ?.takeIf { it.isNotBlank() }
+        val field = dictating
+        dictating = null
+        val current = medicalReport
+        if (spoken != null && current != null) {
+            medicalReport = when (field) {
+                DictationField.NATURE -> current.copy(natureOfInjury = spoken)
+                DictationField.ASSESSMENT -> current.copy(patientAssessment = spoken)
+                DictationField.HAZARDS -> current.copy(lzHazards = spoken)
+                DictationField.UPDATE -> {
+                    scope.launch { medical.addUpdate(current.id, spoken) }
+                    current.copy(
+                        updates = current.updates +
+                            com.rhecyee.firelinemap.medical.ReportUpdate(
+                                System.currentTimeMillis(), spoken
+                            )
+                    )
+                }
+                null -> current
+            }
+            medicalReport?.let { updated -> scope.launch { medical.save(updated) } }
+        }
+    }
+
+    fun dictate(field: DictationField) {
+        dictating = field
+        val intent = Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(
+                android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+            )
+            putExtra(
+                android.speech.RecognizerIntent.EXTRA_PROMPT,
+                when (field) {
+                    DictationField.NATURE -> "Nature of injury"
+                    DictationField.ASSESSMENT -> "Patient assessment"
+                    DictationField.HAZARDS -> "LZ hazards"
+                    DictationField.UPDATE -> "Update"
+                }
+            )
+        }
+        runCatching { speechLauncher.launch(intent) }.onFailure {
+            statusMessage = "No speech recogniser on this device."
+            dictating = null
+        }
     }
 
     val importLauncher = rememberLauncherForActivityResult(
@@ -370,6 +434,33 @@ fun FirelineApp() {
                 scope.launch { resources.delete(id) }
             }
         )
+    }
+
+    medicalReport?.let { report ->
+        if (showReadout) {
+            RadioReadoutDialog(
+                report = report,
+                onCopy = { script ->
+                    val clipboard =
+                        context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("Medical readout", script))
+                    statusMessage = "Readout copied."
+                },
+                onDismiss = { showReadout = false }
+            )
+        } else {
+            MedicalSheet(
+                report = report,
+                onChange = { updated ->
+                    medicalReport = updated
+                    scope.launch { medical.save(updated) }
+                },
+                onDictate = { dictate(it) },
+                onReadout = { showReadout = true },
+                onAddUpdate = { dictate(DictationField.UPDATE) },
+                onDismiss = { medicalReport = null }
+            )
+        }
     }
 
     if (showTrackSettings) {
@@ -739,6 +830,46 @@ fun FirelineApp() {
                         simMode = false
                     } else {
                         selectedSymbol = null
+                    }
+                }
+                ToolButton(
+                    "MED",
+                    Icons.Default.MedicalServices,
+                    Modifier.weight(1f),
+                    active = medicalReport != null
+                ) {
+                    touched()
+                    val incident = activeIncident ?: return@ToolButton
+                    val lat = displayLatitude
+                    val lon = displayLongitude
+                    if (lat == null || lon == null) {
+                        statusMessage = "No position yet — a medical report needs a coordinate."
+                        return@ToolButton
+                    }
+                    val id = UUID.randomUUID().toString()
+                    val report = MedicalReport(
+                        id = id,
+                        incidentId = incident.id,
+                        createdAt = System.currentTimeMillis(),
+                        incidentName = incident.name,
+                        mapName = activeMap?.displayName,
+                        latitude = lat,
+                        longitude = lon,
+                        elevationMeters = gpsLocation?.altitude,
+                        accuracyMeters = gpsLocation?.accuracy,
+                        reporterName = reporter.name.ifBlank { null },
+                        reporterQualification = reporter.qualification.ifBlank { null },
+                        incidentCommander = reporter.name.ifBlank { null },
+                        trackId = if (liveTrack.recording) "recording" else null
+                    )
+                    medicalReport = report
+                    scope.launch {
+                        medical.save(report)
+                        // The pin goes down with the form, not after it.
+                        resources.place(
+                            incident.id, ResourceSymbol.MEDICAL_INCIDENT,
+                            "MEDICAL", null, lat, lon
+                        )
                     }
                 }
                 ToolButton(

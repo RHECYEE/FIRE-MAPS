@@ -90,6 +90,73 @@ data class MarkerEntity(
 )
 
 /**
+ * A medical incident report held against its incident.
+ *
+ * Everything above [natureOfInjury] is captured from what the app already
+ * knows at the moment the pin is dropped. Nobody types an incident name or a
+ * coordinate with a patient on the ground.
+ */
+@Entity(
+    tableName = "medical_reports",
+    foreignKeys = [ForeignKey(
+        entity = IncidentEntity::class,
+        parentColumns = ["id"],
+        childColumns = ["incidentId"],
+        onDelete = ForeignKey.CASCADE
+    )],
+    indices = [Index("incidentId")]
+)
+data class MedicalReportEntity(
+    @PrimaryKey val id: String,
+    val incidentId: String,
+    val createdAt: Long,
+    val updatedAt: Long,
+    val incidentName: String,
+    val mapName: String? = null,
+    val latitude: Double,
+    val longitude: Double,
+    val elevationMeters: Double? = null,
+    val accuracyMeters: Float? = null,
+    val reporterName: String? = null,
+    val reporterQualification: String? = null,
+    val priority: String = "RED",
+    val patientCount: Int = 1,
+    val transport: String = "GROUND",
+    /** Comma-separated resource names. */
+    val resources: String = "",
+    val natureOfInjury: String? = null,
+    val patientAssessment: String? = null,
+    val lzHazards: String? = null,
+    val notes: String? = null,
+    val incidentCommander: String? = null,
+    val medicalProvider: String? = null,
+    val groundContact: String? = null,
+    val markerId: String? = null,
+    val trackId: String? = null,
+    val photoCount: Int = 0,
+    val format: String = "MIR",
+    val closedAt: Long? = null
+)
+
+/** One entry in a report's running record. */
+@Entity(
+    tableName = "medical_report_updates",
+    foreignKeys = [ForeignKey(
+        entity = MedicalReportEntity::class,
+        parentColumns = ["id"],
+        childColumns = ["reportId"],
+        onDelete = ForeignKey.CASCADE
+    )],
+    indices = [Index("reportId")]
+)
+data class MedicalReportUpdateEntity(
+    @PrimaryKey val id: String,
+    val reportId: String,
+    val recordedAt: Long,
+    val text: String
+)
+
+/**
  * A preloaded terrain basemap region held on local storage.
  *
  * Intentionally has no foreign key to an incident. Terrain is shared

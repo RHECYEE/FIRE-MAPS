@@ -39,7 +39,8 @@ enum class ResourceSymbol(
     DROP_POINT("drop_point", "Drop point", "DP", ResourceCategory.FACILITY, 0xFF1565C0.toInt()),
     HELISPOT("helispot", "Helispot", "H", ResourceCategory.FACILITY, 0xFF00ACC1.toInt()),
 
-    HAZARD("hazard", "Hazard", "!", ResourceCategory.POINT, 0xFFD50000.toInt()),
+    MEDICAL_INCIDENT("medical_incident", "Medical", "MED", ResourceCategory.POINT, 0xFFD50000.toInt()),
+    HAZARD("hazard", "Hazard", "!", ResourceCategory.POINT, 0xFFE65100.toInt()),
     SNAG("snag", "Snag", "SNG", ResourceCategory.POINT, 0xFF8D6E63.toInt()),
     WATER("water", "Water", "H2O", ResourceCategory.POINT, 0xFF0288D1.toInt()),
     CAMP("camp", "Camp", "CMP", ResourceCategory.POINT, 0xFF388E3C.toInt()),
@@ -61,9 +62,9 @@ enum class ResourceSymbol(
          * question asked at the worst possible moment.
          */
         val RESOURCES: List<ResourceSymbol> = listOf(
-            HAND_CREW, ENGINE, DOZER, MEDIC, HAZARD
+            HAND_CREW, ENGINE, DOZER, MEDIC, HAZARD, MEDICAL_INCIDENT
         ) + entries.filter {
-            it !in listOf(HAND_CREW, ENGINE, DOZER, MEDIC, HAZARD)
+            it !in listOf(HAND_CREW, ENGINE, DOZER, MEDIC, HAZARD, MEDICAL_INCIDENT)
         }
 
         /**

@@ -14,9 +14,11 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         TrackEntity::class,
         MarkerEntity::class,
         ResourcePositionHistoryEntity::class,
-        BasemapRegionEntity::class
+        BasemapRegionEntity::class,
+        MedicalReportEntity::class,
+        MedicalReportUpdateEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class FirelineDatabase : RoomDatabase() {
@@ -60,11 +62,59 @@ abstract class FirelineDatabase : RoomDatabase() {
             }
         }
 
+        /** Adds medical incident reports and their running updates. */
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `medical_reports` (
+                        `id` TEXT NOT NULL, `incidentId` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL,
+                        `incidentName` TEXT NOT NULL, `mapName` TEXT,
+                        `latitude` REAL NOT NULL, `longitude` REAL NOT NULL,
+                        `elevationMeters` REAL, `accuracyMeters` REAL,
+                        `reporterName` TEXT, `reporterQualification` TEXT,
+                        `priority` TEXT NOT NULL, `patientCount` INTEGER NOT NULL,
+                        `transport` TEXT NOT NULL, `resources` TEXT NOT NULL,
+                        `natureOfInjury` TEXT, `patientAssessment` TEXT,
+                        `lzHazards` TEXT, `notes` TEXT,
+                        `incidentCommander` TEXT, `medicalProvider` TEXT,
+                        `groundContact` TEXT, `markerId` TEXT, `trackId` TEXT,
+                        `photoCount` INTEGER NOT NULL, `format` TEXT NOT NULL,
+                        `closedAt` INTEGER,
+                        PRIMARY KEY(`id`),
+                        FOREIGN KEY(`incidentId`) REFERENCES `incidents`(`id`)
+                            ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_medical_reports_incidentId` " +
+                        "ON `medical_reports` (`incidentId`)"
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `medical_report_updates` (
+                        `id` TEXT NOT NULL, `reportId` TEXT NOT NULL,
+                        `recordedAt` INTEGER NOT NULL, `text` TEXT NOT NULL,
+                        PRIMARY KEY(`id`),
+                        FOREIGN KEY(`reportId`) REFERENCES `medical_reports`(`id`)
+                            ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_medical_report_updates_reportId` " +
+                        "ON `medical_report_updates` (`reportId`)"
+                )
+            }
+        }
+
         fun create(context: Context): FirelineDatabase =
             Room.databaseBuilder(
                 context.applicationContext,
                 FirelineDatabase::class.java,
                 "fireline-map.db"
-            ).addMigrations(MIGRATION_1_2).build()
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build()
     }
 }
