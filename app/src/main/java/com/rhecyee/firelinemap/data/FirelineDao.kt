@@ -44,4 +44,36 @@ interface FirelineDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPositionHistory(position: ResourcePositionHistoryEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertBasemapRegion(region: BasemapRegionEntity)
+
+    @Query("SELECT * FROM basemap_regions ORDER BY downloadedAt DESC")
+    fun observeBasemapRegions(): Flow<List<BasemapRegionEntity>>
+
+    /**
+     * Complete regions whose extent covers a position, best detail first.
+     *
+     * Kept as a query rather than an in-memory filter so the coverage check
+     * stays cheap as preloaded regions accumulate across a season.
+     */
+    @Query(
+        """
+        SELECT * FROM basemap_regions
+        WHERE complete = 1
+          AND :latitude BETWEEN south AND north
+          AND :longitude BETWEEN west AND east
+        ORDER BY maxZoom DESC
+        """
+    )
+    suspend fun getBasemapRegionsCovering(
+        latitude: Double,
+        longitude: Double
+    ): List<BasemapRegionEntity>
+
+    @Query("SELECT COALESCE(SUM(sizeBytes), 0) FROM basemap_regions")
+    suspend fun getBasemapStorageBytes(): Long
+
+    @Query("DELETE FROM basemap_regions WHERE id = :regionId")
+    suspend fun deleteBasemapRegion(regionId: String)
 }

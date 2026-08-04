@@ -89,6 +89,36 @@ data class MarkerEntity(
     val priority: Int = 0
 )
 
+/**
+ * A preloaded terrain basemap region held on local storage.
+ *
+ * Intentionally has no foreign key to an incident. Terrain is shared
+ * geography, not incident data: two incidents in the same district use the
+ * same ridges, and deleting one incident must not delete the terrain the
+ * other one is still standing on. [incidentId] records which incident caused
+ * the download so storage can be attributed and offered for cleanup, but it
+ * never drives a cascade.
+ */
+@Entity(tableName = "basemap_regions", indices = [Index("incidentId")])
+data class BasemapRegionEntity(
+    @PrimaryKey val id: String,
+    val name: String,
+    val incidentId: String? = null,
+    /** TERRAIN_VECTOR, HILLSHADE_DEM, or BUNDLED_COARSE. */
+    val source: String,
+    val localPath: String,
+    val south: Double,
+    val west: Double,
+    val north: Double,
+    val east: Double,
+    val minZoom: Int,
+    val maxZoom: Int,
+    val sizeBytes: Long = 0,
+    val downloadedAt: Long,
+    /** False while a download is in flight; incomplete regions are never drawn. */
+    val complete: Boolean = false
+)
+
 @Entity(
     tableName = "resource_position_history",
     foreignKeys = [ForeignKey(
