@@ -85,7 +85,18 @@ object ContourBuilder {
     /** Runs shorter than this are dropped as sampling noise. */
     const val MIN_POINTS = 3
 
-    fun build(grid: ElevationGrid, interval: ContourInterval): ContourSet {
+    /**
+     * @param isActive checked between levels. A view that has moved on has no
+     *   use for the lines being cut for the old one, and without this the
+     *   abandoned work runs to completion while the next request queues behind
+     *   it -- several full traces at once, which is memory the phone does not
+     *   have to spare.
+     */
+    fun build(
+        grid: ElevationGrid,
+        interval: ContourInterval,
+        isActive: () -> Boolean = { true }
+    ): ContourSet {
         val relief = grid.relief() ?: return ContourSet.NONE
         val (lowMeters, highMeters) = relief
         val step = interval.meters
@@ -111,6 +122,7 @@ object ContourBuilder {
         val lines = mutableListOf<ContourLine>()
         val levels = (lastLevel - firstLevel + 1).coerceAtMost(MAX_LEVELS)
         for (n in 0 until levels) {
+            if (!isActive()) break
             val feet = (firstLevel + n) * interval.feet
             val meters = feet / ContourInterval.FEET_PER_METER
             val segments = trace(grid, meters)

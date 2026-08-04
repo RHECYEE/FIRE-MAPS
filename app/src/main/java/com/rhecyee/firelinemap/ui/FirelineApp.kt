@@ -162,10 +162,14 @@ fun FirelineApp() {
     val contourLayer = remember { ContourLayer(context) }
     val contourSet by contourLayer.contours.collectAsState()
     val contourStatus by contourLayer.status.collectAsState()
+    val contourFailure by contourLayer.failure.collectAsState()
     // The ground on screen, reported by the canvas once it settles. Drives
     // both the contour cut and what the automatic download reaches for.
-    var viewBox by remember { mutableStateOf<DoubleArray?>(null) }
-    var viewZoom by remember { mutableIntStateOf(13) }
+    //
+    // A value type rather than an array: an array compares by identity, so a
+    // view reported again with identical numbers still looked like a change
+    // and restarted the cut and the download every time.
+    var view by remember { mutableStateOf<MapView?>(null) }
     val elevations = remember { ElevationService() }
     val resources = remember { ResourceRepository(app.database.dao()) }
     val medical = remember { MedicalRepository(app.database.dao()) }
@@ -490,24 +494,46 @@ fun FirelineApp() {
     // Contours are re-cut whenever the view settles somewhere new. Cheap when
     // nothing has changed -- the layer recognises a view it has already
     // answered -- so this can key on every pan without re-doing the work.
-    LaunchedEffect(viewBox, viewZoom, contoursOn) {
-        val box = viewBox
-        if (!contoursOn || box == null) return@LaunchedEffect
-        contourLayer.request(box[0], box[1], box[2], box[3], viewZoom)
+    LaunchedEffect(view, contoursOn, activeMap?.id, pageWidth, pageHeight) {
+        val here = view
+        val frame = activeMap?.frame
+        if (!contoursOn || here == null || frame == null) return@LaunchedEffect
+        contourLayer.request(
+            north = here.north,
+            south = here.south,
+            west = here.west,
+            east = here.east,
+            viewZoom = here.zoom,
+            frame = frame,
+            pageWidthPoints = pageWidth,
+            pageHeightPoints = pageHeight
+        )
     }
 
     // Elevation for what is on screen, fetched ahead of anything else.
     // Contours are the thing a crew reads terrain from, and a basemap picture
     // arriving first is no use to someone working out whether the slope above
     // them goes anywhere.
-    LaunchedEffect(viewBox, viewZoom, contoursOn, wifiOnly) {
-        val box = viewBox
-        if (!contoursOn || box == null) return@LaunchedEffect
+    LaunchedEffect(view, contoursOn, wifiOnly, activeMap?.id) {
+        val here = view
+        val frame = activeMap?.frame
+        if (!contoursOn || here == null || frame == null) return@LaunchedEffect
         if (!settings.mayAutoDownload()) return@LaunchedEffect
         val fetched = withContext(Dispatchers.IO) {
-            contourLayer.download(box[0], box[1], box[2], box[3], viewZoom)
+            contourLayer.download(here.north, here.south, here.west, here.east, here.zoom)
         }
-        if (fetched > 0) contourLayer.request(box[0], box[1], box[2], box[3], viewZoom)
+        if (fetched > 0) {
+            contourLayer.request(
+                north = here.north,
+                south = here.south,
+                west = here.west,
+                east = here.east,
+                viewZoom = here.zoom,
+                frame = frame,
+                pageWidthPoints = pageWidth,
+                pageHeightPoints = pageHeight
+            )
+        }
     }
 
     // Terrain is kept around the operator while there is a connection, so it
@@ -751,7 +777,8 @@ fun FirelineApp() {
             onToggleTopography = { settings.topographyEnabled = it; topographyOn = it },
             contoursOn = contoursOn,
             onToggleContours = { settings.contoursEnabled = it; contoursOn = it },
-            contourSummary = contourDescription(contoursOn, contourStatus, contourSet),
+            contourSummary = contourFailure
+                ?: contourDescription(contoursOn, contourStatus, contourSet),
             landOwnershipOn = landOwnershipOn,
             onToggleLandOwnership = { settings.landOwnershipEnabled = it; landOwnershipOn = it },
             onDismiss = { showLayers = false }
@@ -1061,8 +1088,14 @@ fun FirelineApp() {
                 basemap = basemap,
                 contours = contourSet.takeIf { contoursOn },
                 onViewBounds = { north, south, west, east, zoom ->
-                    viewBox = doubleArrayOf(north, south, west, east)
-                    viewZoom = zoom
+                    view = MapView(north, south, west, east, zoom)
+                },
+                onContourDrawFailed = {
+                    // Turn the layer off rather than let it fail every frame,
+                    // and say so: a layer that silently stops appearing is a
+                    // layer nobody can report.
+                    contoursOn = false
+                    statusMessage = "Contours turned off: ${it::class.java.simpleName}"
                 },
                 measurePoints = measurePoints,
                 measureMode = measureMode,
@@ -1436,9 +1469,10 @@ private fun ToolButton(
 private fun contourDescription(
     on: Boolean,
     status: ContourStatus,
-    set: com.rhecyee.firelinemap.terrain.ContourSet
+    set: com.rhecyee.firelinemap.terrain.ContourRender
 ): String = when {
     !on -> "Cut from USGS elevation. Lines tighten as you zoom in."
+    status == ContourStatus.FAILED -> "Could not cut lines for this view."
     status == ContourStatus.MISSING ->
         "No elevation held for this ground yet. It downloads first when you " +
             "have a connection."
@@ -1455,3 +1489,19 @@ private fun contourDescription(
  * nearby when the signal goes, not to mirror a state onto a phone.
  */
 private const val DEM_TILES_PER_LEVEL = 64
+
+/**
+ * The ground on screen, as the canvas last reported it.
+ *
+ * Compared by value so an unchanged view is recognised as unchanged. Held as
+ * an array before, which compares by identity: every report looked like a
+ * change, and every change cancelled the contour cut in progress and started
+ * another. During a zoom that meant several full traces alive at once.
+ */
+private data class MapView(
+    val north: Double,
+    val south: Double,
+    val west: Double,
+    val east: Double,
+    val zoom: Int
+)

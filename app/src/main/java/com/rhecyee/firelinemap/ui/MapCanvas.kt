@@ -87,8 +87,9 @@ fun MapCanvas(
     trackPoints: List<Pair<Double, Double>> = emptyList(),
     savedTracks: List<SavedTrack> = emptyList(),
     searchRegion: SearchRegion? = null,
-    contours: com.rhecyee.firelinemap.terrain.ContourSet? = null,
+    contours: com.rhecyee.firelinemap.terrain.ContourRender? = null,
     onViewBounds: ((north: Double, south: Double, west: Double, east: Double, zoom: Int) -> Unit)? = null,
+    onContourDrawFailed: ((Throwable) -> Unit)? = null,
     centreOn: Pair<Double, Double>? = null,
     onCentred: () -> Unit = {},
     onInteraction: () -> Unit = {},
@@ -160,17 +161,6 @@ fun MapCanvas(
 
         val image = remember(bitmap) { bitmap.asImageBitmap() }
 
-        // Projected when the lines change, not when the view does. Panning and
-        // zooming only move an origin and a scale after this.
-        val projectedContours = remember(contours, map.id, pageWidthPoints, pageHeightPoints) {
-            val frame = map.frame
-            if (contours == null || contours.isEmpty || frame == null) {
-                emptyList()
-            } else {
-                projectContours(contours, frame, pageWidthPoints, pageHeightPoints)
-            }
-        }
-
         // An external request to bring a position into view, used by the
         // search so a found region can be looked at without hunting for it.
         androidx.compose.runtime.LaunchedEffect(centreOn, viewport) {
@@ -241,69 +231,23 @@ fun MapCanvas(
             val maxX = ((drawWidth - viewport.width) / 2f).coerceAtLeast(0f) + slackX
             val maxY = ((drawHeight - viewport.height) / 2f).coerceAtLeast(0f) + slackY
 
-            fun axis(next: Float, current: Float, max: Float): Float = when {
-                abs(next) <= max -> next
-                abs(next) < abs(current) -> next
-                else -> current
-            }
+            // The limit always contains where the view already is. Centring on
+            // a position off the sheet sets the pan directly and can legally
+            // land outside the normal range; a limit that ignored that would
+            // haul the view back on the first drag, which read as teleporting.
+            //
+            // Within that, this is a real clamp rather than a refusal. The
+            // previous version returned the unchanged offset whenever a drag
+            // would have crossed the edge, so the pan stopped wherever the
+            // finger happened to be rather than at the edge, and pushing
+            // further did nothing at all -- the map felt like it did not want
+            // to go that way.
+            val limitX = maxOf(maxX, abs(from.x))
+            val limitY = maxOf(maxY, abs(from.y))
             return Offset(
-                axis(candidate.x, from.x, maxX),
-                axis(candidate.y, from.y, maxY)
+                candidate.x.coerceIn(-limitX, limitX),
+                candidate.y.coerceIn(-limitY, limitY)
             )
-        }
-
-        /**
-         * The ground currently on screen, and the tile zoom it amounts to.
-         *
-         * Computed from the same numbers the draw uses, but outside it: the
-         * contour layer needs to know what to cut, and it cannot be told from
-         * inside a draw pass without invalidating the frame being drawn.
-         */
-        fun viewBounds(): Triple<DoubleArray, Int, Boolean>? {
-            val frame = map.frame ?: return null
-            if (viewport.width <= 0 || viewport.height <= 0) return null
-            if (pageWidthPoints <= 0 || pageHeightPoints <= 0) return null
-
-            val drawWidth = image.width * fitScale() * scale
-            val drawHeight = image.height * fitScale() * scale
-            if (drawWidth <= 0f || drawHeight <= 0f) return null
-            val ox = (viewport.width - drawWidth) / 2f + offset.x
-            val oy = (viewport.height - drawHeight) / 2f + offset.y
-
-            fun geo(x: Float, y: Float) = frame.pageToGeo(
-                ((x - ox) / drawWidth) * pageWidthPoints.toDouble(),
-                (1f - (y - oy) / drawHeight) * pageHeightPoints.toDouble()
-            )
-
-            val topLeft = geo(0f, 0f) ?: return null
-            val bottomRight = geo(viewport.width.toFloat(), viewport.height.toFloat())
-                ?: return null
-
-            val north = maxOf(topLeft.latitude, bottomRight.latitude)
-            val south = minOf(topLeft.latitude, bottomRight.latitude)
-            val west = minOf(topLeft.longitude, bottomRight.longitude)
-            val east = maxOf(topLeft.longitude, bottomRight.longitude)
-            if (north <= south || east <= west) return null
-
-            val centre = (north + south) / 2.0
-            val spanMeters = com.rhecyee.firelinemap.map.MapCoverage.distanceMeters(
-                centre, west, centre, east
-            )
-            if (spanMeters <= 0.0) return null
-            val zoom = BasemapTileCache.zoomFor(centre, spanMeters / viewport.width)
-            return Triple(doubleArrayOf(north, south, west, east), zoom.coerceIn(4, 18), true)
-        }
-
-        // Reported once the view settles rather than while it moves. Cutting
-        // contours mid-pan would be work thrown away several times a second,
-        // and the settle is short enough not to be noticed as a wait.
-        val reportBounds by rememberUpdatedState(onViewBounds)
-        androidx.compose.runtime.LaunchedEffect(scale, offset, viewport, map.id) {
-            if (reportBounds == null) return@LaunchedEffect
-            kotlinx.coroutines.delay(VIEW_SETTLE_MILLIS)
-            val bounds = viewBounds() ?: return@LaunchedEffect
-            val (box, zoom, _) = bounds
-            reportBounds?.invoke(box[0], box[1], box[2], box[3], zoom)
         }
 
         fun screenToPagePoints(point: Offset): Pair<Double, Double>? {
@@ -540,14 +484,21 @@ fun MapCanvas(
             // Contours sit directly on the terrain and under everything else.
             // They are ground, not incident information: a line of a crew's
             // making must never be mistakable for a line of the earth's.
-            if (projectedContours.isNotEmpty()) {
-                drawContours(
-                    lines = projectedContours,
-                    originX = originX,
-                    originY = originY,
-                    drawWidth = drawWidth,
-                    drawHeight = drawHeight
-                )
+            if (contours != null && !contours.isEmpty) {
+                // Guarded because this is decoration on top of a working map.
+                // Anything thrown from a draw kills the process, and losing a
+                // navigation tool on a fireline because a terrain layer could
+                // not draw is not a trade worth making. The sheet, the
+                // position and the tracks all still come out below.
+                runCatching {
+                    drawContours(
+                        lines = contours.lines,
+                        originX = originX,
+                        originY = originY,
+                        drawWidth = drawWidth,
+                        drawHeight = drawHeight
+                    )
+                }.onFailure { onContourDrawFailed?.invoke(it) }
             }
 
             if (frame != null && pageWidthPoints > 0 && pageHeightPoints > 0) {
@@ -944,108 +895,6 @@ private fun DrawScope.drawBasemap(
 }
 
 /**
- * A contour already turned into page fractions.
- *
- * Projecting geographic points is expensive -- a Transverse Mercator forward
- * for every point -- and the answer does not change when the map is panned or
- * zoomed, only when the lines themselves do. Doing it per frame made the
- * interface stop responding while zooming, which is what it looked like from
- * the outside when the app died. Held as flat float arrays because a screenful
- * of contours is tens of thousands of points and boxed pairs of them are more
- * garbage than the frame budget can carry.
- */
-internal class ProjectedContour(
-    val elevationFeet: Int,
-    val isIndex: Boolean,
-    val xs: FloatArray,
-    val ys: FloatArray,
-    /** Where the label goes, in the same fractions, and which way it lies. */
-    val labelX: Float,
-    val labelY: Float,
-    val labelDegrees: Float,
-    val hasLabel: Boolean
-)
-
-/**
- * Turns a contour set into page fractions, once.
- *
- * A ceiling on total points is applied because a pathological elevation grid
- * -- a corrupt tile, a nodata band read as terrain -- can ask for far more
- * line than any screen can show, and drawing it would take the app down rather
- * than merely look wrong.
- */
-internal fun projectContours(
-    set: com.rhecyee.firelinemap.terrain.ContourSet,
-    frame: com.rhecyee.firelinemap.geopdf.MapFrame,
-    pageWidthPoints: Int,
-    pageHeightPoints: Int,
-    maxPoints: Int = MAX_CONTOUR_POINTS
-): List<ProjectedContour> {
-    if (pageWidthPoints <= 0 || pageHeightPoints <= 0) return emptyList()
-    val width = pageWidthPoints.toDouble()
-    val height = pageHeightPoints.toDouble()
-    val out = ArrayList<ProjectedContour>(set.lines.size)
-    var budget = maxPoints
-
-    // Index lines first, so a set too large to draw whole keeps the lines that
-    // carry the numbers rather than whichever happened to be traced first.
-    for (line in set.lines.sortedByDescending { it.isIndex }) {
-        if (budget <= 0) break
-        val count = minOf(line.points.size, budget)
-        if (count < 2) continue
-        val xs = FloatArray(count)
-        val ys = FloatArray(count)
-        var kept = 0
-        for (index in 0 until count) {
-            val (latitude, longitude) = line.points[index]
-            val page = frame.geoToPage(latitude, longitude) ?: continue
-            val x = (page.first / width).toFloat()
-            val y = 1f - (page.second / height).toFloat()
-            if (!x.isFinite() || !y.isFinite()) continue
-            xs[kept] = x
-            ys[kept] = y
-            kept++
-        }
-        budget -= count
-        if (kept < 2) continue
-
-        var labelX = 0f
-        var labelY = 0f
-        var labelDegrees = 0f
-        var hasLabel = false
-        if (line.isIndex && kept >= 3) {
-            val middle = kept / 2
-            labelX = xs[middle]
-            labelY = ys[middle]
-            val before = middle - 1
-            val after = (middle + 1).coerceAtMost(kept - 1)
-            // Screen space, so the angle is the one the reader sees rather
-            // than the one the ground makes.
-            var degrees = Math.toDegrees(
-                atan2((ys[after] - ys[before]).toDouble(), (xs[after] - xs[before]).toDouble())
-            ).toFloat()
-            // Never upside down: a number read the wrong way up is misread.
-            if (degrees > 90f) degrees -= 180f
-            if (degrees < -90f) degrees += 180f
-            labelDegrees = degrees
-            hasLabel = true
-        }
-
-        out += ProjectedContour(
-            elevationFeet = line.elevationFeet,
-            isIndex = line.isIndex,
-            xs = if (kept == xs.size) xs else xs.copyOf(kept),
-            ys = if (kept == ys.size) ys else ys.copyOf(kept),
-            labelX = labelX,
-            labelY = labelY,
-            labelDegrees = labelDegrees,
-            hasLabel = hasLabel
-        )
-    }
-    return out
-}
-
-/**
  * Contour lines, cut to the zoom and labelled where they are index lines.
  *
  * Drawn in the brown of a printed quadrangle rather than in any of the colours
@@ -1057,7 +906,7 @@ internal fun projectContours(
  * index line does the same on ground that folds back on itself.
  */
 private fun DrawScope.drawContours(
-    lines: List<ProjectedContour>,
+    lines: List<com.rhecyee.firelinemap.terrain.ProjectedContour>,
     originX: Float,
     originY: Float,
     drawWidth: Float,
@@ -1123,9 +972,6 @@ private fun DrawScope.drawContours(
         }
     }
 }
-
-/** More line than any screen can show; past this something is wrong upstream. */
-private const val MAX_CONTOUR_POINTS = 120_000
 
 private val CONTOUR = Color(0xFF9A6634)
 private val INDEX_CONTOUR = Color(0xFF6E3F14)

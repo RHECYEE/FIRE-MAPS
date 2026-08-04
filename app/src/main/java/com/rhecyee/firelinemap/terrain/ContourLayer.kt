@@ -1,6 +1,8 @@
 package com.rhecyee.firelinemap.terrain
 
 import android.content.Context
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -8,8 +10,10 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import com.rhecyee.firelinemap.geopdf.MapFrame
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.yield
 
 /** What the contour layer is doing, for the key to say. */
 enum class ContourStatus {
@@ -26,7 +30,10 @@ enum class ContourStatus {
     PARTIAL,
 
     /** None of this ground has been downloaded. */
-    MISSING
+    MISSING,
+
+    /** Cutting failed. The layer stays off rather than trying again forever. */
+    FAILED
 }
 
 /**
@@ -44,10 +51,35 @@ enum class ContourStatus {
 class ContourLayer(context: Context) {
 
     val cache = DemTileCache(context)
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    private val _contours = MutableStateFlow(ContourSet.NONE)
-    val contours: StateFlow<ContourSet> = _contours.asStateFlow()
+    private val _failure = MutableStateFlow<String?>(null)
+
+    /** Set when cutting failed, so the layer can say so instead of dying. */
+    val failure: StateFlow<String?> = _failure.asStateFlow()
+
+    /**
+     * A failure here must not take the app with it.
+     *
+     * Without a handler an exception in this coroutine reaches the thread's
+     * uncaught handler and the process is killed -- and contours are the one
+     * part of this app doing heavy allocation on data fetched off the network,
+     * so it is the likeliest place to run out of memory. A map with no
+     * contours is still a map. A map that is not running is not.
+     */
+    private val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default +
+            CoroutineExceptionHandler { _, error ->
+                if (error is CancellationException) return@CoroutineExceptionHandler
+                _contours.value = ContourRender.NONE
+                _status.value = ContourStatus.FAILED
+                _failure.value = error::class.java.simpleName +
+                    (error.message?.let { ": $it" } ?: "")
+                lastRequest = null
+            }
+    )
+
+    private val _contours = MutableStateFlow(ContourRender.NONE)
+    val contours: StateFlow<ContourRender> = _contours.asStateFlow()
 
     private val _status = MutableStateFlow(ContourStatus.IDLE)
     val status: StateFlow<ContourStatus> = _status.asStateFlow()
@@ -60,7 +92,8 @@ class ContourLayer(context: Context) {
         val south: Double,
         val west: Double,
         val east: Double,
-        val zoom: Int
+        val zoom: Int,
+        val frameKey: String
     ) {
         /**
          * Whether a new view is close enough to this one to reuse.
@@ -70,7 +103,7 @@ class ContourLayer(context: Context) {
          * to the edge of the contours and finds nothing there.
          */
         fun covers(other: Request): Boolean {
-            if (other.zoom != zoom) return false
+            if (other.zoom != zoom || other.frameKey != frameKey) return false
             val slackLatitude = (north - south) * 0.1
             val slackLongitude = (east - west) * 0.1
             return other.north <= north + slackLatitude &&
@@ -81,26 +114,36 @@ class ContourLayer(context: Context) {
     }
 
     /**
-     * Asks for contours over a view.
+     * Asks for contours over a view, ready to draw.
      *
-     * [reliefHintFeet] is unused directly -- the relief is measured from the
-     * grid once it is assembled -- but the interval it implies is what decides
-     * how many levels get cut, so it is derived here rather than guessed.
+     * The map frame comes in with the request so the cut lines can be
+     * projected into page space here, on the worker, rather than on the
+     * main thread. Projection is twenty thousand Transverse Mercator forwards
+     * for a screenful; done anywhere the gesture can reach it, zooming stops
+     * being possible.
      */
     fun request(
         north: Double,
         south: Double,
         west: Double,
         east: Double,
-        viewZoom: Int
+        viewZoom: Int,
+        frame: MapFrame,
+        pageWidthPoints: Int,
+        pageHeightPoints: Int
     ) {
         if (north <= south || east <= west) return
+        if (pageWidthPoints <= 0 || pageHeightPoints <= 0) return
         val demZoom = viewZoom.coerceIn(MIN_DEM_ZOOM, MAX_DEM_ZOOM)
-        val request = Request(north, south, west, east, demZoom)
+        val request = Request(
+            north, south, west, east, demZoom,
+            "${frame.name}/${frame.box}/$pageWidthPoints/$pageHeightPoints"
+        )
         if (lastRequest?.covers(request) == true && _status.value == ContourStatus.READY) return
         lastRequest = request
 
         job?.cancel()
+        _failure.value = null
         job = scope.launch {
             _status.value = ContourStatus.WORKING
             val grid = ElevationGridAssembler.assemble(
@@ -112,14 +155,14 @@ class ContourLayer(context: Context) {
                 zoom = demZoom
             )
             if (grid == null) {
-                _contours.value = ContourSet.NONE
+                _contours.value = ContourRender.NONE
                 _status.value = ContourStatus.MISSING
                 return@launch
             }
 
             val coverage = grid.coverage()
             if (coverage <= 0.0) {
-                _contours.value = ContourSet.NONE
+                _contours.value = ContourRender.NONE
                 _status.value = ContourStatus.MISSING
                 // Nothing held for this ground, so let the next look try again
                 // rather than treating an empty answer as settled.
@@ -127,7 +170,7 @@ class ContourLayer(context: Context) {
                 return@launch
             }
 
-            yield()
+            ensureActive()
             val relief = grid.relief()
             val reliefFeet = relief?.let {
                 (it.second - it.first) * ContourInterval.FEET_PER_METER
@@ -137,9 +180,21 @@ class ContourLayer(context: Context) {
             // the lines should keep getting finer while there is data to
             // support it.
             val interval = ContourIntervals.forView(viewZoom, reliefFeet)
-            val set = ContourBuilder.build(grid, interval)
+            // Cancellation is checked inside both of these. A view that has
+            // moved on has no use for the lines being cut for the old one, and
+            // without a check the abandoned work runs to completion while the
+            // next one queues behind it.
+            val set = ContourBuilder.build(grid, interval) { isActive }
+            ensureActive()
+            val render = ContourProjector.project(
+                set = set,
+                frame = frame,
+                pageWidthPoints = pageWidthPoints,
+                pageHeightPoints = pageHeightPoints
+            ) { isActive }
+            ensureActive()
 
-            _contours.value = set
+            _contours.value = render
             _status.value = when {
                 coverage >= COMPLETE_ENOUGH -> ContourStatus.READY
                 else -> ContourStatus.PARTIAL
@@ -179,8 +234,9 @@ class ContourLayer(context: Context) {
     fun clear() {
         job?.cancel()
         lastRequest = null
+        _failure.value = null
         cache.clear()
-        _contours.value = ContourSet.NONE
+        _contours.value = ContourRender.NONE
         _status.value = ContourStatus.IDLE
     }
 
