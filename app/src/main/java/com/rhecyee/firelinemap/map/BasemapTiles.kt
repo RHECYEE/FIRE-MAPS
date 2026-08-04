@@ -305,12 +305,17 @@ class BasemapTileCache(context: Context) {
             inFlight.size to failedAt.count { now() < it.value }
         }
         return "${tiles.size} held · $flight fetching · $waiting waiting" +
-            (lastLevel?.let { " · level $it" } ?: "")
+            (lastLevel?.let { " · level $it" } ?: "") +
+            (lastFailure?.let { " · DRAW FAILED: $it" } ?: "")
     }
 
     /** The tile level last drawn at, for the same diagnostic. */
     @Volatile
     var lastLevel: Int? = null
+
+    /** Set when a terrain draw threw, so a silent failure is not silent. */
+    @Volatile
+    var lastFailure: String? = null
 
     fun cachedBytes(): Long =
         root.walkTopDown().filter { it.isFile }.sumOf { it.length() }

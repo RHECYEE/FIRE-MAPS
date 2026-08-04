@@ -121,6 +121,18 @@ fun MapCanvas(
      */
     var following by remember(map?.id) { mutableStateOf(false) }
 
+    /**
+     * Where a pinch is anchored, while one is happening.
+     *
+     * Shown because zooming was described as the map teleporting, and the
+     * honest answer is that it does not: it holds the ground between the
+     * fingers still and everything else moves away from it. That is correct
+     * and it is also invisible, which makes it indistinguishable from the map
+     * jumping. Drawing the anchor turns an unexplained movement into an
+     * obvious one.
+     */
+    var zoomAnchor by remember { mutableStateOf<Offset?>(null) }
+
     // The tile level last drawn at, so it can be held across a pinch. A plain
     // holder rather than snapshot state on purpose: this is written during the
     // draw pass, and writing snapshot state there would invalidate the frame
@@ -447,41 +459,46 @@ fun MapCanvas(
                         var travelled = 0f
                         var pointers = 1
                         val canvasCentre = Offset(size.width / 2f, size.height / 2f)
-                        do {
-                            val event = awaitPointerEvent()
-                            pointers = maxOf(pointers, event.changes.count { it.pressed })
-                            val zoomChange = event.calculateZoom()
-                            val panChange = event.calculatePan()
-                            val centroid = event.calculateCentroid(useCurrent = false)
-                            travelled += panChange.getDistance() + abs(1f - zoomChange) * 200f
+                        try {
+                            do {
+                                val event = awaitPointerEvent()
+                                pointers = maxOf(pointers, event.changes.count { it.pressed })
+                                val zoomChange = event.calculateZoom()
+                                val panChange = event.calculatePan()
+                                val centroid = event.calculateCentroid(useCurrent = false)
+                                travelled += panChange.getDistance() + abs(1f - zoomChange) * 200f
 
-                            if (travelled > viewConfiguration.touchSlop) {
-                                // Moving the map by hand is a statement
-                                // about where to look, so it ends follow.
-                                following = false
-                                val next = (scale * zoomChange).coerceIn(1f, projection.maxScale)
-                                // The ratio actually applied, which is not the
-                                // one asked for once the limits are reached.
-                                // Using the requested ratio there slides the
-                                // sheet sideways while the zoom sits pinned.
-                                val applied = if (scale > 0f) next / scale else 1f
-                                scale = next
+                                if (travelled > viewConfiguration.touchSlop) {
+                                    // Moving the map by hand is a statement
+                                    // about where to look, so it ends follow.
+                                    following = false
+                                    val next = (scale * zoomChange).coerceIn(1f, projection.maxScale)
+                                    // The ratio actually applied, which is not the
+                                    // one asked for once the limits are reached.
+                                    // Using the requested ratio there slides the
+                                    // sheet sideways while the zoom sits pinned.
+                                    val applied = if (scale > 0f) next / scale else 1f
+                                    scale = next
 
-                                // Zoom about the fingers, not about the middle
-                                // of the screen. The sheet is drawn from the
-                                // centre outward, so growing it moves every
-                                // point away from the centre in proportion --
-                                // and the pan has to grow with it or the ground
-                                // under the pinch shoots off across the view.
-                                // That was the map appearing to teleport.
-                                val focus = centroid.takeIf { pointers > 1 } ?: canvasCentre
-                                val zoomed = offset * applied +
-                                    (focus - canvasCentre) * (1f - applied)
+                                    // Zoom about the fingers, not about the middle
+                                    // of the screen. The sheet is drawn from the
+                                    // centre outward, so growing it moves every
+                                    // point away from the centre in proportion --
+                                    // and the pan has to grow with it or the ground
+                                    // under the pinch shoots off across the view.
+                                    // That was the map appearing to teleport.
+                                    val focus = centroid.takeIf { pointers > 1 } ?: canvasCentre
+                                    if (pointers > 1) zoomAnchor = focus
+                                    val zoomed = offset * applied +
+                                        (focus - canvasCentre) * (1f - applied)
 
-                                offset = clamp(zoomed + panChange, next)
-                                event.changes.forEach { if (it.positionChanged()) it.consume() }
-                            }
-                        } while (event.changes.any { it.pressed })
+                                    offset = clamp(zoomed + panChange, next)
+                                    event.changes.forEach { if (it.positionChanged()) it.consume() }
+                                }
+                            } while (event.changes.any { it.pressed })
+                        } finally {
+                            zoomAnchor = null
+                        }
 
                         if (travelled <= viewConfiguration.touchSlop && pointers == 1) {
                             if (trackHit != null) {
@@ -510,7 +527,12 @@ fun MapCanvas(
             // Terrain first, so any ground the sheet does not cover is filled
             // rather than left blank -- and, with no sheet at all, so there is
             // something to stand on.
+            // Guarded, and drawn before the sheet. Anything thrown here used
+            // to abort the whole draw, so a fault in the terrain layer took
+            // the sheet, the position and the tracks with it -- a blank
+            // screen instead of a missing background.
             if (basemap != null) {
+                runCatching {
                 drawBasemap(
                     basemap = basemap,
                     projection = projection,
@@ -520,14 +542,49 @@ fun MapCanvas(
                     drawHeight = drawHeight,
                     held = tileZoom
                 )
+                }.onFailure { basemap.lastFailure = it::class.java.simpleName }
             }
 
-            if (image != null) {
-                drawImage(
-                    image = image,
-                    dstOffset = IntOffset(originX.roundToInt(), originY.roundToInt()),
-                    dstSize = IntSize(drawWidth.roundToInt(), drawHeight.roundToInt())
-                )
+            // Only the part of the sheet that is actually on screen.
+            //
+            // Drawing the whole page into a destination rectangle the size of
+            // the zoomed sheet means asking the canvas to scale a twenty
+            // megabyte bitmap into something tens of thousands of pixels
+            // across, every frame, to show a phone screen's worth of it. Past
+            // a certain zoom those coordinates leave the range the renderer
+            // works in and the draw is simply dropped -- the sheet vanishes
+            // and the background is all that is left, which is the grey.
+            //
+            // Cropping first keeps every coordinate inside the viewport at any
+            // zoom, and hands the renderer a few hundred pixels of source
+            // instead of the whole page.
+            if (image != null && drawWidth > 0f && drawHeight > 0f) {
+                val u0 = ((0f - originX) / drawWidth).coerceIn(0f, 1f)
+                val u1 = ((size.width - originX) / drawWidth).coerceIn(0f, 1f)
+                val v0 = ((0f - originY) / drawHeight).coerceIn(0f, 1f)
+                val v1 = ((size.height - originY) / drawHeight).coerceIn(0f, 1f)
+
+                val srcLeft = (u0 * image.width).roundToInt()
+                val srcTop = (v0 * image.height).roundToInt()
+                val srcWidth = ((u1 - u0) * image.width).roundToInt()
+                val srcHeight = ((v1 - v0) * image.height).roundToInt()
+                val dstLeft = (originX + u0 * drawWidth).roundToInt()
+                val dstTop = (originY + v0 * drawHeight).roundToInt()
+                val dstWidth = ((u1 - u0) * drawWidth).roundToInt()
+                val dstHeight = ((v1 - v0) * drawHeight).roundToInt()
+
+                if (srcWidth > 0 && srcHeight > 0 && dstWidth > 0 && dstHeight > 0) {
+                    drawImage(
+                        image = image,
+                        srcOffset = IntOffset(srcLeft, srcTop),
+                        srcSize = IntSize(
+                            srcWidth.coerceAtMost(image.width - srcLeft),
+                            srcHeight.coerceAtMost(image.height - srcTop)
+                        ),
+                        dstOffset = IntOffset(dstLeft, dstTop),
+                        dstSize = IntSize(dstWidth, dstHeight)
+                    )
+                }
             }
 
             // Contours sit directly on the terrain and under everything else.
@@ -652,6 +709,11 @@ fun MapCanvas(
                     sheetCentre = Offset(originX + drawWidth / 2f, originY + drawHeight / 2f)
                 )
             }
+        }
+
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val anchor = zoomAnchor ?: return@Canvas
+            drawZoomAnchor(anchor)
         }
 
         Column(
@@ -984,6 +1046,28 @@ private fun DrawScope.drawContours(
 private val CONTOUR = Color(0xFF9A6634)
 private val INDEX_CONTOUR = Color(0xFF6E3F14)
 private const val INDEX_CONTOUR_ARGB = 0xFF6E3F14.toInt()
+
+/**
+ * The point a pinch is holding still.
+ *
+ * Only while two fingers are down. A zoom anchored anywhere but the middle of
+ * the screen moves everything except the ground under the fingers, which is
+ * right and is also indistinguishable from the map jumping unless the anchor
+ * is visible.
+ */
+private fun DrawScope.drawZoomAnchor(at: Offset) {
+    val arm = 26f
+    val ring = 13f
+    // Cased in dark first so it reads over pale rock and dark timber alike.
+    for ((colour, width) in listOf(Color.Black.copy(alpha = 0.55f) to 6f, Color.White to 2.5f)) {
+        drawCircle(colour, radius = ring, center = at, style = Stroke(width = width))
+        drawLine(colour, Offset(at.x - arm, at.y), Offset(at.x - ring - 3f, at.y), width)
+        drawLine(colour, Offset(at.x + ring + 3f, at.y), Offset(at.x + arm, at.y), width)
+        drawLine(colour, Offset(at.x, at.y - arm), Offset(at.x, at.y - ring - 3f), width)
+        drawLine(colour, Offset(at.x, at.y + ring + 3f), Offset(at.x, at.y + arm), width)
+    }
+    drawCircle(Color.White, radius = 2.5f, center = at)
+}
 
 /**
  * Administered ground, outlined and named.
