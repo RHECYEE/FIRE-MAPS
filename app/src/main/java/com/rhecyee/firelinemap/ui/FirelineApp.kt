@@ -363,6 +363,78 @@ fun FirelineApp() {
         ?: kotlinx.coroutines.flow.flowOf(emptyList()))
         .collectAsState(initial = emptyList())
 
+    // A report opened before the receiver was ready takes the first fix it
+    // sees, so nobody has to remember to come back and fill it in.
+    LaunchedEffect(medicalReport?.id, gpsLocation) {
+        val report = medicalReport ?: return@LaunchedEffect
+        val fix = gpsLocation ?: return@LaunchedEffect
+        if (!report.hasPosition) {
+            val updated = report.copy(
+                latitude = fix.latitude,
+                longitude = fix.longitude,
+                hasPosition = true,
+                elevationMeters = fix.altitude,
+                accuracyMeters = fix.accuracy
+            )
+            medicalReport = updated
+            medical.save(updated)
+            resources.place(
+                updated.incidentId, ResourceSymbol.MEDICAL_INCIDENT,
+                "MEDICAL", null, fix.latitude, fix.longitude
+            )
+        }
+    }
+
+    /**
+     * Opens a medical report from wherever things stand.
+     *
+     * Deliberately refuses nothing. No incident, no map, and no fix are all
+     * survivable: an incident is created if none exists, the map name is
+     * simply absent, and a report opened before the receiver has a fix is
+     * marked as having no position rather than being blocked. Waiting on any
+     * of that with a patient on the ground is not acceptable.
+     */
+    fun openMedicalReport() {
+        val lat = displayLatitude
+        val lon = displayLongitude
+        val id = UUID.randomUUID().toString()
+        scope.launch {
+            val incident = activeIncident ?: IncidentEntity(
+                id = UUID.randomUUID().toString(),
+                name = "Incident ${java.text.SimpleDateFormat("MMM d", java.util.Locale.US)
+                    .format(System.currentTimeMillis())}",
+                year = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR),
+                createdAt = System.currentTimeMillis(),
+                isActive = true
+            ).also { app.database.dao().upsertIncident(it) }
+
+            val report = MedicalReport(
+                id = id,
+                incidentId = incident.id,
+                createdAt = System.currentTimeMillis(),
+                incidentName = incident.name,
+                mapName = activeMap?.displayName,
+                latitude = lat ?: 0.0,
+                longitude = lon ?: 0.0,
+                hasPosition = lat != null && lon != null,
+                elevationMeters = gpsLocation?.altitude,
+                accuracyMeters = gpsLocation?.accuracy,
+                reporterName = reporter.name.ifBlank { null },
+                reporterQualification = reporter.qualification.ifBlank { null },
+                incidentCommander = reporter.name.ifBlank { null },
+                trackId = if (liveTrack.recording) "recording" else null
+            )
+            medicalReport = report
+            medical.save(report)
+            if (lat != null && lon != null) {
+                resources.place(
+                    incident.id, ResourceSymbol.MEDICAL_INCIDENT,
+                    "MEDICAL", null, lat, lon
+                )
+            }
+        }
+    }
+
     val toolArmed = measuring || placingResources || simMode || showSearch
     LaunchedEffect(lastInteraction, toolArmed, chromeVisible) {
         // An armed tool holds the controls open; nothing is more irritating
@@ -754,6 +826,14 @@ fun FirelineApp() {
 
                 // The one thing that stays. Coordinates are what gets read
                 // over the radio, and hunting for them is not acceptable.
+                // Always reachable, including full screen. The one control
+                // that must never be behind another tap.
+                MedicalButton(
+                    active = medicalReport != null,
+                    onClick = { touched(); openMedicalReport() },
+                    modifier = Modifier.align(Alignment.BottomStart).padding(10.dp)
+                )
+
                 if (!chromeVisible) {
                     CompactStatusStrip(
                         coordinates = when {
@@ -839,38 +919,7 @@ fun FirelineApp() {
                     active = medicalReport != null
                 ) {
                     touched()
-                    val incident = activeIncident ?: return@ToolButton
-                    val lat = displayLatitude
-                    val lon = displayLongitude
-                    if (lat == null || lon == null) {
-                        statusMessage = "No position yet — a medical report needs a coordinate."
-                        return@ToolButton
-                    }
-                    val id = UUID.randomUUID().toString()
-                    val report = MedicalReport(
-                        id = id,
-                        incidentId = incident.id,
-                        createdAt = System.currentTimeMillis(),
-                        incidentName = incident.name,
-                        mapName = activeMap?.displayName,
-                        latitude = lat,
-                        longitude = lon,
-                        elevationMeters = gpsLocation?.altitude,
-                        accuracyMeters = gpsLocation?.accuracy,
-                        reporterName = reporter.name.ifBlank { null },
-                        reporterQualification = reporter.qualification.ifBlank { null },
-                        incidentCommander = reporter.name.ifBlank { null },
-                        trackId = if (liveTrack.recording) "recording" else null
-                    )
-                    medicalReport = report
-                    scope.launch {
-                        medical.save(report)
-                        // The pin goes down with the form, not after it.
-                        resources.place(
-                            incident.id, ResourceSymbol.MEDICAL_INCIDENT,
-                            "MEDICAL", null, lat, lon
-                        )
-                    }
+                    openMedicalReport()
                 }
                 ToolButton(
                     "Sim",

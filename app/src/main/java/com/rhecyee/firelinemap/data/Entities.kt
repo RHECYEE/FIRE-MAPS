@@ -135,6 +135,7 @@ data class MedicalReportEntity(
     val trackId: String? = null,
     val photoCount: Int = 0,
     val format: String = "MIR",
+    val hasPosition: Boolean = true,
     val closedAt: Long? = null
 )
 

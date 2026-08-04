@@ -77,7 +77,8 @@ fun MedicalReport.toEntity(): MedicalReportEntity = MedicalReportEntity(
     markerId = markerId,
     trackId = trackId,
     photoCount = photoCount,
-    format = format.name
+    format = format.name,
+    hasPosition = hasPosition
 )
 
 fun MedicalReportEntity.toReport(updates: List<ReportUpdate> = emptyList()): MedicalReport =
@@ -110,6 +111,7 @@ fun MedicalReportEntity.toReport(updates: List<ReportUpdate> = emptyList()): Med
         markerId = markerId,
         trackId = trackId,
         photoCount = photoCount,
+        hasPosition = hasPosition,
         updates = updates,
         format = runCatching { ReportFormat.valueOf(format) }.getOrDefault(ReportFormat.MIR)
     )

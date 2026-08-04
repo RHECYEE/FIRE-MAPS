@@ -220,7 +220,8 @@ object RadioReadout {
 
     /** Coordinates in degrees and decimal minutes, as aircraft use them. */
     private fun coordinates(report: MedicalReport): String =
-        CoordinateFormatter.format(report.latitude, report.longitude, CoordinateFormat.DDM)
+        if (!report.hasPosition) "POSITION NOT YET FIXED"
+        else CoordinateFormatter.format(report.latitude, report.longitude, CoordinateFormat.DDM)
 
     private fun spokenList(items: List<String>): String = when (items.size) {
         0 -> ""

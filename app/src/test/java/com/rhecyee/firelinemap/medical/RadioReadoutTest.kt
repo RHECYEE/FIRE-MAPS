@@ -258,3 +258,47 @@ class MedicalReportPersistenceTest {
         assertEquals(setOf(MedicalResource.HOIST), restored.resources)
     }
 }
+
+/** The form has to open before the receiver is ready. */
+class MedicalWithoutPositionTest {
+
+    private val noFix = MedicalReport(
+        id = "r1", incidentId = "i1", createdAt = 0L,
+        incidentName = "Incident Aug 4", mapName = null,
+        latitude = 0.0, longitude = 0.0, hasPosition = false,
+        elevationMeters = null, accuracyMeters = null,
+        reporterName = null, reporterQualification = null,
+        natureOfInjury = "fall", patientAssessment = "conscious",
+        transport = TransportMode.GROUND
+    )
+
+    @Test
+    fun aReportWithNoFixNeverReadsOutACoordinate() {
+        // Zero, zero is in the Atlantic. It must not be spoken as a position.
+        val spoken = RadioReadout.spoken(noFix)
+        assertTrue("was: $spoken", spoken.contains("POSITION NOT YET FIXED"))
+        assertFalse(spoken.contains("N 0°"))
+    }
+
+    @Test
+    fun aReportWithNoFixIsNotReadyToTransmit() {
+        assertFalse(noFix.isReadyToTransmit)
+        assertTrue(noFix.missing.contains("a position fix"))
+    }
+
+    @Test
+    fun theSameReportBecomesReadyOnceAFixArrives() {
+        val fixed = noFix.copy(
+            latitude = 45.719620, longitude = -117.267328, hasPosition = true
+        )
+        assertTrue(fixed.isReadyToTransmit)
+        assertTrue(RadioReadout.spoken(fixed).contains("N 45° 43.177'"))
+    }
+
+    @Test
+    fun aReportStillWorksWithNoMapAndNoReporter() {
+        val line = RadioReadout.lines(noFix).first { it.heading == "Documentation" }
+        assertTrue(line.body.isNotBlank())
+        assertEquals(8, RadioReadout.lines(noFix).size)
+    }
+}

@@ -930,3 +930,26 @@ fun CompactStatusStrip(
         }
     }
 }
+
+/**
+ * The medical button, always on screen.
+ *
+ * It does not fold away with the rest of the controls and it is never
+ * disabled. Whatever else is or is not loaded, this opens.
+ */
+@androidx.compose.runtime.Composable
+fun MedicalButton(active: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Text(
+        if (active) "MED ●" else "MED",
+        modifier = modifier
+            .background(
+                if (active) Color(0xFF7F0000) else Color(0xFFD50000),
+                RoundedCornerShape(28.dp)
+            )
+            .clickable { onClick() }
+            .padding(horizontal = 22.dp, vertical = 15.dp),
+        color = Color.White,
+        fontWeight = FontWeight.Black,
+        fontSize = androidx.compose.ui.unit.TextUnit(17f, androidx.compose.ui.unit.TextUnitType.Sp)
+    )
+}

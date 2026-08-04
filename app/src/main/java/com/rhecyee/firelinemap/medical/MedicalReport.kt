@@ -82,11 +82,21 @@ data class MedicalReport(
     val trackId: String? = null,
     val photoCount: Int = 0,
     val updates: List<ReportUpdate> = emptyList(),
-    val format: ReportFormat = ReportFormat.MIR
+    val format: ReportFormat = ReportFormat.MIR,
+
+    /**
+     * False when the form was opened before the receiver had a fix.
+     *
+     * The form opens regardless -- an emergency does not wait on GPS -- but a
+     * coordinate that was never measured must never be read out as though it
+     * were, so the readout says so and the report is not ready to transmit.
+     */
+    val hasPosition: Boolean = true
 ) {
     /** Fields that would leave a gap on the radio if left empty. */
     val missing: List<String>
         get() = buildList {
+            if (!hasPosition) add("a position fix")
             if (natureOfInjury.isNullOrBlank()) add("nature of injury")
             if (patientAssessment.isNullOrBlank()) add("patient assessment")
             if (transport != TransportMode.GROUND && lzHazards.isNullOrBlank()) {
