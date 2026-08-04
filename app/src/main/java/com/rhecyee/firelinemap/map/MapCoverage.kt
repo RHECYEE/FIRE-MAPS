@@ -80,7 +80,7 @@ object MapCoverage {
     /** Below this max zoom a preloaded region is orientation-only, not navigational. */
     const val DETAILED_MIN_MAX_ZOOM = 13
 
-    private const val EARTH_RADIUS_METERS = 6371008.8
+    private const val EARTH_RADIUS_METERS = Earth.RADIUS_METERS
 
     fun resolve(
         latitude: Double,
