@@ -26,12 +26,21 @@ class TrackSettingsStore(context: Context) {
             .putInt(KEY_STOP, value.coerceIn(MIN_STOP_SECONDS, MAX_STOP_SECONDS))
             .apply()
 
+    /** Experimental: split travel into legs at drop points read off the sheet. */
+    var segmentAtDropPoints: Boolean
+        get() = preferences.getBoolean(KEY_SEGMENT, false)
+        set(value) = preferences.edit().putBoolean(KEY_SEGMENT, value).apply()
+
     fun settings(): TrackDetectionSettings =
-        TrackDetectionSettings(stopThresholdMillis = stopThresholdSeconds * 1000L)
+        TrackDetectionSettings(
+            stopThresholdMillis = stopThresholdSeconds * 1000L,
+            segmentAtDropPoints = segmentAtDropPoints
+        )
 
     companion object {
         private const val KEY_AUTO = "auto_record"
         private const val KEY_STOP = "stop_threshold_seconds"
+        private const val KEY_SEGMENT = "segment_at_drop_points"
 
         const val DEFAULT_STOP_SECONDS = 300
 

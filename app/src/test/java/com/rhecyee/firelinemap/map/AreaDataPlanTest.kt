@@ -138,7 +138,7 @@ class AreaDataPlannerTest {
 
         // Vector overzoom is what keeps this from being a several-hundred-megabyte
         // download; if a source's zoom cap regresses, this is the guard that trips.
-        assertTrue("estimate was $megabytes MB", megabytes in 1.0..80.0)
+        assertTrue("estimate was $megabytes MB", megabytes in 0.5..80.0)
     }
 
     @Test

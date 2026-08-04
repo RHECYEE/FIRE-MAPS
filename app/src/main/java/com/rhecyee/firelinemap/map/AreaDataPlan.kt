@@ -18,15 +18,18 @@ data class AreaDataSource(
         /**
          * Vector terrain: roads, trails, hydrography, contours, place names.
          *
-         * Capped at zoom 14 because vector tiles overzoom for free -- z14 data
-         * renders correctly at z18 -- which is the difference between a ~12 MB
-         * download and a ~700 MB one for the same ground.
+         * Capped at zoom 13. Vector tiles overzoom for free, so z13 data still
+         * renders at z18 with less detail once you are right in on it. Each
+         * further level costs four times the tiles, and by-state regions are
+         * built at this cap: Oregon is roughly 800 MB here against 2.4 GB at
+         * z14, which is the difference between a download people will wait for
+         * and one they will not.
          */
         val TERRAIN_VECTOR = AreaDataSource(
             id = "terrain-vector",
             label = "Terrain, roads and trails",
             minZoom = 0,
-            maxZoom = 14,
+            maxZoom = 13,
             averageTileBytes = 15_000
         )
 
@@ -35,7 +38,7 @@ data class AreaDataSource(
             id = "hillshade-dem",
             label = "Shaded relief",
             minZoom = 0,
-            maxZoom = 13,
+            maxZoom = 12,
             averageTileBytes = 50_000
         )
 

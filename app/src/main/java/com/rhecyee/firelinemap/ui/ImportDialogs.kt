@@ -119,19 +119,28 @@ fun RemoteListingDialog(
 @androidx.compose.runtime.Composable
 fun TrackSettingsDialog(
     stopThresholdSeconds: Int,
+    segmentAtDropPoints: Boolean,
+    dropPointsFound: Int,
     onDismiss: () -> Unit,
-    onSelect: (Int) -> Unit
+    onSelect: (Int) -> Unit,
+    onToggleSegmenting: () -> Unit
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("End a track after stopping for") },
+        title = { Text("Travel recording") },
         text = {
             Column {
                 Text(
-                    "Travel records itself once you start moving. A stop shorter " +
-                        "than this stays part of the same track, so a gate, traffic, " +
-                        "or working a patient does not split the trip.",
+                    "Travel records itself once you start moving. A stop longer " +
+                        "than this pauses the track; it does not end it, so a shift " +
+                        "stays one record with its stops inside it.",
                     style = MaterialTheme.typography.bodySmall
+                )
+                Text(
+                    "Pause after",
+                    modifier = Modifier.padding(top = 10.dp),
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.labelLarge
                 )
                 com.rhecyee.firelinemap.location.TrackSettingsStore.CHOICES_SECONDS
                     .forEach { seconds ->
@@ -147,8 +156,21 @@ fun TrackSettingsDialog(
                             fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
                         )
                     }
+                Text(
+                    "EXPERIMENTAL \u00b7 split travel into legs at drop points read " +
+                        "off the sheet by symbol colour. Detected drop points are " +
+                        "ringed on the map so you can check them before trusting " +
+                        "the split. $dropPointsFound found on this sheet.",
+                    modifier = Modifier.padding(top = 12.dp),
+                    style = MaterialTheme.typography.bodySmall
+                )
             }
         },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } }
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+        dismissButton = {
+            TextButton(onClick = onToggleSegmenting) {
+                Text(if (segmentAtDropPoints) "Legs: ON ($dropPointsFound)" else "Legs: OFF")
+            }
+        }
     )
 }

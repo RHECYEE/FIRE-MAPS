@@ -63,7 +63,12 @@ class TrackRecordingService : Service() {
                 closeOpenTrack()
                 disarm()
             }
-            else -> arm(intent?.getStringExtra(EXTRA_INCIDENT_ID))
+            else -> {
+                arm(intent?.getStringExtra(EXTRA_INCIDENT_ID))
+                // Re-read in case the sheet or the setting changed while armed.
+                detector.settings = settingsStore.settings()
+                detector.anchors = (application as FirelineApplication).dropPoints
+            }
         }
         // Restarting after process death resumes watching; the open track is
         // recovered from the database rather than being silently abandoned.
@@ -84,6 +89,7 @@ class TrackRecordingService : Service() {
 
         armed = true
         detector.settings = settingsStore.settings()
+        detector.anchors = (application as FirelineApplication).dropPoints
         startForeground(NOTIFICATION_ID, notification("Watching for travel"))
 
         val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 5_000L)
@@ -129,6 +135,15 @@ class TrackRecordingService : Service() {
                     isRecording = true
                 )
             }
+            is TrackEvent.Paused -> updateNotification(
+                "Travel paused — %.1f km so far".format(detector.currentDistanceMeters / 1000.0)
+            )
+            is TrackEvent.Resumed -> updateNotification(
+                "Travel recording — %.1f km".format(detector.currentDistanceMeters / 1000.0)
+            )
+            is TrackEvent.Segmented -> updateNotification(
+                "Leg %d ended at a drop point".format(detector.currentSegmentCount)
+            )
             is TrackEvent.Ended -> {
                 finalise(event)
                 updateNotification("Watching for travel")

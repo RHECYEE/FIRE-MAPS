@@ -130,37 +130,56 @@ class TrackDetectorTest {
     }
 
     @Test
-    fun stoppingForTheConfiguredThresholdEndsTheTrack() {
+    fun stoppingForTheConfiguredThresholdPausesRatherThanEnding() {
         val detector = detector(stopThresholdMillis = 120_000)
         walk(detector, 0, seconds = 200, speed = 1.4)
         val events = idle(detector, 210_000, seconds = 300, atMeters = 280.0)
 
-        val ended = events.filterIsInstance<TrackEvent.Ended>().firstOrNull()
-        assertTrue("expected the track to close", ended != null)
-        assertFalse(detector.isRecording)
-        assertTrue(ended!!.kept)
+        assertTrue("expected a pause", events.any { it is TrackEvent.Paused })
+        assertTrue("a stop must not close the track", detector.isRecording)
+        assertTrue(detector.isPaused)
+        assertTrue(events.none { it is TrackEvent.Ended })
+    }
+
+    @Test
+    fun movingAgainResumesTheSameTrack() {
+        val detector = detector(stopThresholdMillis = 120_000)
+        walk(detector, 0, seconds = 200, speed = 1.4)
+        idle(detector, 210_000, seconds = 300, atMeters = 280.0)
+        assertTrue(detector.isPaused)
+
+        val events = walk(detector, 520_000, seconds = 150, speed = 1.4)
+
+        assertTrue("expected a resume", events.any { it is TrackEvent.Resumed })
+        assertFalse(detector.isPaused)
+        assertTrue(detector.isRecording)
+
+        // Still one track, with the stop recorded inside it.
+        val track = (detector.finish() as TrackEvent.Ended).track
+        assertTrue("pause was not recorded", track.pausedMillis > 200_000)
+        assertTrue(track.activeMillis < track.elapsedMillis)
     }
 
     @Test
     fun theStopThresholdIsRespectedWhenChanged() {
-        // The same movement, closed sooner purely because the setting is shorter.
+        // The same movement, paused sooner purely because the setting is shorter.
         val quick = detector(stopThresholdMillis = 60_000)
         walk(quick, 0, seconds = 200, speed = 1.4)
         idle(quick, 210_000, seconds = 90, atMeters = 280.0)
-        assertFalse("short threshold should have closed the track", quick.isRecording)
+        assertTrue("short threshold should have paused", quick.isPaused)
 
         val patient = detector(stopThresholdMillis = 600_000)
         walk(patient, 0, seconds = 200, speed = 1.4)
         idle(patient, 210_000, seconds = 90, atMeters = 280.0)
-        assertTrue("long threshold should still be recording", patient.isRecording)
+        assertFalse("long threshold should not have paused", patient.isPaused)
     }
 
     @Test
     fun theSavedTrackEndsAtLastMovementNotWhenTheTimerExpired() {
         val detector = detector(stopThresholdMillis = 120_000)
         walk(detector, 0, seconds = 200, speed = 1.4)
-        val events = idle(detector, 210_000, seconds = 300, atMeters = 280.0)
-        val track = events.filterIsInstance<TrackEvent.Ended>().first().track
+        idle(detector, 210_000, seconds = 300, atMeters = 280.0)
+        val track = (detector.finish() as TrackEvent.Ended).track
 
         // Movement stopped around 200 s; the track must not carry the two
         // minutes of waiting that followed.
@@ -177,9 +196,9 @@ class TrackDetectorTest {
             minimumTrackDistanceMeters = 500.0
         )
         walk(detector, 0, seconds = 120, speed = 1.4) // ~168 m
-        val events = idle(detector, 130_000, seconds = 120, atMeters = 168.0)
+        idle(detector, 130_000, seconds = 120, atMeters = 168.0)
 
-        val ended = events.filterIsInstance<TrackEvent.Ended>().first()
+        val ended = detector.finish() as TrackEvent.Ended
         assertFalse("168 m should not be kept when the floor is 500 m", ended.kept)
     }
 
@@ -209,18 +228,16 @@ class TrackDetectorTest {
     }
 
     @Test
-    fun parkedOvernightIsNotSavedAsTravel() {
+    fun parkedOvernightPausesOnceAndAddsNothing() {
         val detector = detector(stopThresholdMillis = 300_000)
         walk(detector, 0, seconds = 120, speed = 1.4)
 
-        // Hours parked at ICP. The track closes on the threshold, and the
-        // drift that follows must not open a new one.
+        // Hours parked at ICP. One pause, and the drift adds no distance.
         val events = idle(detector, 130_000, seconds = 14_400, atMeters = 168.0, wanderMeters = 3.0)
 
-        val ended = events.filterIsInstance<TrackEvent.Ended>()
-        assertEquals("the track should close exactly once", 1, ended.size)
-        assertEquals(168.0, ended.single().track.distanceMeters, 5.0)
-        assertFalse("drift must not reopen a track", detector.isRecording)
+        assertEquals("should pause exactly once", 1, events.count { it is TrackEvent.Paused })
+        val track = (detector.finish() as TrackEvent.Ended).track
+        assertEquals(168.0, track.distanceMeters, 12.0)
     }
 
     @Test
@@ -273,14 +290,62 @@ class TrackDetectorTest {
     }
 
     @Test
-    fun aSecondTripOpensAfterTheFirstOneClosed() {
+    fun aNewTrackOpensOnlyAfterAnExplicitFinish() {
         val detector = detector(stopThresholdMillis = 60_000)
         walk(detector, 0, seconds = 200, speed = 1.4)
         idle(detector, 210_000, seconds = 120, atMeters = 280.0)
+        detector.finish()
         assertFalse(detector.isRecording)
 
         val events = walk(detector, 400_000, seconds = 150, speed = 1.4)
         assertTrue(events.any { it is TrackEvent.Started })
         assertTrue(detector.isRecording)
+    }
+
+    @Test
+    fun passingADropPointSegmentsTheTrackWhenEnabled() {
+        val detector = TrackDetector(
+            TrackDetectionSettings(segmentAtDropPoints = true, dropPointRadiusMeters = 60.0)
+        )
+        // A drop point 250 m along the route.
+        detector.anchors = listOf(SegmentAnchor("dp-190", north(250.0), startLon))
+
+        walk(detector, 0, seconds = 400, speed = 1.4)
+        val track = (detector.finish() as TrackEvent.Ended).track
+
+        assertTrue("expected a segment boundary", track.segments.size >= 2)
+        assertEquals("dp-190", track.segments.first().endedAtDropPointId)
+        // The last leg runs to the end of travel, not to a drop point.
+        assertEquals(null, track.segments.last().endedAtDropPointId)
+    }
+
+    @Test
+    fun dropPointSegmentingIsOffUnlessEnabled() {
+        val detector = detector()
+        detector.anchors = listOf(SegmentAnchor("dp-190", north(250.0), startLon))
+
+        walk(detector, 0, seconds = 400, speed = 1.4)
+        val track = (detector.finish() as TrackEvent.Ended).track
+
+        assertEquals(1, track.segments.size)
+        assertEquals(null, track.segments.single().endedAtDropPointId)
+    }
+
+    @Test
+    fun thesameDropPointDoesNotSegmentTwiceWhileLingering() {
+        val detector = TrackDetector(
+            TrackDetectionSettings(segmentAtDropPoints = true, dropPointRadiusMeters = 120.0)
+        )
+        detector.anchors = listOf(SegmentAnchor("dp-190", north(250.0), startLon))
+
+        // The radius is wide enough that several consecutive fixes fall inside it.
+        walk(detector, 0, seconds = 400, speed = 1.4)
+        val track = (detector.finish() as TrackEvent.Ended).track
+
+        assertEquals(
+            "one pass should produce one boundary",
+            1,
+            track.segments.count { it.endedAtDropPointId == "dp-190" }
+        )
     }
 }

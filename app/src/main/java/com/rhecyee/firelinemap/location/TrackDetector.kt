@@ -58,8 +58,39 @@ data class TrackDetectionSettings(
 
     /** Tracks shorter than these are not worth keeping. */
     val minimumTrackDistanceMeters: Double = 100.0,
-    val minimumTrackMillis: Long = 60_000
+    val minimumTrackMillis: Long = 60_000,
+
+    /**
+     * Experimental. Split the track into segments when travel passes through a
+     * drop point read off the map sheet.
+     *
+     * Off by default: the drop points come from matching symbol colour on a
+     * rendered page, so they are provisional, and a wrong one silently
+     * mis-segments a shift's travel.
+     */
+    val segmentAtDropPoints: Boolean = false,
+
+    /** How close counts as passing through a drop point. */
+    val dropPointRadiusMeters: Double = 60.0
 )
+
+/** A drop point the detector may segment on. */
+data class SegmentAnchor(
+    val id: String,
+    val latitude: Double,
+    val longitude: Double
+)
+
+/** One leg of a track, bounded by drop points or by the track's own ends. */
+data class TrackSegment(
+    val startedAt: Long,
+    val endedAt: Long,
+    val distanceMeters: Double,
+    /** The drop point that closed this segment, if one did. */
+    val endedAtDropPointId: String? = null
+) {
+    val elapsedMillis: Long get() = (endedAt - startedAt).coerceAtLeast(0)
+}
 
 /** A completed track, as detected. */
 data class DetectedTrack(
@@ -68,10 +99,15 @@ data class DetectedTrack(
     val endedAt: Long,
     val distanceMeters: Double,
     val movingMillis: Long,
-    val points: List<Fix>
+    val pausedMillis: Long,
+    val points: List<Fix>,
+    val segments: List<TrackSegment> = emptyList()
 ) {
-    /** Start of movement to end of movement, including any pauses within. */
+    /** Start of travel to end of travel, including every pause within. */
     val elapsedMillis: Long get() = (endedAt - startedAt).coerceAtLeast(0)
+
+    /** Elapsed less the time spent parked past the stop threshold. */
+    val activeMillis: Long get() = (elapsedMillis - pausedMillis).coerceAtLeast(0)
 
     val averageSpeedMetersPerSecond: Double
         get() = if (elapsedMillis > 0) distanceMeters / (elapsedMillis / 1000.0) else 0.0
@@ -90,6 +126,17 @@ sealed interface TrackEvent {
     /** A point was appended to the open track. */
     data class Extended(val distanceMeters: Double, val pointCount: Int) : TrackEvent
 
+    /**
+     * Travel stopped for longer than the threshold. The track stays open.
+     */
+    data class Paused(val atMillis: Long) : TrackEvent
+
+    /** Travel resumed after a pause. */
+    data class Resumed(val atMillis: Long, val pausedMillis: Long) : TrackEvent
+
+    /** A segment closed because travel passed through a drop point. */
+    data class Segmented(val segment: TrackSegment) : TrackEvent
+
     /** A track closed. [kept] is false when it was too short to be worth saving. */
     data class Ended(val track: DetectedTrack, val kept: Boolean) : TrackEvent
 }
@@ -105,11 +152,22 @@ class TrackDetector(
     var settings: TrackDetectionSettings = TrackDetectionSettings()
 ) {
     private var recording = false
+    private var paused = false
     private var startedAt = 0L
     private var lastMovementAt = 0L
+    private var pausedSince = 0L
+    private var pausedMillis = 0L
     private var distanceMeters = 0.0
     private var movingMillis = 0L
     private val points = mutableListOf<Fix>()
+
+    private val segments = mutableListOf<TrackSegment>()
+    private var segmentStartedAt = 0L
+    private var segmentDistanceAtStart = 0.0
+    private var lastAnchorId: String? = null
+
+    /** Drop points travel may be segmented on. Empty disables segmenting. */
+    var anchors: List<SegmentAnchor> = emptyList()
 
     /** Fixes seen while stationary, kept so an opening track has its true start. */
     private val candidate = mutableListOf<Fix>()
@@ -121,8 +179,10 @@ class TrackDetector(
     private val window = ArrayDeque<Fix>()
 
     val isRecording: Boolean get() = recording
+    val isPaused: Boolean get() = paused
     val currentDistanceMeters: Double get() = distanceMeters
     val currentPointCount: Int get() = points.size
+    val currentSegmentCount: Int get() = segments.size
     fun currentElapsedMillis(now: Long): Long =
         if (recording) (now - startedAt).coerceAtLeast(0) else 0
 
@@ -148,7 +208,6 @@ class TrackDetector(
             previous.latitude, previous.longitude, fix.latitude, fix.longitude
         )
         val deltaMillis = (fix.timeMillis - previous.timeMillis).coerceAtLeast(0)
-
         val moving = isMoving(fix)
 
         return if (recording) {
@@ -182,22 +241,10 @@ class TrackDetector(
         return speed >= settings.movingSpeedMetersPerSecond
     }
 
-    /** Timestamp at which the current run of movement began. */
     private fun movementBeganAt(): Long = window.first().timeMillis
-
-    /**
-     * Closes any open track, for shutdown or an explicit stop.
-     *
-     * Applies the same keep-or-discard rules as an automatic close.
-     */
-    fun finish(): TrackEvent {
-        if (!recording) return TrackEvent.None
-        return close()
-    }
 
     private fun considerStarting(fix: Fix, moving: Boolean): TrackEvent {
         candidate += fix
-        // Keep the buffer bounded; only the recent run matters.
         if (candidate.size > 64) candidate.removeAt(0)
 
         if (!moving) {
@@ -205,25 +252,25 @@ class TrackDetector(
             return TrackEvent.None
         }
 
-        // Anchor to the start of the window that first showed movement, so the
-        // track opens where travel actually began rather than a window and a
-        // confirmation delay later.
         val since = candidateMovingSince ?: movementBeganAt().also { candidateMovingSince = it }
         if (fix.timeMillis - since < settings.startSustainedMillis) return TrackEvent.None
 
-        // Open the track at the moment movement began, not now, so the first
-        // stretch of travel is not lost to the confirmation delay.
         recording = true
+        paused = false
         startedAt = since
         lastMovementAt = fix.timeMillis
+        pausedMillis = 0L
         distanceMeters = 0.0
         movingMillis = 0L
         points.clear()
+        segments.clear()
+        segmentStartedAt = since
+        segmentDistanceAtStart = 0.0
+        lastAnchorId = null
         points += candidate.filter { it.timeMillis >= since }
         candidate.clear()
         candidateMovingSince = null
 
-        // Recover the distance already covered during the confirmation window.
         for (i in 1 until points.size) {
             distanceMeters += MapCoverage.distanceMeters(
                 points[i - 1].latitude, points[i - 1].longitude,
@@ -240,39 +287,103 @@ class TrackDetector(
         moving: Boolean
     ): TrackEvent {
         points += fix
-        // Distance is gated on the movement verdict rather than on a per-step
-        // threshold, which is what keeps a parked receiver's drift out of the
-        // total without also discarding real walking.
         if (moving) {
             distanceMeters += step
             movingMillis += deltaMillis
             lastMovementAt = fix.timeMillis
+
+            if (paused) {
+                // Travel resumed. The stop is recorded as a pause inside this
+                // track rather than having closed it.
+                paused = false
+                val held = (fix.timeMillis - pausedSince).coerceAtLeast(0)
+                pausedMillis += held
+                return TrackEvent.Resumed(fix.timeMillis, held)
+            }
+
+            anchorAt(fix)?.let { anchor ->
+                if (anchor.id != lastAnchorId) {
+                    lastAnchorId = anchor.id
+                    return closeSegment(fix.timeMillis, anchor.id)
+                }
+            }
+            return TrackEvent.Extended(distanceMeters, points.size)
         }
 
-        val stoppedFor = fix.timeMillis - lastMovementAt
-        if (stoppedFor >= settings.stopThresholdMillis) return close()
-
+        if (!paused && fix.timeMillis - lastMovementAt >= settings.stopThresholdMillis) {
+            paused = true
+            pausedSince = lastMovementAt
+            return TrackEvent.Paused(lastMovementAt)
+        }
         return TrackEvent.Extended(distanceMeters, points.size)
     }
 
-    private fun close(): TrackEvent {
-        // Trim the trailing stationary tail so the saved track ends where
-        // movement ended rather than where the timer expired.
+    /** The drop point this fix is passing through, if segmenting is enabled. */
+    private fun anchorAt(fix: Fix): SegmentAnchor? {
+        if (!settings.segmentAtDropPoints || anchors.isEmpty()) return null
+        return anchors.firstOrNull { anchor ->
+            MapCoverage.distanceMeters(
+                fix.latitude, fix.longitude, anchor.latitude, anchor.longitude
+            ) <= settings.dropPointRadiusMeters
+        }
+    }
+
+    private fun closeSegment(atMillis: Long, anchorId: String?): TrackEvent {
+        val segment = TrackSegment(
+            startedAt = segmentStartedAt,
+            endedAt = atMillis,
+            distanceMeters = distanceMeters - segmentDistanceAtStart,
+            endedAtDropPointId = anchorId
+        )
+        segments += segment
+        segmentStartedAt = atMillis
+        segmentDistanceAtStart = distanceMeters
+        return TrackEvent.Segmented(segment)
+    }
+
+    /**
+     * Closes the track.
+     *
+     * A stop only ever pauses; nothing but an explicit finish ends a track, so
+     * a shift stays one record with its pauses inside it rather than becoming
+     * a scatter of fragments.
+     */
+    fun finish(): TrackEvent {
+        if (!recording) return TrackEvent.None
+
+        if (paused) {
+            // Do not carry the trailing stop into the total.
+            paused = false
+        }
+        if (lastMovementAt > segmentStartedAt) {
+            segments += TrackSegment(
+                startedAt = segmentStartedAt,
+                endedAt = lastMovementAt,
+                distanceMeters = distanceMeters - segmentDistanceAtStart,
+                endedAtDropPointId = null
+            )
+        }
+
         val kept = points.filter { it.timeMillis <= lastMovementAt }
         val track = DetectedTrack(
             startedAt = startedAt,
             endedAt = lastMovementAt,
             distanceMeters = distanceMeters,
             movingMillis = movingMillis,
-            points = if (kept.size >= 2) kept else points.toList()
+            pausedMillis = pausedMillis,
+            points = if (kept.size >= 2) kept else points.toList(),
+            segments = segments.toList()
         )
 
         recording = false
         points.clear()
+        segments.clear()
         candidate.clear()
         candidateMovingSince = null
         distanceMeters = 0.0
         movingMillis = 0L
+        pausedMillis = 0L
+        lastAnchorId = null
 
         val worthKeeping = track.distanceMeters >= settings.minimumTrackDistanceMeters &&
             track.elapsedMillis >= settings.minimumTrackMillis

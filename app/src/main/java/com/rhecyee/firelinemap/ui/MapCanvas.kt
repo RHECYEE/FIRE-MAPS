@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CenterFocusStrong
+import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -31,6 +33,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
@@ -38,6 +41,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import com.rhecyee.firelinemap.geopdf.DropPoint
 import com.rhecyee.firelinemap.geopdf.ImportedMap
 import kotlin.math.atan2
 import kotlin.math.roundToInt
@@ -57,6 +61,7 @@ fun MapCanvas(
     latitude: Double?,
     longitude: Double?,
     positionIsSimulated: Boolean = false,
+    dropPoints: List<DropPoint> = emptyList(),
     onMapTap: ((latitude: Double, longitude: Double) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
@@ -155,6 +160,17 @@ fun MapCanvas(
             )
 
             val frame = map.frame
+            if (frame != null && pageWidthPoints > 0 && pageHeightPoints > 0) {
+                for (point in dropPoints) {
+                    val dx = (point.pageX / pageWidthPoints).toFloat()
+                    val dy = 1f - (point.pageY / pageHeightPoints).toFloat()
+                    if (dx !in 0f..1f || dy !in 0f..1f) continue
+                    drawDropPointMarker(
+                        Offset(originX + dx * drawWidth, originY + dy * drawHeight)
+                    )
+                }
+            }
+
             if (frame == null || latitude == null || longitude == null ||
                 pageWidthPoints <= 0 || pageHeightPoints <= 0
             ) {
@@ -182,15 +198,51 @@ fun MapCanvas(
             }
         }
 
-        FilledTonalIconButton(
-            onClick = { scale = 1f; offset = Offset.Zero },
+        Column(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .padding(10.dp)
+                .padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Icon(Icons.Default.CenterFocusStrong, contentDescription = "Fit sheet to view")
+            FilledTonalIconButton(
+                onClick = {
+                    // Centre the sheet on the current position, zooming in
+                    // enough that centring can actually take effect: at a
+                    // fit-to-view scale the pan clamp pins the sheet in place.
+                    val frame = map.frame
+                    if (frame != null && latitude != null && longitude != null &&
+                        pageWidthPoints > 0 && pageHeightPoints > 0
+                    ) {
+                        val page = frame.geoToPage(latitude, longitude)
+                        if (page != null) {
+                            val fx = (page.first / pageWidthPoints).toFloat()
+                            val fy = 1f - (page.second / pageHeightPoints).toFloat()
+                            val next = maxOf(scale, 4f)
+                            scale = next
+                            val drawWidth = image.width * fit * next
+                            val drawHeight = image.height * fit * next
+                            offset = clamp(
+                                Offset(drawWidth * (0.5f - fx), drawHeight * (0.5f - fy)),
+                                next
+                            )
+                        }
+                    }
+                },
+                enabled = latitude != null && longitude != null
+            ) {
+                Icon(Icons.Default.MyLocation, contentDescription = "Centre on my position")
+            }
+            FilledTonalIconButton(onClick = { scale = 1f; offset = Offset.Zero }) {
+                Icon(Icons.Default.CenterFocusStrong, contentDescription = "Fit sheet to view")
+            }
         }
     }
+}
+
+/** A provisional drop point read off the sheet, drawn so it can be checked. */
+private fun DrawScope.drawDropPointMarker(center: Offset) {
+    drawCircle(Color(0xFF00E5FF), radius = 13f, center = center, alpha = 0.30f)
+    drawCircle(Color(0xFF00E5FF), radius = 13f, center = center, style = Stroke(width = 2.5f))
 }
 
 private fun DrawScope.drawPositionDot(center: Offset, simulated: Boolean) {

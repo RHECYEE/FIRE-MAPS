@@ -62,6 +62,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.rhecyee.firelinemap.FirelineApplication
 import com.rhecyee.firelinemap.data.IncidentEntity
+import com.rhecyee.firelinemap.geopdf.DropPoint
+import com.rhecyee.firelinemap.geopdf.DropPointDetector
 import com.rhecyee.firelinemap.geopdf.ImportedMap
 import com.rhecyee.firelinemap.geopdf.MapDocumentRepository
 import com.rhecyee.firelinemap.geopdf.MapUrlImporter
@@ -70,6 +72,7 @@ import com.rhecyee.firelinemap.geopdf.RemotePdf
 import com.rhecyee.firelinemap.geopdf.UrlProbe
 import com.rhecyee.firelinemap.location.LocationRepository
 import com.rhecyee.firelinemap.location.TrackRecordingService
+import com.rhecyee.firelinemap.location.SegmentAnchor
 import com.rhecyee.firelinemap.location.TrackSettingsStore
 import com.rhecyee.firelinemap.map.GeoBounds
 import com.rhecyee.firelinemap.map.IncidentMapCoverage
@@ -97,6 +100,8 @@ fun FirelineApp() {
     var watching by remember { mutableStateOf(false) }
     var stopThreshold by remember { mutableIntStateOf(trackSettings.stopThresholdSeconds) }
     var showTrackSettings by remember { mutableStateOf(false) }
+    var segmentAtDropPoints by remember { mutableStateOf(trackSettings.segmentAtDropPoints) }
+    var dropPoints by remember { mutableStateOf<List<DropPoint>>(emptyList()) }
 
     val repository = remember { MapDocumentRepository(context) }
     val urlImporter = remember { MapUrlImporter(context.cacheDir) }
@@ -189,6 +194,31 @@ fun FirelineApp() {
         pageWidth = rendered.first?.first ?: 0
         pageHeight = rendered.first?.second ?: 0
         bitmap = rendered.second
+
+        // Read drop points off the freshly rendered sheet. Provisional: they
+        // come from matching symbol colour, so they are drawn on the map for
+        // the operator to confirm rather than trusted silently.
+        val frameForScan = map.frame
+        val rasterised = rendered.second
+        dropPoints = if (frameForScan == null || rasterised == null) {
+            emptyList()
+        } else {
+            withContext(Dispatchers.Default) {
+                val pixels = IntArray(rasterised.width * rasterised.height)
+                rasterised.getPixels(
+                    pixels, 0, rasterised.width, 0, 0, rasterised.width, rasterised.height
+                )
+                DropPointDetector.detect(
+                    pixels = pixels,
+                    width = rasterised.width,
+                    height = rasterised.height,
+                    frame = frameForScan,
+                    pageWidthPoints = (rendered.first?.first ?: 0).toDouble(),
+                    pageHeightPoints = (rendered.first?.second ?: 0).toDouble()
+                )
+            }
+        }
+        app.dropPoints = dropPoints.map { SegmentAnchor(it.id, it.latitude, it.longitude) }
     }
 
     val displayLatitude = simulated?.first ?: gpsLocation?.latitude
@@ -209,10 +239,16 @@ fun FirelineApp() {
     if (showTrackSettings) {
         TrackSettingsDialog(
             stopThresholdSeconds = stopThreshold,
+            segmentAtDropPoints = segmentAtDropPoints,
+            dropPointsFound = dropPoints.size,
             onDismiss = { showTrackSettings = false },
             onSelect = { seconds ->
                 trackSettings.stopThresholdSeconds = seconds
                 stopThreshold = trackSettings.stopThresholdSeconds
+            },
+            onToggleSegmenting = {
+                trackSettings.segmentAtDropPoints = !trackSettings.segmentAtDropPoints
+                segmentAtDropPoints = trackSettings.segmentAtDropPoints
             }
         )
     }
@@ -361,6 +397,7 @@ fun FirelineApp() {
                 latitude = displayLatitude,
                 longitude = displayLongitude,
                 positionIsSimulated = simulated != null,
+                dropPoints = if (segmentAtDropPoints) dropPoints else emptyList(),
                 onMapTap = { lat, lon -> simulated = lat to lon },
                 modifier = Modifier.weight(1f)
             )
@@ -406,7 +443,7 @@ fun FirelineApp() {
                     )
                     Text(
                         if (watching) {
-                            "Records on movement \u00b7 ends after " +
+                            "Records on movement \u00b7 pauses after " +
                                 TrackSettingsStore.describe(stopThreshold) + " stopped"
                         } else {
                             "Tracks start themselves when you move"
