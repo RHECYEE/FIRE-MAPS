@@ -64,6 +64,7 @@ import com.rhecyee.firelinemap.FirelineApplication
 import com.rhecyee.firelinemap.data.IncidentEntity
 import com.rhecyee.firelinemap.data.MarkerEntity
 import com.rhecyee.firelinemap.resources.ResourceRepository
+import com.rhecyee.firelinemap.resources.ResourceCategory
 import com.rhecyee.firelinemap.resources.ResourceSymbol
 import com.rhecyee.firelinemap.geopdf.DropPoint
 import com.rhecyee.firelinemap.geopdf.DropPointDetector
@@ -494,11 +495,16 @@ fun FirelineApp() {
             }
 
             if (dropping) {
-                SimulatedBanner("DROP MODE — tap the map to place a marker")
+                ResourcePalette(
+                    symbols = ResourceSymbol.POINTS,
+                    selected = selectedSymbol,
+                    onSelect = { selectedSymbol = it }
+                )
             }
 
             if (placingResources) {
                 ResourcePalette(
+                    symbols = ResourceSymbol.RESOURCES,
                     selected = selectedSymbol,
                     onSelect = { selectedSymbol = it }
                 )
@@ -513,13 +519,9 @@ fun FirelineApp() {
                     elevationPending = elevationPending,
                     onCycleDistanceUnit = { distanceUnit = distanceUnit.next() },
                     onCycleAreaUnit = { areaUnit = areaUnit.next() },
-                    onToggleMode = {
-                        measureMode = if (measureMode == MeasureMode.AREA) {
-                            MeasureMode.DISTANCE
-                        } else {
-                            MeasureMode.AREA
-                        }
-                        measureSession.mode = measureMode
+                    onSelectMode = { chosen ->
+                        measureMode = chosen
+                        measureSession.mode = chosen
                         measurePoints = measureSession.currentPoints
                     },
                     onUndo = {
@@ -555,7 +557,7 @@ fun FirelineApp() {
                 },
                 onMapTap = { lat, lon ->
                     if (dropping) {
-                        selectedSymbol = ResourceSymbol.OTHER
+                        if (selectedSymbol == null) selectedSymbol = ResourceSymbol.OTHER
                         pendingPlacement = lat to lon
                     } else if (placingResources && selectedSymbol != null) {
                         pendingPlacement = lat to lon
@@ -587,9 +589,10 @@ fun FirelineApp() {
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 ToolButton(
-                    if (measuring) "✕ Measure" else "Measure",
+                    "Measure",
                     Icons.Default.Straighten,
-                    Modifier.weight(1f)
+                    Modifier.weight(1f),
+                    active = measuring
                 ) {
                     measuring = !measuring
                     if (measuring) { placingResources = false; dropping = false }
@@ -599,23 +602,31 @@ fun FirelineApp() {
                     }
                 }
                 ToolButton(
-                    if (dropping) "✕ Drop" else "Drop",
+                    "Point",
                     Icons.Default.AddLocationAlt,
-                    Modifier.weight(1f)
+                    Modifier.weight(1f),
+                    active = dropping
                 ) {
                     dropping = !dropping
                     if (dropping) {
                         measuring = false
                         placingResources = false
+                        if (selectedSymbol?.category != ResourceCategory.POINT) {
+                            selectedSymbol = ResourceSymbol.OTHER
+                        }
                     }
                 }
                 ToolButton(
-                    if (placingResources) "✕ Resources" else "Resources",
+                    "Resources",
                     Icons.Default.People,
-                    Modifier.weight(1f)
+                    Modifier.weight(1f),
+                    active = placingResources
                 ) {
                     placingResources = !placingResources
                     if (placingResources) {
+                        if (selectedSymbol?.category == ResourceCategory.POINT) {
+                            selectedSymbol = null
+                        }
                         measuring = false
                         dropping = false
                     } else {
@@ -764,11 +775,18 @@ private fun ToolButton(
     label: String,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     modifier: Modifier,
+    active: Boolean = false,
     onClick: (() -> Unit)? = null
 ) {
+    // An armed tool is coloured, so which mode a tap will land in is visible
+    // without reading the label.
     Card(
         modifier = if (onClick != null) modifier.height(64.dp).clickable { onClick() }
-        else modifier.height(64.dp)
+        else modifier.height(64.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (active) Color(0xFFFFC400) else MaterialTheme.colorScheme.surface,
+            contentColor = if (active) Color(0xFF1A1400) else MaterialTheme.colorScheme.onSurface
+        )
     ) {
         Column(
             modifier = Modifier.fillMaxSize(),

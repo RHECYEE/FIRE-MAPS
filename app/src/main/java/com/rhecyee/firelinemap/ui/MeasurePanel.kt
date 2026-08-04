@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -37,7 +38,7 @@ fun MeasurePanel(
     elevationPending: Boolean,
     onCycleDistanceUnit: () -> Unit,
     onCycleAreaUnit: () -> Unit,
-    onToggleMode: () -> Unit,
+    onSelectMode: (MeasureMode) -> Unit,
     onUndo: () -> Unit,
     onClear: () -> Unit,
     modifier: Modifier = Modifier
@@ -51,33 +52,36 @@ fun MeasurePanel(
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Text(
-                if (mode == MeasureMode.AREA) "AREA" else "DISTANCE",
-                modifier = Modifier.clickable { onToggleMode() },
-                color = Color(0xFFFFC400),
-                fontWeight = FontWeight.Black,
-                style = MaterialTheme.typography.labelLarge
+            // Two explicit choices rather than a label that has to be tapped
+            // to reveal that it was ever a control.
+            ModeChip(
+                label = "LINE",
+                selected = mode == MeasureMode.DISTANCE,
+                onClick = { onSelectMode(MeasureMode.DISTANCE) }
             )
-            Text(
-                "  tap to switch",
-                color = Color.White.copy(alpha = 0.6f),
-                style = MaterialTheme.typography.labelSmall,
-                modifier = Modifier.weight(1f)
+            ModeChip(
+                label = "POLYGON",
+                selected = mode == MeasureMode.AREA,
+                onClick = { onSelectMode(MeasureMode.AREA) }
             )
+            Spacer(Modifier.weight(1f))
             Text(
                 "UNDO",
                 modifier = Modifier
                     .clickable { onUndo() }
-                    .padding(horizontal = 8.dp),
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
                 color = Color.White,
                 fontWeight = FontWeight.Bold,
                 style = MaterialTheme.typography.labelMedium
             )
             Text(
                 "CLEAR",
-                modifier = Modifier.clickable { onClear() },
+                modifier = Modifier
+                    .clickable { onClear() }
+                    .padding(vertical = 6.dp),
                 color = Color.White,
                 fontWeight = FontWeight.Bold,
                 style = MaterialTheme.typography.labelMedium
@@ -87,9 +91,9 @@ fun MeasurePanel(
         if (result.pointCount < 2) {
             Text(
                 if (mode == MeasureMode.AREA) {
-                    "Tap three or more points to enclose an area."
+                    "POLYGON — tap three or more points to enclose an area."
                 } else {
-                    "Tap two points for a line, more to follow a road."
+                    "LINE — tap two points, or keep tapping to follow a road."
                 },
                 color = Color.White,
                 style = MaterialTheme.typography.bodySmall
@@ -160,6 +164,23 @@ fun MeasurePanel(
             )
         }
     }
+}
+
+@Composable
+private fun ModeChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    Text(
+        label,
+        modifier = Modifier
+            .background(
+                if (selected) Color(0xFFFFC400) else Color.White.copy(alpha = 0.12f),
+                RoundedCornerShape(6.dp)
+            )
+            .clickable { onClick() }
+            .padding(horizontal = 14.dp, vertical = 7.dp),
+        color = if (selected) Color(0xFF1A1400) else Color.White,
+        fontWeight = FontWeight.Black,
+        style = MaterialTheme.typography.labelMedium
+    )
 }
 
 private fun format(value: Double): String = when {

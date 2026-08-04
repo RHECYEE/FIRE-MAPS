@@ -38,15 +38,35 @@ enum class ResourceSymbol(
     STAGING("staging", "Staging", "STG", ResourceCategory.FACILITY, 0xFF3949AB.toInt()),
     DROP_POINT("drop_point", "Drop point", "DP", ResourceCategory.FACILITY, 0xFF1565C0.toInt()),
     HELISPOT("helispot", "Helispot", "H", ResourceCategory.FACILITY, 0xFF00ACC1.toInt()),
-    OTHER("other", "Other", "•", ResourceCategory.FACILITY, 0xFF546E7A.toInt());
+
+    HAZARD("hazard", "Hazard", "!", ResourceCategory.POINT, 0xFFD50000.toInt()),
+    SNAG("snag", "Snag", "SNG", ResourceCategory.POINT, 0xFF8D6E63.toInt()),
+    WATER("water", "Water", "H2O", ResourceCategory.POINT, 0xFF0288D1.toInt()),
+    GATE("gate", "Gate", "GTE", ResourceCategory.POINT, 0xFF795548.toInt()),
+    CAMP("camp", "Camp", "CMP", ResourceCategory.POINT, 0xFF388E3C.toInt()),
+    INJURY("injury", "Injury", "+", ResourceCategory.POINT, 0xFFB71C1C.toInt()),
+    PHOTO("photo", "Photo", "PIC", ResourceCategory.POINT, 0xFF7B1FA2.toInt()),
+    ROCK("rock", "Rock", "RCK", ResourceCategory.POINT, 0xFF616161.toInt()),
+    OTHER("other", "Point", "•", ResourceCategory.POINT, 0xFF546E7A.toInt());
 
     companion object {
         fun byId(id: String?): ResourceSymbol = entries.firstOrNull { it.id == id } ?: OTHER
+
+        /** Operational resources: crews, equipment and facilities. */
+        val RESOURCES: List<ResourceSymbol> =
+            entries.filter { it.category != ResourceCategory.POINT }
+
+        /** Generic marks placed by the point tool. */
+        val POINTS: List<ResourceSymbol> =
+            entries.filter { it.category == ResourceCategory.POINT }
     }
 }
 
 enum class ResourceCategory(val label: String) {
     CREW("Crews"),
     EQUIPMENT("Equipment"),
-    FACILITY("Facilities")
+    FACILITY("Facilities"),
+
+    /** Generic marks: hazards, water, gates. Not an assigned resource. */
+    POINT("Points")
 }

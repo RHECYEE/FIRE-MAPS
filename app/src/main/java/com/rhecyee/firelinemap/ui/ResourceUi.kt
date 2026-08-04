@@ -39,6 +39,7 @@ import com.rhecyee.firelinemap.resources.ResourceSymbol
  */
 @Composable
 fun ResourcePalette(
+    symbols: List<ResourceSymbol>,
     selected: ResourceSymbol?,
     onSelect: (ResourceSymbol) -> Unit,
     modifier: Modifier = Modifier
@@ -64,7 +65,7 @@ fun ResourcePalette(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp)
         ) {
-            items(ResourceSymbol.entries) { symbol ->
+            items(symbols) { symbol ->
                 val isSelected = symbol == selected
                 Column(
                     modifier = Modifier
