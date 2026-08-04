@@ -124,22 +124,31 @@ fun MapCanvas(
 
         val image = remember(bitmap) { bitmap.asImageBitmap() }
 
-        val fit = if (viewport.width > 0 && viewport.height > 0) {
-            minOf(
-                viewport.width.toFloat() / image.width,
-                viewport.height.toFloat() / image.height
-            )
-        } else {
-            1f
-        }
+        // Evaluated on every call rather than captured.
+        //
+        // The gesture handler below is a long-lived coroutine that only
+        // restarts when the map changes, so anything it closes over is frozen
+        // at the first composition -- when the viewport is still zero and this
+        // would be 1. Drawing re-runs every recomposition and so looked
+        // correct, while every tap was converted through the wrong scale: taps
+        // landed in the wrong place and pins were never found under a finger.
+        fun fitScale(): Float =
+            if (viewport.width > 0 && viewport.height > 0) {
+                minOf(
+                    viewport.width.toFloat() / image.width,
+                    viewport.height.toFloat() / image.height
+                )
+            } else {
+                1f
+            }
 
         // The sheet may be panned until its edge reaches the view, plus an
         // allowance for travelling off it. Being off the sheet is normal --
         // ICP and the drive in usually sit outside the neatline -- so the
         // operator has to be able to pan out there and see where they are.
         fun clamp(candidate: Offset, atScale: Float): Offset {
-            val drawWidth = image.width * fit * atScale
-            val drawHeight = image.height * fit * atScale
+            val drawWidth = image.width * fitScale() * atScale
+            val drawHeight = image.height * fitScale() * atScale
             val slackX = viewport.width * OFF_SHEET_PAN_ALLOWANCE
             val slackY = viewport.height * OFF_SHEET_PAN_ALLOWANCE
             val maxX = ((drawWidth - viewport.width) / 2f).coerceAtLeast(0f) + slackX
@@ -152,8 +161,8 @@ fun MapCanvas(
 
         fun screenToPagePoints(point: Offset): Pair<Double, Double>? {
             if (pageWidthPoints <= 0 || pageHeightPoints <= 0) return null
-            val drawWidth = image.width * fit * scale
-            val drawHeight = image.height * fit * scale
+            val drawWidth = image.width * fitScale() * scale
+            val drawHeight = image.height * fitScale() * scale
             val originX = (viewport.width - drawWidth) / 2f + offset.x
             val originY = (viewport.height - drawHeight) / 2f + offset.y
             val fx = (point.x - originX) / drawWidth
@@ -170,8 +179,8 @@ fun MapCanvas(
             val frame = map.frame ?: return null
             if (pageWidthPoints <= 0 || pageHeightPoints <= 0) return null
             val page = frame.geoToPage(marker.latitude, marker.longitude) ?: return null
-            val drawWidth = image.width * fit * scale
-            val drawHeight = image.height * fit * scale
+            val drawWidth = image.width * fitScale() * scale
+            val drawHeight = image.height * fitScale() * scale
             val originX = (viewport.width - drawWidth) / 2f + offset.x
             val originY = (viewport.height - drawHeight) / 2f + offset.y
             return Offset(
@@ -198,7 +207,7 @@ fun MapCanvas(
                 // One handler for everything. Three competing pointerInput
                 // blocks meant drag and transform each claimed the pointer
                 // stream and taps frequently never arrived at all.
-                .pointerInput(map.id) {
+                .pointerInput(map.id, bitmap) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         val grabbed = if (currentOnMarkerMoved != null) {
@@ -252,8 +261,8 @@ fun MapCanvas(
                     }
                 }
         ) {
-            val drawWidth = image.width * fit * scale
-            val drawHeight = image.height * fit * scale
+            val drawWidth = image.width * fitScale() * scale
+            val drawHeight = image.height * fitScale() * scale
             val originX = (size.width - drawWidth) / 2f + offset.x
             val originY = (size.height - drawHeight) / 2f + offset.y
 
@@ -382,8 +391,8 @@ fun MapCanvas(
                             val fy = 1f - (page.second / pageHeightPoints).toFloat()
                             val next = maxOf(scale, 4f)
                             scale = next
-                            val drawWidth = image.width * fit * next
-                            val drawHeight = image.height * fit * next
+                            val drawWidth = image.width * fitScale() * next
+                            val drawHeight = image.height * fitScale() * next
                             // Set directly rather than through the pan clamp:
                             // when the position is off the sheet the clamp
                             // would stop short of it, which is precisely the

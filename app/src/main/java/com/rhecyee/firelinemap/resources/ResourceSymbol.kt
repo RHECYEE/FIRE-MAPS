@@ -42,7 +42,6 @@ enum class ResourceSymbol(
     HAZARD("hazard", "Hazard", "!", ResourceCategory.POINT, 0xFFD50000.toInt()),
     SNAG("snag", "Snag", "SNG", ResourceCategory.POINT, 0xFF8D6E63.toInt()),
     WATER("water", "Water", "H2O", ResourceCategory.POINT, 0xFF0288D1.toInt()),
-    GATE("gate", "Gate", "GTE", ResourceCategory.POINT, 0xFF795548.toInt()),
     CAMP("camp", "Camp", "CMP", ResourceCategory.POINT, 0xFF388E3C.toInt()),
     INJURY("injury", "Injury", "+", ResourceCategory.POINT, 0xFFB71C1C.toInt()),
     PHOTO("photo", "Photo", "PIC", ResourceCategory.POINT, 0xFF7B1FA2.toInt()),
@@ -56,9 +55,17 @@ enum class ResourceSymbol(
         val RESOURCES: List<ResourceSymbol> =
             entries.filter { it.category != ResourceCategory.POINT }
 
-        /** Generic marks placed by the point tool. */
-        val POINTS: List<ResourceSymbol> =
-            entries.filter { it.category == ResourceCategory.POINT }
+        /**
+         * What the point tool offers.
+         *
+         * Not simply the POINT category. Hand crew, dozer and engine are the
+         * marks that actually get dropped in the field, so they lead the list
+         * even though the same symbols also exist as tracked resources with
+         * identifiers and a position history.
+         */
+        val POINTS: List<ResourceSymbol> = listOf(
+            HAND_CREW, DOZER, ENGINE
+        ) + entries.filter { it.category == ResourceCategory.POINT }
     }
 }
 
