@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Straighten
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -66,6 +67,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.rhecyee.firelinemap.FirelineApplication
+import com.rhecyee.firelinemap.data.AppSettings
 import com.rhecyee.firelinemap.data.IncidentEntity
 import com.rhecyee.firelinemap.data.MarkerEntity
 import com.rhecyee.firelinemap.resources.ResourceRepository
@@ -97,6 +99,7 @@ import com.rhecyee.firelinemap.location.TrackRecordingService
 import com.rhecyee.firelinemap.location.SegmentAnchor
 import com.rhecyee.firelinemap.location.TrackSettingsStore
 import com.rhecyee.firelinemap.map.BasemapTileCache
+import com.rhecyee.firelinemap.map.TileMath
 import com.rhecyee.firelinemap.measure.AreaUnit
 import com.rhecyee.firelinemap.measure.DistanceUnit
 import com.rhecyee.firelinemap.measure.ElevationService
@@ -161,14 +164,20 @@ fun FirelineApp() {
     val resources = remember { ResourceRepository(app.database.dao()) }
     val medical = remember { MedicalRepository(app.database.dao()) }
     val reporter = remember { ReporterProfile(context) }
+    var reporterName by remember { mutableStateOf(reporter.name) }
+    var reporterQualification by remember { mutableStateOf(reporter.qualification) }
     val placeNamer = remember { PlaceNamer(context) }
     var typing by remember { mutableStateOf<DictationField?>(null) }
 
     val counties = remember { CountyCatalog(context) }
     var showLayers by remember { mutableStateOf(false) }
     var showLegend by remember { mutableStateOf(true) }
-    var topographyOn by remember { mutableStateOf(true) }
-    var landOwnershipOn by remember { mutableStateOf(true) }
+    val settings = remember { AppSettings(context) }
+    var topographyOn by remember { mutableStateOf(settings.topographyEnabled) }
+    var landOwnershipOn by remember { mutableStateOf(settings.landOwnershipEnabled) }
+    var autoRadius by remember { mutableIntStateOf(settings.autoDownloadRadiusMiles) }
+    var wifiOnly by remember { mutableStateOf(settings.autoDownloadWifiOnly) }
+    var cachedTerrain by remember { mutableStateOf(0L) }
     var importedMaps by remember { mutableStateOf<List<com.rhecyee.firelinemap.geopdf.ImportedMap>>(emptyList()) }
     var keypadOpen by remember { mutableStateOf(true) }
     var countyQuery by remember { mutableStateOf("") }
@@ -544,6 +553,35 @@ fun FirelineApp() {
         }
     }
 
+    // Terrain is kept around the operator while there is a connection, so it
+    // is already on the device when there is not. Bounded by tile count as
+    // well as radius: the point is to be useful, not to fill the phone.
+    LaunchedEffect(autoRadius, wifiOnly, topographyOn, displayLatitude != null) {
+        val lat = displayLatitude
+        val lon = displayLongitude
+        if (lat == null || lon == null || !topographyOn) return@LaunchedEffect
+        if (!settings.mayAutoDownload()) return@LaunchedEffect
+
+        withContext(Dispatchers.IO) {
+            val area = TileMath.around(lat, lon, autoRadius * 1609.344)
+            var requested = 0
+            for (zoom in 9..14) {
+                if (requested > 4_000) break
+                val minX = BasemapTileCache.tileX(area.west, zoom)
+                val maxX = BasemapTileCache.tileX(area.east, zoom)
+                val minY = BasemapTileCache.tileY(area.north, zoom)
+                val maxY = BasemapTileCache.tileY(area.south, zoom)
+                for (x in minX..maxX) {
+                    for (y in minY..maxY) {
+                        if (requested > 4_000) break
+                        basemap.tile(zoom, x, y)
+                        requested++
+                    }
+                }
+            }
+        }
+    }
+
     val toolArmed = measuring || placingResources || simMode || showSearch
     LaunchedEffect(lastInteraction, toolArmed, chromeVisible) {
         // An armed tool holds the controls open; nothing is more irritating
@@ -710,9 +748,9 @@ fun FirelineApp() {
             activeMapId = activeMap?.id,
             onSelectMap = { activeMap = it; showLayers = false },
             topographyOn = topographyOn,
-            onToggleTopography = { topographyOn = it },
+            onToggleTopography = { settings.topographyEnabled = it; topographyOn = it },
             landOwnershipOn = landOwnershipOn,
-            onToggleLandOwnership = { landOwnershipOn = it },
+            onToggleLandOwnership = { settings.landOwnershipEnabled = it; landOwnershipOn = it },
             packages = layerPackages,
             onToggle = { layer, on ->
                 scope.launch { app.database.dao().upsertLayerPackage(layer.copy(enabled = on)) }
@@ -768,19 +806,44 @@ fun FirelineApp() {
     }
 
     if (showTrackSettings) {
-        TrackSettingsDialog(
+        LaunchedEffect(Unit) {
+            cachedTerrain = withContext(Dispatchers.IO) { basemap.cachedBytes() }
+        }
+        SettingsSheet(
+            reporterName = reporterName,
+            reporterQualification = reporterQualification,
+            onReporterChange = { name, qualification ->
+                reporterName = name
+                reporterQualification = qualification
+                reporter.name = name
+                reporter.qualification = qualification
+            },
             stopThresholdSeconds = stopThreshold,
-            segmentAtDropPoints = segmentAtDropPoints,
-            dropPointsFound = dropPoints.size,
-            onDismiss = { showTrackSettings = false },
-            onSelect = { seconds ->
+            onStopThreshold = { seconds ->
                 trackSettings.stopThresholdSeconds = seconds
                 stopThreshold = trackSettings.stopThresholdSeconds
             },
+            segmentAtDropPoints = segmentAtDropPoints,
             onToggleSegmenting = {
-                trackSettings.segmentAtDropPoints = !trackSettings.segmentAtDropPoints
-                segmentAtDropPoints = trackSettings.segmentAtDropPoints
-            }
+                trackSettings.segmentAtDropPoints = it
+                segmentAtDropPoints = it
+            },
+            dropPointsFound = dropPoints.size,
+            autoDownloadRadius = autoRadius,
+            onAutoDownloadRadius = {
+                settings.autoDownloadRadiusMiles = it
+                autoRadius = settings.autoDownloadRadiusMiles
+            },
+            wifiOnly = wifiOnly,
+            onWifiOnly = { settings.autoDownloadWifiOnly = it; wifiOnly = it },
+            cachedTerrainBytes = cachedTerrain,
+            onClearTerrain = {
+                scope.launch {
+                    withContext(Dispatchers.IO) { basemap.clear() }
+                    cachedTerrain = 0L
+                }
+            },
+            onDismiss = { showTrackSettings = false }
         )
     }
 
@@ -901,7 +964,7 @@ fun FirelineApp() {
                         Icon(Icons.Default.Search, contentDescription = "Go to coordinate")
                     }
                     IconButton(onClick = { showTrackSettings = true }) {
-                        Icon(Icons.Default.Timer, contentDescription = "Track settings")
+                        Icon(Icons.Default.Settings, contentDescription = "Settings")
                     }
                     IconButton(onClick = { showUrlDialog = true }) {
                         Icon(Icons.Default.Link, contentDescription = "Import from URL")
