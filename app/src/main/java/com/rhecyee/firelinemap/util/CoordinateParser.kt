@@ -174,9 +174,10 @@ object CoordinateParser {
             return if (negative) Slot(-value, -value, false) else Slot(value, value, false)
         }
 
-        // Out of range with no decimal point: put the decimal back.
-        val placed = insertDecimal(body, max) ?: return null
-        return if (negative) Slot(-placed, -placed, true) else Slot(placed, placed, true)
+        // Out of range. Either the degrees and minutes were run together, or a
+        // decimal point went missing.
+        val unpacked = unpackConcatenated(body, max) ?: insertDecimal(body, max) ?: return null
+        return if (negative) Slot(-unpacked, -unpacked, true) else Slot(unpacked, unpacked, true)
     }
 
     private fun repair(low: Double, high: Double, body: String, max: Double): Slot? {
@@ -184,6 +185,47 @@ object CoordinateParser {
         val lowFixed = insertDecimal(body.replace('X', '0'), max) ?: return null
         val highFixed = insertDecimal(body.replace('X', '9'), max) ?: return null
         return Slot(minOf(lowFixed, highFixed), maxOf(lowFixed, highFixed), true)
+    }
+
+    /**
+     * Splits degrees, minutes and seconds that were typed as one number.
+     *
+     * 4159.713 is 41 degrees 59.713 minutes, and 10144.1135 is 101 degrees
+     * 44.1135 minutes. Running them together is the natural thing to type when
+     * the keypad makes a space awkward, and it is unambiguous: minutes and
+     * seconds are always two digits, so whatever precedes them is degrees.
+     */
+    private fun unpackConcatenated(body: String, max: Double): Double? {
+        val wholePart = body.substringBefore('.')
+        val fraction = if (body.contains('.')) body.substringAfter('.') else ""
+        if (wholePart.length < 3) return null
+
+        // Degrees and minutes: the last two whole digits are the minutes.
+        val degreesText = wholePart.dropLast(2)
+        val minutesText = wholePart.takeLast(2)
+        val degrees = degreesText.toDoubleOrNull()
+        val minutes = ("$minutesText" + if (fraction.isEmpty()) "" else ".$fraction")
+            .toDoubleOrNull()
+        if (degrees != null && minutes != null && degrees <= max && minutes < 60.0) {
+            return degrees + minutes / 60.0
+        }
+
+        // Degrees, minutes and seconds run together.
+        if (wholePart.length >= 5) {
+            val secondsText = wholePart.takeLast(2)
+            val innerMinutes = wholePart.dropLast(2).takeLast(2)
+            val outerDegrees = wholePart.dropLast(4)
+            val d = outerDegrees.toDoubleOrNull()
+            val m = innerMinutes.toDoubleOrNull()
+            val sec = ("$secondsText" + if (fraction.isEmpty()) "" else ".$fraction")
+                .toDoubleOrNull()
+            if (d != null && m != null && sec != null &&
+                d <= max && m < 60.0 && sec < 60.0
+            ) {
+                return d + m / 60.0 + sec / 3600.0
+            }
+        }
+        return null
     }
 
     /**

@@ -8,17 +8,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -87,29 +83,20 @@ fun CoordinateSearchPanel(
             )
         }
 
-        OutlinedTextField(
-            value = query,
-            onValueChange = onQueryChange,
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            textStyle = MaterialTheme.typography.headlineSmall.copy(
-                fontSize = 24.sp,
-                textAlign = TextAlign.Center,
-                color = Color.White
-            ),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-            placeholder = {
-                Text(
-                    "45 43.177 117 16.040",
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth(),
-                    color = Color.White.copy(alpha = 0.4f)
-                )
-            },
-            colors = TextFieldDefaults.colors(
-                focusedContainerColor = Color.Transparent,
-                unfocusedContainerColor = Color.Transparent
-            )
+        // The query is shown, not edited by the system keyboard. A phone
+        // keypad buries the decimal point and the space, which is how a
+        // position ends up typed as one run of digits.
+        Text(
+            query.ifEmpty { "45 43.177 117 16.040" },
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFF0B171F), RoundedCornerShape(8.dp))
+                .padding(vertical = 12.dp, horizontal = 8.dp),
+            color = if (query.isEmpty()) Color.White.copy(alpha = 0.35f) else Color.White,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center,
+            fontSize = 25.sp,
+            maxLines = 1
         )
 
         when {
@@ -130,7 +117,66 @@ fun CoordinateSearchPanel(
                 style = MaterialTheme.typography.bodySmall
             )
         }
+
+        Keypad(
+            onAppend = { onQueryChange(query + it) },
+            onBackspace = { if (query.isNotEmpty()) onQueryChange(query.dropLast(1)) }
+        )
     }
+}
+
+/**
+ * The only way in.
+ *
+ * Everything a coordinate needs is one press away, sized for gloves: no
+ * hunting for a decimal point or a space on a phone dialpad, which is what
+ * turned a spaced position into one unreadable run of digits.
+ */
+@Composable
+private fun Keypad(onAppend: (String) -> Unit, onBackspace: () -> Unit) {
+    val rows = listOf(
+        listOf("1", "2", "3"),
+        listOf("4", "5", "6"),
+        listOf("7", "8", "9"),
+        listOf(".", "0", "X")
+    )
+    Column(
+        modifier = Modifier.padding(top = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(5.dp)
+    ) {
+        rows.forEach { row ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                row.forEach { key ->
+                    Key(key, Modifier.weight(1f)) { onAppend(key) }
+                }
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            Key("SPACE", Modifier.weight(2f)) { onAppend(" ") }
+            Key("\u232B", Modifier.weight(1f), onClick = onBackspace)
+        }
+    }
+}
+
+@Composable
+private fun Key(label: String, modifier: Modifier, onClick: () -> Unit) {
+    Text(
+        label,
+        modifier = modifier
+            .background(Color(0xFF25404F), RoundedCornerShape(7.dp))
+            .clickable { onClick() }
+            .padding(vertical = 13.dp),
+        color = Color.White,
+        fontWeight = FontWeight.Black,
+        textAlign = TextAlign.Center,
+        fontSize = 19.sp
+    )
 }
 
 @Composable

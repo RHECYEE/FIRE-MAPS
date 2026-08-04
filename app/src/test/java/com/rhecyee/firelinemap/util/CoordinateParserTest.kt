@@ -291,3 +291,51 @@ class CoordinateSearchTest {
         assertTrue(CoordinateParser.parse("45 43 zz 117") is CoordinateParseResult.Invalid)
     }
 }
+
+/** Degrees and minutes typed as one number, because a space was awkward. */
+class ConcatenatedCoordinateTest {
+
+    private fun success(input: String): ParsedCoordinate {
+        val result = CoordinateParser.parse(input)
+        assertTrue("$input did not parse: $result", result is CoordinateParseResult.Success)
+        return (result as CoordinateParseResult.Success).coordinate
+    }
+
+    @Test
+    fun degreesAndMinutesRunTogether() {
+        // Exactly what gets typed when the keypad makes a space hard to reach.
+        val parsed = success("4159.713,10144.1135")
+        assertEquals(41.995217, parsed.latitude, 1e-5)
+        assertEquals(-101.735225, parsed.longitude, 1e-5)
+    }
+
+    @Test
+    fun itAgreesWithTheSpacedForm() {
+        val together = success("4159.713 10144.1135")
+        val spaced = success("41 59.713 101 44.1135")
+        assertEquals(spaced.latitude, together.latitude, 1e-9)
+        assertEquals(spaced.longitude, together.longitude, 1e-9)
+    }
+
+    @Test
+    fun degreesMinutesSecondsRunTogether() {
+        val parsed = success("454310.6 1171602.4")
+        assertEquals(45.719611, parsed.latitude, 1e-4)
+        assertEquals(-117.267333, parsed.longitude, 1e-4)
+    }
+
+    @Test
+    fun aPlainInRangeValueIsStillDegrees() {
+        // 45.7 is a perfectly good latitude and must not be split.
+        val parsed = success("45.719620 117.267328")
+        assertEquals(45.719620, parsed.latitude, 1e-6)
+        assertEquals(-117.267328, parsed.longitude, 1e-6)
+    }
+
+    @Test
+    fun impossibleMinutesAreStillRejected() {
+        // 4175.0 would be 41 degrees 75 minutes, which is not a position.
+        val result = CoordinateParser.parse("4175.0 10144.0")
+        assertTrue(result is CoordinateParseResult.Invalid)
+    }
+}
