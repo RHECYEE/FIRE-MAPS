@@ -296,6 +296,13 @@ class TrackDetector(
                 points[i].latitude, points[i].longitude
             )
         }
+        // Recover the moving time as well as the distance. Counting the
+        // confirmation window's ground but not its clock inflated the moving
+        // average badly -- a vehicle at 68 mph reported 150.
+        if (points.size >= 2) {
+            movingMillis += (points.last().timeMillis - points.first().timeMillis)
+                .coerceAtLeast(0)
+        }
         return TrackEvent.Started(startedAt)
     }
 

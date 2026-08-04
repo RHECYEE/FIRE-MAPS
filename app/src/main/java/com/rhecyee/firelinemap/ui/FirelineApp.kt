@@ -128,6 +128,7 @@ fun FirelineApp() {
     var inspecting by remember { mutableStateOf<MarkerEntity?>(null) }
     var inspectingReports by remember { mutableIntStateOf(0) }
     var dropping by remember { mutableStateOf(false) }
+    var simMode by remember { mutableStateOf(false) }
 
     val measureSession = remember { MeasureSession() }
     var measuring by remember { mutableStateOf(false) }
@@ -485,8 +486,12 @@ fun FirelineApp() {
 
             MapStatusRow(activeMap, statusMessage)
 
+            if (simMode && simulated == null) {
+                SimulatedBanner("SIM MODE — tap the map to set a test position")
+            }
+
             if (simulated != null) {
-                SimulatedBanner("SIMULATED POSITION — NOT A GPS FIX · tap map to move, ✕ to clear")
+                SimulatedBanner("SIMULATED POSITION — NOT A GPS FIX · Sim off returns to GPS")
             }
 
             if (coverage?.incident == IncidentMapCoverage.OFF_MAP) {
@@ -568,6 +573,8 @@ fun FirelineApp() {
                         pendingPlacement = lat to lon
                     } else if (placingResources && selectedSymbol != null) {
                         pendingPlacement = lat to lon
+                    } else if (simMode) {
+                        simulated = lat to lon
                     } else if (measuring) {
                         measureSession.mode = measureMode
                         measureSession.add(lat, lon)
@@ -584,9 +591,10 @@ fun FirelineApp() {
                             }
                             elevationPending = false
                         }
-                    } else {
-                        simulated = lat to lon
                     }
+                    // With no tool armed a tap does nothing. It used to drop a
+                    // simulated position, which silently replaced the live GPS
+                    // readout with a fake one from a stray touch.
                 },
                 modifier = Modifier.weight(1f)
             )
@@ -602,7 +610,7 @@ fun FirelineApp() {
                     active = measuring
                 ) {
                     measuring = !measuring
-                    if (measuring) { placingResources = false; dropping = false }
+                    if (measuring) { placingResources = false; dropping = false; simMode = false }
                     if (!measuring) {
                         measureSession.clear()
                         measurePoints = emptyList()
@@ -618,6 +626,7 @@ fun FirelineApp() {
                     if (dropping) {
                         measuring = false
                         placingResources = false
+                        simMode = false
                         if (selectedSymbol?.category != ResourceCategory.POINT) {
                             selectedSymbol = ResourceSymbol.OTHER
                         }
@@ -641,15 +650,19 @@ fun FirelineApp() {
                     }
                 }
                 ToolButton(
-                    if (simulated != null) "✕ Sim" else "Draw",
+                    "Sim",
                     Icons.Default.Draw,
-                    Modifier.weight(1f)
+                    Modifier.weight(1f),
+                    active = simMode
                 ) {
-                    if (simulated != null) {
-                        simulated = null
+                    simMode = !simMode
+                    if (simMode) {
+                        measuring = false
+                        placingResources = false
+                        dropping = false
                     } else {
-                        // Better to say so than to look broken.
-                        statusMessage = "Drawing tools are not built yet."
+                        // Leaving the mode returns the panel to the real fix.
+                        simulated = null
                     }
                 }
             }

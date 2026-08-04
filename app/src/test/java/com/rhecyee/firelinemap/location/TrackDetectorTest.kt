@@ -349,3 +349,46 @@ class TrackDetectorTest {
         )
     }
 }
+
+class TrackDetectorSpeedTest {
+    private val startLat = 45.20575
+    private val startLon = -117.6370
+    private fun north(meters: Double) = startLat + meters / 111_194.93
+
+    /** Drives north at [speed] m/s with a fix every five seconds. */
+    private fun drive(detector: TrackDetector, seconds: Int, speed: Double) {
+        var elapsed = 0
+        while (elapsed <= seconds) {
+            detector.onFix(
+                Fix(north(speed * elapsed), startLon, elapsed * 1000L, accuracyMeters = 5f)
+            )
+            elapsed += 5
+        }
+    }
+
+    @Test
+    fun movingAverageMatchesTheSpeedActuallyTravelled() {
+        val detector = TrackDetector()
+        // 30 m/s is a little over 67 mph.
+        drive(detector, seconds = 300, speed = 30.0)
+
+        val track = (detector.finish() as TrackEvent.Ended).track
+
+        // The confirmation window's clock must be credited along with its
+        // ground, or the moving average reads far higher than reality.
+        assertEquals(30.0, track.averageMovingSpeedMetersPerSecond, 3.0)
+        assertEquals(30.0, track.averageSpeedMetersPerSecond, 3.0)
+    }
+
+    @Test
+    fun movingTimeIsNotLessThanTheTrackMinusItsPauses() {
+        val detector = TrackDetector()
+        drive(detector, seconds = 300, speed = 30.0)
+        val track = (detector.finish() as TrackEvent.Ended).track
+
+        assertTrue(
+            "moving ${track.movingMillis} ms of ${track.elapsedMillis} ms elapsed",
+            track.movingMillis >= track.elapsedMillis - 15_000
+        )
+    }
+}
