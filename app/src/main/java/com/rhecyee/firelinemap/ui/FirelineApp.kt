@@ -25,6 +25,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddLocationAlt
 import androidx.compose.material.icons.filled.Draw
 import androidx.compose.material.icons.filled.FileOpen
+import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.MedicalServices
 import androidx.compose.material.icons.filled.Search
@@ -82,7 +83,13 @@ import com.rhecyee.firelinemap.location.TrackRecordingState
 import com.rhecyee.firelinemap.medical.MedicalReport
 import com.rhecyee.firelinemap.medical.MedicalRepository
 import com.rhecyee.firelinemap.medical.RadioReadout
+import com.rhecyee.firelinemap.data.LayerPackageEntity
 import com.rhecyee.firelinemap.medical.PlaceNamer
+import com.rhecyee.firelinemap.parcels.CountyCatalog
+import com.rhecyee.firelinemap.parcels.CountyRecord
+import com.rhecyee.firelinemap.parcels.Parcel
+import com.rhecyee.firelinemap.parcels.ParcelPackage
+import java.io.File
 import com.rhecyee.firelinemap.medical.ReporterProfile
 import com.rhecyee.firelinemap.location.TrackRecordingService
 import com.rhecyee.firelinemap.location.SegmentAnchor
@@ -154,6 +161,14 @@ fun FirelineApp() {
     val reporter = remember { ReporterProfile(context) }
     val placeNamer = remember { PlaceNamer(context) }
     var typing by remember { mutableStateOf<DictationField?>(null) }
+
+    val counties = remember { CountyCatalog(context) }
+    var showLayers by remember { mutableStateOf(false) }
+    var countyQuery by remember { mutableStateOf("") }
+    var showCountySearch by remember { mutableStateOf(false) }
+    var chosenCounty by remember { mutableStateOf<CountyRecord?>(null) }
+    var parcels by remember { mutableStateOf<List<Parcel>>(emptyList()) }
+    var tappedParcel by remember { mutableStateOf<Parcel?>(null) }
 
     var medicalReport by remember { mutableStateOf<MedicalReport?>(null) }
     var showReadout by remember { mutableStateOf(false) }
@@ -253,6 +268,51 @@ fun FirelineApp() {
         runCatching { speechLauncher.launch(intent) }.onFailure {
             statusMessage = "No speech recogniser on this device."
             dictating = null
+        }
+    }
+
+    val layerImportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            scope.launch {
+                val imported = withContext(Dispatchers.IO) {
+                    runCatching {
+                        val dir = File(context.filesDir, "layers").apply { mkdirs() }
+                        val name = uri.lastPathSegment?.substringAfterLast('/')
+                            ?.substringAfterLast(':') ?: "layer.gpkg"
+                        val target = File(dir, "${System.currentTimeMillis()}-$name")
+                        context.contentResolver.openInputStream(uri)?.use { input ->
+                            target.outputStream().use { output -> input.copyTo(output) }
+                        }
+                        // Only accept it if it actually opens as a parcel package.
+                        val usable = ParcelPackage(target).use { it.open() }
+                        if (!usable) { target.delete(); null } else {
+                            LayerPackageEntity(
+                                id = UUID.randomUUID().toString(),
+                                kind = "PARCELS",
+                                name = chosenCounty?.label ?: name.substringBeforeLast('.'),
+                                countyFips = chosenCounty?.fips,
+                                stateCode = chosenCounty?.stateCode,
+                                filePath = target.path,
+                                format = "GEOPACKAGE",
+                                source = "Manual import",
+                                importedAt = System.currentTimeMillis(),
+                                sizeBytes = target.length(),
+                                enabled = true
+                            )
+                        }
+                    }.getOrNull()
+                }
+                if (imported == null) {
+                    statusMessage = "That file could not be read as a parcel GeoPackage."
+                } else {
+                    app.database.dao().upsertLayerPackage(imported)
+                    chosenCounty = null
+                    showCountySearch = false
+                    statusMessage = null
+                }
+            }
         }
     }
 
@@ -364,6 +424,10 @@ fun FirelineApp() {
     }
     var inspectingTrack by remember { mutableStateOf<SavedTrack?>(null) }
 
+    val layerPackages by app.database.dao().observeLayerPackages()
+        .collectAsState(initial = emptyList())
+    val activeParcelLayer = layerPackages.firstOrNull { it.kind == "PARCELS" && it.enabled }
+
     val markers by (activeIncident?.id?.let { app.database.dao().observeMarkers(it) }
         ?: kotlinx.coroutines.flow.flowOf(emptyList()))
         .collectAsState(initial = emptyList())
@@ -436,6 +500,30 @@ fun FirelineApp() {
                     incident.id, ResourceSymbol.MEDICAL_INCIDENT,
                     "MEDICAL", null, lat, lon
                 )
+            }
+        }
+    }
+
+    // Parcels are read for the ground around the operator, not the whole
+    // county: a county holds hundreds of thousands and almost none of them are
+    // on screen.
+    LaunchedEffect(activeParcelLayer?.id, activeParcelLayer?.showOwner, displayLatitude) {
+        val layer = activeParcelLayer
+        val lat = displayLatitude
+        val lon = displayLongitude
+        if (layer == null || lat == null || lon == null) {
+            parcels = emptyList()
+            return@LaunchedEffect
+        }
+        parcels = withContext(Dispatchers.IO) {
+            ParcelPackage(File(layer.filePath)).use { pkg ->
+                if (!pkg.open()) emptyList() else {
+                    val margin = 0.02
+                    pkg.parcelsIn(
+                        lat - margin, lon - margin, lat + margin, lon + margin,
+                        includeOwner = layer.showOwner
+                    )
+                }
             }
         }
     }
@@ -598,6 +686,53 @@ fun FirelineApp() {
                 onDismiss = { medicalReport = null }
             )
         }
+    }
+
+    if (showLayers) {
+        LayersSheet(
+            packages = layerPackages,
+            onToggle = { layer, on ->
+                scope.launch { app.database.dao().upsertLayerPackage(layer.copy(enabled = on)) }
+            },
+            onOpacity = { layer, value ->
+                scope.launch { app.database.dao().upsertLayerPackage(layer.copy(opacity = value)) }
+            },
+            onToggleOwner = { layer, on ->
+                scope.launch { app.database.dao().upsertLayerPackage(layer.copy(showOwner = on)) }
+            },
+            onRemove = { layer ->
+                scope.launch {
+                    withContext(Dispatchers.IO) { File(layer.filePath).delete() }
+                    app.database.dao().deleteLayerPackage(layer.id)
+                }
+            },
+            onImport = { layerImportLauncher.launch(arrayOf("*/*")) },
+            onFindCounty = { showLayers = false; showCountySearch = true },
+            onDismiss = { showLayers = false }
+        )
+    }
+
+    if (showCountySearch) {
+        val results = remember(countyQuery) { counties.search(countyQuery) }
+        CountySearchDialog(
+            results = results,
+            query = countyQuery,
+            onQueryChange = { countyQuery = it },
+            onSelect = { chosenCounty = it; showCountySearch = false },
+            onDismiss = { showCountySearch = false }
+        )
+    }
+
+    chosenCounty?.let { county ->
+        CountyPackageDialog(
+            county = county,
+            onImport = { layerImportLauncher.launch(arrayOf("*/*")) },
+            onDismiss = { chosenCounty = null }
+        )
+    }
+
+    tappedParcel?.let { parcel ->
+        ParcelDetailDialog(parcel = parcel, onDismiss = { tappedParcel = null })
     }
 
     if (showTrackSettings) {
@@ -849,6 +984,8 @@ fun FirelineApp() {
                 trackPoints = liveTrack.points,
                 savedTracks = savedTracks,
                     searchRegion = searchRegion,
+                    parcels = parcels,
+                    parcelOpacity = activeParcelLayer?.opacity ?: 0.65f,
                     centreOn = centreRequest,
                     onCentred = { centreRequest = null },
                 onTrackTap = { inspectingTrack = it },
@@ -880,10 +1017,12 @@ fun FirelineApp() {
                             }
                             elevationPending = false
                         }
+                    } else if (activeParcelLayer != null) {
+                        tappedParcel = parcels.firstOrNull { it.geometry.contains(lat, lon) }
                     }
-                    // With no tool armed a tap does nothing. It used to drop a
-                    // simulated position, which silently replaced the live GPS
-                    // readout with a fake one from a stray touch.
+                    // With no tool armed and no parcel layer, a tap does
+                    // nothing. It used to drop a simulated position, which
+                    // silently replaced the live GPS readout from a stray touch.
                 },
                     onInteraction = { touched() },
                     modifier = Modifier.fillMaxSize()
@@ -987,20 +1126,13 @@ fun FirelineApp() {
                     openMedicalReport()
                 }
                 ToolButton(
-                    "Sim",
-                    Icons.Default.Draw,
+                    "Property",
+                    Icons.Default.Layers,
                     Modifier.weight(1f),
-                    active = simMode
+                    active = activeParcelLayer != null
                 ) {
                     touched()
-                    simMode = !simMode
-                    if (simMode) {
-                        measuring = false
-                        placingResources = false
-                    } else {
-                        // Leaving the mode returns the panel to the real fix.
-                        simulated = null
-                    }
+                    showLayers = true
                 }
             }
 

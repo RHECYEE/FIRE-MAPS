@@ -159,6 +159,77 @@ data class MedicalReportUpdateEntity(
 )
 
 /**
+ * A user-drawn area to hold offline.
+ *
+ * The general case, of which a county is one shortcut. Elevation, hydrography
+ * and names do not follow county lines, and incidents routinely cross them, so
+ * the area is a polygon the operator drew and everything else -- which layers,
+ * which zooms, how big -- hangs off it.
+ *
+ * [polygonJson] is a GeoJSON ring. [layers] names the components requested.
+ * Status moves through PLANNED, DOWNLOADING, READY and FAILED; components are
+ * fetched and verified separately so one failure does not cost the rest.
+ */
+@Entity(tableName = "offline_regions")
+data class OfflineRegionEntity(
+    @PrimaryKey val id: String,
+    val name: String,
+    val polygonJson: String,
+    val south: Double,
+    val west: Double,
+    val north: Double,
+    val east: Double,
+    val minZoom: Int = 5,
+    val maxZoom: Int = 15,
+    /** Comma-separated component names: BASEMAP, CONTOURS, HILLSHADE, NAMES, HYDRO, PARCELS. */
+    val layers: String = "BASEMAP",
+    val contourIntervalFeet: Int = 40,
+    val status: String = "PLANNED",
+    val estimatedBytes: Long = 0,
+    val downloadedBytes: Long = 0,
+    val createdAt: Long,
+    val completedAt: Long? = null
+)
+
+/**
+ * An optional map layer held on local storage.
+ *
+ * Parcels and topography are the same shape of thing: a licensed or bulky
+ * package, downloaded or imported deliberately, belonging to a shared library
+ * rather than to one incident. Two districts working the same county should
+ * not each hold a copy, so these carry no foreign key to an incident and are
+ * attached by reference.
+ *
+ * Nothing here loads unless it is switched on.
+ */
+@Entity(tableName = "layer_packages")
+data class LayerPackageEntity(
+    @PrimaryKey val id: String,
+    /** PARCELS or TOPOGRAPHIC. */
+    val kind: String,
+    val name: String,
+    val countyFips: String? = null,
+    val stateCode: String? = null,
+    val filePath: String,
+    /** GEOPACKAGE or MBTILES. */
+    val format: String,
+    val source: String? = null,
+    val sourceUpdatedAt: Long? = null,
+    val importedAt: Long,
+    val sizeBytes: Long = 0,
+    val enabled: Boolean = false,
+    val opacity: Float = 0.65f,
+    /**
+     * Owner names are off unless switched on deliberately.
+     *
+     * Boundaries and parcel numbers are operationally useful; names, mailing
+     * addresses and values carry a privacy and licensing weight that should
+     * not arrive by default.
+     */
+    val showOwner: Boolean = false
+)
+
+/**
  * A preloaded terrain basemap region held on local storage.
  *
  * Intentionally has no foreign key to an incident. Terrain is shared

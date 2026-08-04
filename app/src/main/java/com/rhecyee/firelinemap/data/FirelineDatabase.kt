@@ -16,9 +16,11 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ResourcePositionHistoryEntity::class,
         BasemapRegionEntity::class,
         MedicalReportEntity::class,
-        MedicalReportUpdateEntity::class
+        MedicalReportUpdateEntity::class,
+        LayerPackageEntity::class,
+        OfflineRegionEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class FirelineDatabase : RoomDatabase() {
@@ -111,11 +113,47 @@ abstract class FirelineDatabase : RoomDatabase() {
             }
         }
 
+        /** Adds the shared optional-layer library. */
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `layer_packages` (
+                        `id` TEXT NOT NULL, `kind` TEXT NOT NULL, `name` TEXT NOT NULL,
+                        `countyFips` TEXT, `stateCode` TEXT,
+                        `filePath` TEXT NOT NULL, `format` TEXT NOT NULL,
+                        `source` TEXT, `sourceUpdatedAt` INTEGER,
+                        `importedAt` INTEGER NOT NULL, `sizeBytes` INTEGER NOT NULL,
+                        `enabled` INTEGER NOT NULL, `opacity` REAL NOT NULL,
+                        `showOwner` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `offline_regions` (
+                        `id` TEXT NOT NULL, `name` TEXT NOT NULL,
+                        `polygonJson` TEXT NOT NULL,
+                        `south` REAL NOT NULL, `west` REAL NOT NULL,
+                        `north` REAL NOT NULL, `east` REAL NOT NULL,
+                        `minZoom` INTEGER NOT NULL, `maxZoom` INTEGER NOT NULL,
+                        `layers` TEXT NOT NULL, `contourIntervalFeet` INTEGER NOT NULL,
+                        `status` TEXT NOT NULL, `estimatedBytes` INTEGER NOT NULL,
+                        `downloadedBytes` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL, `completedAt` INTEGER,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         fun create(context: Context): FirelineDatabase =
             Room.databaseBuilder(
                 context.applicationContext,
                 FirelineDatabase::class.java,
                 "fireline-map.db"
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build()
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build()
     }
 }

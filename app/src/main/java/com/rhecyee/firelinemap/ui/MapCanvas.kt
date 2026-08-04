@@ -84,6 +84,8 @@ fun MapCanvas(
     trackPoints: List<Pair<Double, Double>> = emptyList(),
     savedTracks: List<SavedTrack> = emptyList(),
     searchRegion: SearchRegion? = null,
+    parcels: List<com.rhecyee.firelinemap.parcels.Parcel> = emptyList(),
+    parcelOpacity: Float = 0.65f,
     centreOn: Pair<Double, Double>? = null,
     onCentred: () -> Unit = {},
     onInteraction: () -> Unit = {},
@@ -365,6 +367,25 @@ fun MapCanvas(
             )
 
             val frame = map.frame
+
+            // Parcels sit above terrain and below everything the incident owns.
+            if (parcels.isNotEmpty() && frame != null &&
+                pageWidthPoints > 0 && pageHeightPoints > 0
+            ) {
+                drawParcels(
+                    parcels = parcels,
+                    frame = frame,
+                    pageWidthPoints = pageWidthPoints,
+                    pageHeightPoints = pageHeightPoints,
+                    originX = originX,
+                    originY = originY,
+                    drawWidth = drawWidth,
+                    drawHeight = drawHeight,
+                    opacity = parcelOpacity,
+                    showLabels = scale >= 4f
+                )
+            }
+
             if (frame != null && pageWidthPoints > 0 && pageHeightPoints > 0) {
                 for (point in dropPoints) {
                     val dx = (point.pageX / pageWidthPoints).toFloat()
@@ -583,6 +604,67 @@ private fun distanceToSegment(point: Offset, start: Offset, end: Offset): Float 
     val t = (((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared)
         .coerceIn(0f, 1f)
     return (point - Offset(start.x + t * dx, start.y + t * dy)).getDistance()
+}
+
+/**
+ * Draws parcel boundaries.
+ *
+ * Lines only, no fill: a filled parcel layer buries the map underneath it, and
+ * what is wanted is where the line runs. Numbers appear only once zoomed
+ * enough to read them.
+ */
+private fun DrawScope.drawParcels(
+    parcels: List<com.rhecyee.firelinemap.parcels.Parcel>,
+    frame: com.rhecyee.firelinemap.geopdf.MapFrame,
+    pageWidthPoints: Int,
+    pageHeightPoints: Int,
+    originX: Float,
+    originY: Float,
+    drawWidth: Float,
+    drawHeight: Float,
+    opacity: Float,
+    showLabels: Boolean
+) {
+    val colour = Color(0xFF8D6E63)
+    for (parcel in parcels) {
+        for (polygon in parcel.geometry.polygons) {
+            for (ring in polygon) {
+                if (ring.size < 3) continue
+                val path = Path()
+                var started = false
+                for ((longitude, latitude) in ring) {
+                    val page = frame.geoToPage(latitude, longitude) ?: continue
+                    val x = originX + (page.first / pageWidthPoints).toFloat() * drawWidth
+                    val y = originY +
+                        (1f - (page.second / pageHeightPoints).toFloat()) * drawHeight
+                    if (started) path.lineTo(x, y) else { path.moveTo(x, y); started = true }
+                }
+                if (!started) continue
+                path.close()
+                drawPath(path, colour, alpha = opacity, style = Stroke(width = 2f))
+            }
+        }
+
+        if (!showLabels) continue
+        val label = parcel.shortLabel ?: continue
+        val centreLatitude = (parcel.geometry.minLatitude + parcel.geometry.maxLatitude) / 2
+        val centreLongitude = (parcel.geometry.minLongitude + parcel.geometry.maxLongitude) / 2
+        val page = frame.geoToPage(centreLatitude, centreLongitude) ?: continue
+        val x = originX + (page.first / pageWidthPoints).toFloat() * drawWidth
+        val y = originY + (1f - (page.second / pageHeightPoints).toFloat()) * drawHeight
+        drawContext.canvas.nativeCanvas.drawText(
+            label,
+            x,
+            y,
+            android.graphics.Paint().apply {
+                color = android.graphics.Color.rgb(93, 64, 55)
+                textAlign = android.graphics.Paint.Align.CENTER
+                textSize = 20f
+                isAntiAlias = true
+                setShadowLayer(4f, 0f, 0f, android.graphics.Color.WHITE)
+            }
+        )
+    }
 }
 
 /** Draws the recorded travel line. */
