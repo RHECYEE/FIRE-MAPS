@@ -33,11 +33,11 @@ import com.rhecyee.firelinemap.util.SearchShape
  * on the map narrows as digits land. Clearing it is a deliberate act.
  */
 @Composable
-fun CoordinateSearchPanel(
+fun CoordinateSearchReadout(
     query: String,
     result: CoordinateParseResult,
-    onQueryChange: (String) -> Unit,
     onKeep: () -> Unit,
+    onShow: () -> Unit,
     onClear: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -46,7 +46,7 @@ fun CoordinateSearchPanel(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .background(Color(0xFF14232E), RoundedCornerShape(10.dp))
+            .background(Color(0xFF14232E).copy(alpha = 0.94f), RoundedCornerShape(10.dp))
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
@@ -62,6 +62,15 @@ fun CoordinateSearchPanel(
                 modifier = Modifier.weight(1f)
             )
             if (coordinate != null) {
+                Text(
+                    "SHOW",
+                    modifier = Modifier
+                        .clickable { onShow() }
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.labelMedium
+                )
                 Text(
                     "KEEP",
                     modifier = Modifier
@@ -117,11 +126,6 @@ fun CoordinateSearchPanel(
                 style = MaterialTheme.typography.bodySmall
             )
         }
-
-        Keypad(
-            onAppend = { onQueryChange(query + it) },
-            onBackspace = { if (query.isNotEmpty()) onQueryChange(query.dropLast(1)) }
-        )
     }
 }
 
@@ -133,7 +137,13 @@ fun CoordinateSearchPanel(
  * turned a spaced position into one unreadable run of digits.
  */
 @Composable
-private fun Keypad(onAppend: (String) -> Unit, onBackspace: () -> Unit) {
+fun CoordinateKeypad(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val onAppend: (String) -> Unit = { onQueryChange(query + it) }
+    val onBackspace: () -> Unit = { if (query.isNotEmpty()) onQueryChange(query.dropLast(1)) }
     val rows = listOf(
         listOf("1", "2", "3"),
         listOf("4", "5", "6"),
@@ -141,8 +151,11 @@ private fun Keypad(onAppend: (String) -> Unit, onBackspace: () -> Unit) {
         listOf(".", "0", "X")
     )
     Column(
-        modifier = Modifier.padding(top = 6.dp),
-        verticalArrangement = Arrangement.spacedBy(5.dp)
+        modifier = modifier
+            .fillMaxWidth()
+            .background(Color(0xFF14232E).copy(alpha = 0.94f), RoundedCornerShape(10.dp))
+            .padding(6.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         rows.forEach { row ->
             Row(
@@ -171,11 +184,11 @@ private fun Key(label: String, modifier: Modifier, onClick: () -> Unit) {
         modifier = modifier
             .background(Color(0xFF25404F), RoundedCornerShape(7.dp))
             .clickable { onClick() }
-            .padding(vertical = 13.dp),
+            .padding(vertical = 9.dp),
         color = Color.White,
         fontWeight = FontWeight.Black,
         textAlign = TextAlign.Center,
-        fontSize = 19.sp
+        fontSize = 18.sp
     )
 }
 

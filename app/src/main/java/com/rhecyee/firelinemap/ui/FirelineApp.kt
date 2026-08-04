@@ -11,6 +11,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -116,6 +117,7 @@ fun FirelineApp() {
     var showTrackSettings by remember { mutableStateOf(false) }
     var showSearch by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
+    var centreRequest by remember { mutableStateOf<Pair<Double, Double>?>(null) }
     val searchResult = remember(searchQuery) { CoordinateParser.parse(searchQuery) }
     val searchCoordinate = (searchResult as? CoordinateParseResult.Success)?.coordinate
     val searchRegion = remember(searchCoordinate) {
@@ -545,21 +547,6 @@ fun FirelineApp() {
                 OffMapBanner("OFF THIS SHEET — $distance, bearing $bearing° back onto it")
             }
 
-            if (showSearch) {
-                CoordinateSearchPanel(
-                    query = searchQuery,
-                    result = searchResult,
-                    onQueryChange = { searchQuery = it },
-                    onKeep = {
-                        searchCoordinate?.let {
-                            selectedSymbol = ResourceSymbol.OTHER
-                            pendingPlacement = it.latitude to it.longitude
-                        }
-                    },
-                    onClear = { searchQuery = ""; showSearch = false }
-                )
-            }
-
             if (watching || liveTrack.recording) {
                 TravelPanel(live = liveTrack, armed = watching, unit = distanceUnit)
             }
@@ -597,9 +584,10 @@ fun FirelineApp() {
                 )
             }
 
-            MapCanvas(
-                map = activeMap,
-                bitmap = bitmap,
+            Box(modifier = Modifier.weight(1f)) {
+                MapCanvas(
+                    map = activeMap,
+                    bitmap = bitmap,
                 pageWidthPoints = pageWidth,
                 pageHeightPoints = pageHeight,
                 latitude = displayLatitude,
@@ -612,7 +600,9 @@ fun FirelineApp() {
                 markers = markers,
                 trackPoints = liveTrack.points,
                 savedTracks = savedTracks,
-                searchRegion = searchRegion,
+                    searchRegion = searchRegion,
+                    centreOn = centreRequest,
+                    onCentred = { centreRequest = null },
                 onTrackTap = { inspectingTrack = it },
                 onMarkerTap = { marker ->
                     inspecting = marker
@@ -647,8 +637,33 @@ fun FirelineApp() {
                     // simulated position, which silently replaced the live GPS
                     // readout with a fake one from a stray touch.
                 },
-                modifier = Modifier.weight(1f)
-            )
+                    modifier = Modifier.fillMaxSize()
+                )
+
+                // Overlaid rather than stacked above: the whole value of the
+                // search is watching the highlight narrow, and a panel that
+                // pushes the map off screen cannot do that.
+                if (showSearch) {
+                    CoordinateSearchReadout(
+                        query = searchQuery,
+                        result = searchResult,
+                        onKeep = {
+                            searchCoordinate?.let {
+                                selectedSymbol = ResourceSymbol.OTHER
+                                pendingPlacement = it.latitude to it.longitude
+                            }
+                        },
+                        onShow = { centreRequest = searchCoordinate?.let { it.latitude to it.longitude } },
+                        onClear = { searchQuery = ""; showSearch = false },
+                        modifier = Modifier.align(Alignment.TopCenter).padding(6.dp)
+                    )
+                    CoordinateKeypad(
+                        query = searchQuery,
+                        onQueryChange = { searchQuery = it },
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(6.dp)
+                    )
+                }
+            }
 
             Row(
                 modifier = Modifier.fillMaxWidth(),

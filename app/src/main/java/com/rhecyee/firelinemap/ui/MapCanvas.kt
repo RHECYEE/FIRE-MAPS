@@ -83,6 +83,8 @@ fun MapCanvas(
     trackPoints: List<Pair<Double, Double>> = emptyList(),
     savedTracks: List<SavedTrack> = emptyList(),
     searchRegion: SearchRegion? = null,
+    centreOn: Pair<Double, Double>? = null,
+    onCentred: () -> Unit = {},
     onTrackTap: ((SavedTrack) -> Unit)? = null,
     onMarkerTap: ((MarkerEntity) -> Unit)? = null,
     onMarkerMoved: ((MarkerEntity, Double, Double) -> Unit)? = null,
@@ -128,6 +130,31 @@ fun MapCanvas(
         }
 
         val image = remember(bitmap) { bitmap.asImageBitmap() }
+
+        // An external request to bring a position into view, used by the
+        // search so a found region can be looked at without hunting for it.
+        androidx.compose.runtime.LaunchedEffect(centreOn, viewport) {
+            val target = centreOn ?: return@LaunchedEffect
+            val frame = map.frame ?: return@LaunchedEffect
+            if (viewport.width == 0 || pageWidthPoints <= 0 || pageHeightPoints <= 0) {
+                return@LaunchedEffect
+            }
+            val page = frame.geoToPage(target.first, target.second)
+            if (page != null) {
+                val fitNow = minOf(
+                    viewport.width.toFloat() / image.width,
+                    viewport.height.toFloat() / image.height
+                )
+                val next = maxOf(scale, 6f)
+                scale = next
+                val drawWidth = image.width * fitNow * next
+                val drawHeight = image.height * fitNow * next
+                val fx = (page.first / pageWidthPoints).toFloat()
+                val fy = 1f - (page.second / pageHeightPoints).toFloat()
+                offset = Offset(drawWidth * (0.5f - fx), drawHeight * (0.5f - fy))
+            }
+            onCentred()
+        }
 
         // Evaluated on every call rather than captured.
         //
