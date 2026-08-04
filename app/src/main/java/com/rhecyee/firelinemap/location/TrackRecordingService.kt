@@ -44,6 +44,10 @@ class TrackRecordingService : Service() {
     private var trackId: String? = null
     private var armed = false
     private var fixesSincePersist = 0
+    private var fixCount = 0
+    private var rejectedCount = 0
+    private var lastAccuracy = 0f
+    private var lastSpeed = 0.0
 
     private val client by lazy { LocationServices.getFusedLocationProviderClient(this) }
     private val callback = object : LocationCallback() {
@@ -120,6 +124,11 @@ class TrackRecordingService : Service() {
             accuracyMeters = if (location.hasAccuracy()) location.accuracy else 999f,
             speedMetersPerSecond = if (location.hasSpeed()) location.speed.toDouble() else null
         )
+
+        fixCount++
+        lastAccuracy = fix.accuracyMeters
+        lastSpeed = fix.speedMetersPerSecond ?: 0.0
+        if (fix.accuracyMeters > detector.settings.maxUsableAccuracyMeters) rejectedCount++
 
         val event = detector.onFix(fix)
         publish(fix.timeMillis)
@@ -240,7 +249,13 @@ class TrackRecordingService : Service() {
                 movingMillis = detector.currentMovingMillis,
                 pausedMillis = detector.currentPausedMillis,
                 segmentCount = detector.currentSegmentCount,
-                points = detector.currentTrace
+                points = detector.currentTrace,
+                fixCount = fixCount,
+                rejectedCount = rejectedCount,
+                lastAccuracyMeters = lastAccuracy,
+                lastSpeedMetersPerSecond = lastSpeed,
+                movingNow = detector.lastFixWasMoving,
+                movingHeldMillis = detector.movingHeldMillis(now)
             )
         )
     }

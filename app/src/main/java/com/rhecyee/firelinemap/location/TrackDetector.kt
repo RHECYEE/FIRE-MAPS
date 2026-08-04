@@ -188,6 +188,16 @@ class TrackDetector(
     val currentTrace: List<Pair<Double, Double>>
         get() = points.map { it.latitude to it.longitude }
 
+    /** True if the most recent fix counted as movement. */
+    var lastFixWasMoving: Boolean = false
+        private set
+
+    /** How long movement has held, toward the start threshold. */
+    fun movingHeldMillis(now: Long): Long {
+        val since = candidateMovingSince ?: return 0L
+        return (now - since).coerceAtLeast(0L)
+    }
+
     val currentMovingMillis: Long get() = movingMillis
     val currentPausedMillis: Long get() = pausedMillis
     val currentStartedAt: Long get() = startedAt
@@ -217,6 +227,7 @@ class TrackDetector(
         )
         val deltaMillis = (fix.timeMillis - previous.timeMillis).coerceAtLeast(0)
         val moving = isMoving(fix)
+        lastFixWasMoving = moving
 
         return if (recording) {
             advance(fix, step, deltaMillis, moving)

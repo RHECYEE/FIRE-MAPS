@@ -58,14 +58,38 @@ fun TravelPanel(
         )
 
         if (!live.recording) {
+            if (!armed) {
+                Text(
+                    "Press auto record to arm.",
+                    color = Color.White.copy(alpha = 0.7f),
+                    style = MaterialTheme.typography.bodySmall
+                )
+                return@Column
+            }
+
+            // Say what the service is actually seeing. "No fixes at all" and
+            // "moving, nearly confirmed" are different problems and were
+            // previously the same sentence.
             Text(
-                if (armed) {
-                    "A track opens once movement holds for about 30 seconds."
-                } else {
-                    "Press auto record to arm."
+                when {
+                    live.fixCount == 0 -> "No position fixes received yet."
+                    live.movingNow ->
+                        "Moving at %.0f mph — confirming (%d of 30 s)".format(
+                            live.lastSpeedMetersPerSecond * 2.236936,
+                            (live.movingHeldMillis / 1000).coerceAtMost(30)
+                        )
+                    else -> "Stationary — a track opens after 30 s of movement."
                 },
-                color = Color.White.copy(alpha = 0.7f),
+                color = Color.White.copy(alpha = 0.85f),
                 style = MaterialTheme.typography.bodySmall
+            )
+            Text(
+                "${live.fixCount} fixes · ±%.0f m · %.0f mph".format(
+                    live.lastAccuracyMeters,
+                    live.lastSpeedMetersPerSecond * 2.236936
+                ) + if (live.rejectedCount > 0) " · ${live.rejectedCount} too inaccurate" else "",
+                color = Color.White.copy(alpha = 0.55f),
+                style = MaterialTheme.typography.labelSmall
             )
             return@Column
         }

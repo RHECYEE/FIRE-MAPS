@@ -15,7 +15,22 @@ data class LiveTrack(
     val pausedMillis: Long = 0L,
     val segmentCount: Int = 0,
     /** Latitude and longitude pairs, in order. */
-    val points: List<Pair<Double, Double>> = emptyList()
+    val points: List<Pair<Double, Double>> = emptyList(),
+
+    /**
+     * Diagnostics for the armed-but-not-recording state.
+     *
+     * Without these, "waiting for movement to be confirmed", "the service is
+     * getting no fixes at all" and "every fix is being rejected as too
+     * inaccurate" all look identical on screen, which makes the difference
+     * impossible to report from a vehicle.
+     */
+    val fixCount: Int = 0,
+    val rejectedCount: Int = 0,
+    val lastAccuracyMeters: Float = 0f,
+    val lastSpeedMetersPerSecond: Double = 0.0,
+    val movingNow: Boolean = false,
+    val movingHeldMillis: Long = 0L
 ) {
     val elapsedMillis: Long get() = (lastFixAt - startedAt).coerceAtLeast(0)
 
