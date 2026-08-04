@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculateCentroidSize
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
@@ -101,6 +102,15 @@ fun MapCanvas(
     var draggingMarkerId by remember { mutableStateOf<String?>(null) }
     var dragPoint by remember { mutableStateOf(Offset.Zero) }
 
+    /** True while a finger is down, which suspends terrain fetching. */
+    var gestureActive by remember { mutableStateOf(false) }
+
+    // The tile level last drawn at, so it can be held across a pinch. A plain
+    // holder rather than snapshot state on purpose: this is written during the
+    // draw pass, and writing snapshot state there would invalidate the frame
+    // that is being drawn and loop.
+    val tileZoom = remember(map?.id) { TileZoomHolder() }
+
     // Held in updated state so the gesture handler below can key on the map
     // alone. Putting these in the pointerInput keys restarts the gesture
     // coroutine on every recomposition, and with a GPS fix arriving every few
@@ -191,8 +201,14 @@ fun MapCanvas(
          * simply coerced into that range would snap it back on the first drag,
          * which read as the map teleporting. Being outside is allowed; going
          * further out is not, and moving back in always is.
+         *
+         * [from] is where the pan started, and is what "further out" is judged
+         * against. A pinch has already moved it before this is reached -- the
+         * sheet grew, so the pan grew with it -- and measuring against the
+         * pre-pinch value there would reject the zoom's own bookkeeping and
+         * leave the view lurching.
          */
-        fun clamp(candidate: Offset, atScale: Float): Offset {
+        fun clamp(candidate: Offset, atScale: Float, from: Offset = offset): Offset {
             val drawWidth = image.width * fitScale() * atScale
             val drawHeight = image.height * fitScale() * atScale
             val slackX = viewport.width * OFF_SHEET_PAN_ALLOWANCE
@@ -206,8 +222,8 @@ fun MapCanvas(
                 else -> current
             }
             return Offset(
-                axis(candidate.x, offset.x, maxX),
-                axis(candidate.y, offset.y, maxY)
+                axis(candidate.x, from.x, maxX),
+                axis(candidate.y, from.y, maxY)
             )
         }
 
@@ -326,20 +342,47 @@ fun MapCanvas(
 
                         var travelled = 0f
                         var pointers = 1
-                        do {
-                            val event = awaitPointerEvent()
-                            pointers = maxOf(pointers, event.changes.count { it.pressed })
-                            val zoomChange = event.calculateZoom()
-                            val panChange = event.calculatePan()
-                            travelled += panChange.getDistance() + abs(1f - zoomChange) * 200f
+                        gestureActive = true
+                        val canvasCentre = Offset(size.width / 2f, size.height / 2f)
+                        // Guarded: a cancelled gesture that left this set would
+                        // stop terrain being fetched for the rest of the
+                        // session, and the map would quietly stop filling in.
+                        try {
+                            do {
+                                val event = awaitPointerEvent()
+                                pointers = maxOf(pointers, event.changes.count { it.pressed })
+                                val zoomChange = event.calculateZoom()
+                                val panChange = event.calculatePan()
+                                val centroid = event.calculateCentroid(useCurrent = false)
+                                travelled += panChange.getDistance() + abs(1f - zoomChange) * 200f
 
-                            if (travelled > viewConfiguration.touchSlop) {
-                                val next = (scale * zoomChange).coerceIn(1f, 12f)
-                                scale = next
-                                offset = clamp(offset + panChange, next)
-                                event.changes.forEach { if (it.positionChanged()) it.consume() }
-                            }
-                        } while (event.changes.any { it.pressed })
+                                if (travelled > viewConfiguration.touchSlop) {
+                                    val next = (scale * zoomChange).coerceIn(1f, 12f)
+                                    // The ratio actually applied, which is not the
+                                    // one asked for once the limits are reached.
+                                    // Using the requested ratio there slides the
+                                    // sheet sideways while the zoom sits pinned.
+                                    val applied = if (scale > 0f) next / scale else 1f
+                                    scale = next
+
+                                    // Zoom about the fingers, not about the middle
+                                    // of the screen. The sheet is drawn from the
+                                    // centre outward, so growing it moves every
+                                    // point away from the centre in proportion --
+                                    // and the pan has to grow with it or the ground
+                                    // under the pinch shoots off across the view.
+                                    // That was the map appearing to teleport.
+                                    val focus = centroid.takeIf { pointers > 1 } ?: canvasCentre
+                                    val zoomed = offset * applied +
+                                        (focus - canvasCentre) * (1f - applied)
+
+                                    offset = clamp(zoomed + panChange, next, from = zoomed)
+                                    event.changes.forEach { if (it.positionChanged()) it.consume() }
+                                }
+                            } while (event.changes.any { it.pressed })
+                        } finally {
+                            gestureActive = false
+                        }
 
                         if (travelled <= viewConfiguration.touchSlop && pointers == 1) {
                             if (trackHit != null) {
@@ -371,7 +414,9 @@ fun MapCanvas(
                     originX = originX,
                     originY = originY,
                     drawWidth = drawWidth,
-                    drawHeight = drawHeight
+                    drawHeight = drawHeight,
+                    held = tileZoom,
+                    fetch = !gestureActive
                 )
             }
 
@@ -590,6 +635,9 @@ fun MapCanvas(
 
 private const val OFF_SHEET_PAN_ALLOWANCE = 1.5f
 
+/** Carries the tile level between draws so a pinch cannot make it flip. */
+internal class TileZoomHolder(var value: Int? = null)
+
 /** Where a searched position could be: a point, a line, or a box. */
 data class SearchRegion(
     val south: Double,
@@ -775,7 +823,9 @@ private fun DrawScope.drawBasemap(
     originX: Float,
     originY: Float,
     drawWidth: Float,
-    drawHeight: Float
+    drawHeight: Float,
+    held: TileZoomHolder,
+    fetch: Boolean
 ) {
     fun screenToGeo(x: Float, y: Float): com.rhecyee.firelinemap.geopdf.GeoPoint? {
         val fx = (x - originX) / drawWidth
@@ -801,8 +851,12 @@ private fun DrawScope.drawBasemap(
         centreLatitude, west, centreLatitude, east
     )
     if (spanMeters <= 0.0 || size.width <= 0f) return
-    val zoom = BasemapTileCache.zoomFor(centreLatitude, spanMeters / size.width)
-        .coerceIn(4, 15)
+    val zoom = BasemapTileCache.zoomForStable(
+        latitude = centreLatitude,
+        targetMetersPerPixel = spanMeters / size.width,
+        previous = held.value
+    ).coerceIn(4, 15)
+    held.value = zoom
 
     val minX = BasemapTileCache.tileX(west, zoom)
     val maxX = BasemapTileCache.tileX(east, zoom)
@@ -815,7 +869,7 @@ private fun DrawScope.drawBasemap(
 
     for (x in minX..maxX) {
         for (y in minY..maxY) {
-            val sample = basemap.sample(zoom, x, y) ?: continue
+            val sample = basemap.sample(zoom, x, y, fetch = fetch) ?: continue
             val tileNorth = BasemapTileCache.tileNorth(y, zoom)
             val tileSouth = BasemapTileCache.tileNorth(y + 1, zoom)
             val tileWest = BasemapTileCache.tileWest(x, zoom)

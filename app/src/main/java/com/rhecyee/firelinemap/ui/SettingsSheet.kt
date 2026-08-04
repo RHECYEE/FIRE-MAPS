@@ -26,6 +26,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.rhecyee.firelinemap.data.AppSettings
+import com.rhecyee.firelinemap.data.PowerMode
 import com.rhecyee.firelinemap.location.TrackSettingsStore
 
 /**
@@ -51,8 +52,15 @@ fun SettingsSheet(
     onWifiOnly: (Boolean) -> Unit,
     cachedTerrainBytes: Long,
     onClearTerrain: () -> Unit,
+    chromeTimeoutSeconds: Int,
+    onChromeTimeout: (Int) -> Unit,
+    locationIntervalSeconds: Int,
+    onLocationInterval: (Int) -> Unit,
+    powerMode: PowerMode,
+    onPowerMode: (PowerMode) -> Unit,
     onDismiss: () -> Unit
 ) {
+    val effectiveInterval = AppSettings.effectiveInterval(locationIntervalSeconds, powerMode)
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Settings") },
@@ -85,6 +93,60 @@ fun SettingsSheet(
                     label = { Text("Qualification") },
                     placeholder = { Text("EMT, Paramedic, REMS") }
                 )
+
+                HorizontalDivider()
+                Heading("SCREEN")
+                Text(
+                    "How long the controls stay up before the map takes the screen " +
+                        "back. Never keeps them until they are closed, for planning " +
+                        "somewhere the screen is not the only thing to look at.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                ChipRow(
+                    options = AppSettings.CHROME_TIMEOUT_CHOICES,
+                    selected = chromeTimeoutSeconds,
+                    label = { AppSettings.describeChromeTimeout(it) },
+                    onSelect = onChromeTimeout
+                )
+
+                HorizontalDivider()
+                Heading("POSITION AND BATTERY")
+                Text(
+                    "How often a fix is asked for. Faster is a sharper track and a " +
+                        "shorter battery.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                ChipRow(
+                    options = AppSettings.LOCATION_INTERVAL_CHOICES,
+                    selected = locationIntervalSeconds,
+                    label = { AppSettings.describeInterval(it) },
+                    onSelect = onLocationInterval
+                )
+                ChipRow(
+                    options = PowerMode.entries,
+                    selected = powerMode,
+                    label = { it.label },
+                    onSelect = onPowerMode
+                )
+                Text(
+                    powerMode.detail,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (effectiveInterval != locationIntervalSeconds) {
+                    // Said out loud rather than silently overriding the chip,
+                    // so nobody is left believing they are on a rate they are
+                    // not while working out why a track looks blocky.
+                    Text(
+                        "${powerMode.label} holds this at " +
+                            AppSettings.describeInterval(effectiveInterval) + ".",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
 
                 HorizontalDivider()
                 Heading("AUTO RECORDING")

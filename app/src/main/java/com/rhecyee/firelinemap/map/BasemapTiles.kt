@@ -51,6 +51,17 @@ class BasemapTileCache(context: Context) {
     val tiles: SnapshotStateMap<String, Bitmap> = mutableStateMapOf()
 
     private val inFlight = mutableSetOf<String>()
+
+    /**
+     * When a tile last failed to arrive.
+     *
+     * Without this a tile the service will not serve -- past the top of its
+     * pyramid, or outside its extent -- is asked for again on the very next
+     * frame, forever. Every draw restarts the request, every failure triggers
+     * another draw, and the map churns through requests at frame rate.
+     */
+    private val failedAt = mutableMapOf<String, Long>()
+
     private val limiter = Semaphore(6)
 
     /**
@@ -60,9 +71,17 @@ class BasemapTileCache(context: Context) {
      * rather than left as a hole. Fetches lag badly in a moving vehicle, and a
      * checkerboard of gaps is worse than soft terrain: it reads as the map
      * being broken rather than as detail still arriving.
+     *
+     * [fetch] is false while a finger is down. Mid-pinch the view sweeps
+     * through several zoom levels in under a second, and fetching at each one
+     * puts hundreds of requests in flight for ground that is already off
+     * screen by the time they land -- which the operator sees as the map
+     * swapping under them. Whatever is cached is drawn instead, and the level
+     * that was actually settled on is fetched once the hand comes off.
      */
-    fun sample(zoom: Int, x: Int, y: Int): TileSample? {
-        tile(zoom, x, y)?.let { return TileSample(it, 0, 0, it.width) }
+    fun sample(zoom: Int, x: Int, y: Int, fetch: Boolean = true): TileSample? {
+        val exact = if (fetch) tile(zoom, x, y) else tiles[key(zoom, x, y)]
+        if (exact != null) return TileSample(exact, 0, 0, exact.width)
 
         var depth = 1
         while (depth <= ANCESTOR_DEPTH && zoom - depth >= 0) {
@@ -83,7 +102,7 @@ class BasemapTileCache(context: Context) {
                 }
             }
             // Ask for it as well, so the fallback layer keeps existing.
-            if (depth == ANCESTOR_DEPTH) tile(ancestorZoom, ancestorX, ancestorY)
+            if (fetch && depth == ANCESTOR_DEPTH) tile(ancestorZoom, ancestorX, ancestorY)
             depth++
         }
         return null
@@ -96,6 +115,11 @@ class BasemapTileCache(context: Context) {
 
         synchronized(inFlight) {
             if (!inFlight.add(key)) return null
+            val failed = failedAt[key]
+            if (failed != null && now() - failed < RETRY_AFTER_MILLIS) {
+                inFlight.remove(key)
+                return null
+            }
         }
 
         scope.launch {
@@ -105,10 +129,16 @@ class BasemapTileCache(context: Context) {
                 decode(file)
             }
             if (bitmap != null) tiles[key] = bitmap
-            synchronized(inFlight) { inFlight.remove(key) }
+            synchronized(inFlight) {
+                inFlight.remove(key)
+                if (bitmap == null) failedAt[key] = now() else failedAt.remove(key)
+            }
         }
         return null
     }
+
+    /** Overridable so the back-off can be tested without waiting a minute. */
+    internal var now: () -> Long = { System.currentTimeMillis() }
 
     private fun decode(file: File): Bitmap? {
         if (!file.exists() || file.length() == 0L) return null
@@ -145,6 +175,7 @@ class BasemapTileCache(context: Context) {
 
     fun clear() {
         tiles.clear()
+        synchronized(inFlight) { failedAt.clear() }
         root.deleteRecursively()
         root.mkdirs()
     }
@@ -160,6 +191,19 @@ class BasemapTileCache(context: Context) {
         /** How many zoom levels to climb looking for something to draw. */
         const val ANCESTOR_DEPTH = 4
 
+        /** How long to leave a tile alone after the service refused it. */
+        const val RETRY_AFTER_MILLIS = 60_000L
+
+        /**
+         * How far past a level boundary the view has to travel before the
+         * tile level follows it.
+         *
+         * A quarter of a level. Small enough that the terrain is never more
+         * than slightly coarse or slightly fine for what is on screen, large
+         * enough that a hand resting on a boundary cannot make it flip.
+         */
+        const val ZOOM_HYSTERESIS = 0.25
+
         /** Ground resolution of one tile pixel, in metres. */
         fun metersPerPixel(latitude: Double, zoom: Int): Double =
             156_543.03392 * cos(Math.toRadians(latitude)) / (1 shl zoom)
@@ -171,6 +215,49 @@ class BasemapTileCache(context: Context) {
                 if (metersPerPixel(latitude, zoom) <= targetMetersPerPixel) return zoom
             }
             return max
+        }
+
+        /**
+         * The zoom the view sits at, unrounded.
+         *
+         * [zoomFor] is the ceiling of this. Keeping the fraction is what lets
+         * the choice below know how near a boundary the view is.
+         */
+        fun fractionalZoom(latitude: Double, targetMetersPerPixel: Double): Double {
+            if (targetMetersPerPixel <= 0) return Double.MAX_VALUE
+            val widest = 156_543.03392 * cos(Math.toRadians(latitude))
+            if (widest <= 0) return 0.0
+            return ln(widest / targetMetersPerPixel) / ln(2.0)
+        }
+
+        /**
+         * The tile level to draw, holding the one already in use until the
+         * view has clearly left it.
+         *
+         * Choosing purely by resolution flips level the instant a pinch
+         * crosses a boundary, and a pinch does not cross a boundary once --
+         * fingers wobble, and it crosses back and forth several times a
+         * second. Each crossing swaps in a whole screen of tiles at a
+         * different resolution, so the terrain appears to flicker between two
+         * different maps. Holding the previous level through a margin stops
+         * that without ever leaving the level more than a quarter step off.
+         */
+        fun zoomForStable(
+            latitude: Double,
+            targetMetersPerPixel: Double,
+            previous: Int?,
+            max: Int = 16
+        ): Int {
+            val ideal = zoomFor(latitude, targetMetersPerPixel, max)
+            if (previous == null || previous == ideal) return ideal
+            val exact = fractionalZoom(latitude, targetMetersPerPixel)
+            return when {
+                // Detail is wanted: the view has passed the level it is on.
+                exact > previous + ZOOM_HYSTERESIS -> ideal
+                // Detail is wasted: the view has dropped a whole level below.
+                exact < previous - 1 - ZOOM_HYSTERESIS -> ideal
+                else -> previous
+            }
         }
 
         fun tileX(longitude: Double, zoom: Int): Int {

@@ -5,6 +5,44 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 
 /**
+ * How hard the receiver is driven.
+ *
+ * A phone is the only navigation device most crews carry and there is rarely
+ * anywhere to charge it, so this is a real operational choice rather than a
+ * nicety. The floor exists because asking for a fix every second in Saver is
+ * a contradiction: the mode is chosen to stop doing that.
+ */
+enum class PowerMode(
+    val label: String,
+    val detail: String,
+    val intervalFloorSeconds: Int
+) {
+    PRECISE(
+        "Precise",
+        "GNSS at full rate. For line construction and mapping, plugged in or " +
+            "on a short shift.",
+        1
+    ),
+    BALANCED(
+        "Balanced",
+        "Good enough to navigate and record travel on, at a fraction of the " +
+            "drain. The default.",
+        5
+    ),
+    SAVER(
+        "Saver",
+        "Coarse and slow. Position still updates and the track still records, " +
+            "but corners will be cut off it.",
+        30
+    );
+
+    companion object {
+        fun fromName(name: String?): PowerMode =
+            entries.firstOrNull { it.name == name } ?: BALANCED
+    }
+}
+
+/**
  * Settings that belong to the device rather than to an incident.
  *
  * Plain preferences: these are how this phone is being used on this
@@ -41,6 +79,43 @@ class AppSettings(context: Context) {
         get() = preferences.getBoolean(KEY_OWNERSHIP, true)
         set(value) = preferences.edit().putBoolean(KEY_OWNERSHIP, value).apply()
 
+    /**
+     * How long the controls stay up before the map takes the screen back.
+     *
+     * Zero keeps them up until they are dismissed, which is what someone
+     * planning at a table wants; twenty seconds is what someone walking wants.
+     */
+    var chromeTimeoutSeconds: Int
+        get() = preferences.getInt(KEY_CHROME_TIMEOUT, DEFAULT_CHROME_TIMEOUT_SECONDS)
+        set(value) = preferences.edit().putInt(KEY_CHROME_TIMEOUT, value.coerceIn(0, 300)).apply()
+
+    /** How often a fix is asked for. Subject to the power mode's floor. */
+    var locationIntervalSeconds: Int
+        get() = preferences.getInt(KEY_LOCATION_INTERVAL, DEFAULT_LOCATION_INTERVAL_SECONDS)
+        set(value) = preferences.edit()
+            .putInt(KEY_LOCATION_INTERVAL, value.coerceIn(1, 120)).apply()
+
+    var powerMode: PowerMode
+        get() = PowerMode.fromName(preferences.getString(KEY_POWER_MODE, null))
+        set(value) = preferences.edit().putString(KEY_POWER_MODE, value.name).apply()
+
+    /**
+     * The interval actually requested, once the power mode has had its say.
+     *
+     * The mode wins. Someone who has picked Saver because they are down to a
+     * fifth of a battery on a night shift is not served by an interval left
+     * over from when they were plugged in that morning.
+     */
+    fun effectiveLocationIntervalSeconds(): Int =
+        effectiveInterval(locationIntervalSeconds, powerMode)
+
+    fun effectiveLocationIntervalMillis(): Long =
+        effectiveLocationIntervalSeconds() * 1_000L
+
+    /** Milliseconds before the map takes the screen back, or null for never. */
+    fun chromeTimeoutMillis(): Long? =
+        chromeTimeoutSeconds.takeIf { it > 0 }?.let { it * 1_000L }
+
     /** Null when offline; true when the connection is not metered. */
     fun connectionState(): Pair<Boolean, Boolean> {
         val manager = app.getSystemService(ConnectivityManager::class.java)
@@ -67,11 +142,37 @@ class AppSettings(context: Context) {
         private const val KEY_WIFI_ONLY = "auto_download_wifi_only"
         private const val KEY_TOPO = "topography_enabled"
         private const val KEY_OWNERSHIP = "land_ownership_enabled"
+        private const val KEY_CHROME_TIMEOUT = "chrome_timeout_seconds"
+        private const val KEY_LOCATION_INTERVAL = "location_interval_seconds"
+        private const val KEY_POWER_MODE = "power_mode"
 
         const val MAX_RADIUS_MILES = 50
         val RADIUS_CHOICES = listOf(0, 5, 10, 25, 50)
 
+        const val DEFAULT_CHROME_TIMEOUT_SECONDS = 20
+        val CHROME_TIMEOUT_CHOICES = listOf(0, 10, 20, 45, 90)
+
+        const val DEFAULT_LOCATION_INTERVAL_SECONDS = 2
+        val LOCATION_INTERVAL_CHOICES = listOf(1, 2, 5, 15, 30)
+
         fun describeRadius(miles: Int): String =
             if (miles <= 0) "Off" else "$miles mi"
+
+        fun describeChromeTimeout(seconds: Int): String =
+            if (seconds <= 0) "Never" else "${seconds}s"
+
+        fun describeInterval(seconds: Int): String =
+            if (seconds >= 60) "${seconds / 60} min" else "${seconds}s"
+
+        /**
+         * The interval a chosen rate and mode actually come to.
+         *
+         * Kept as a function rather than inlined at each call site so the
+         * settings sheet can show the same number the receiver will be given
+         * -- a sheet that says two seconds while the request says thirty is
+         * worse than no setting at all.
+         */
+        fun effectiveInterval(chosenSeconds: Int, mode: PowerMode): Int =
+            maxOf(chosenSeconds, mode.intervalFloorSeconds)
     }
 }

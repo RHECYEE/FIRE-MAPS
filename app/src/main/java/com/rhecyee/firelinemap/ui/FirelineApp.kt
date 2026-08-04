@@ -177,6 +177,9 @@ fun FirelineApp() {
     var landOwnershipOn by remember { mutableStateOf(settings.landOwnershipEnabled) }
     var autoRadius by remember { mutableIntStateOf(settings.autoDownloadRadiusMiles) }
     var wifiOnly by remember { mutableStateOf(settings.autoDownloadWifiOnly) }
+    var chromeTimeout by remember { mutableIntStateOf(settings.chromeTimeoutSeconds) }
+    var locationInterval by remember { mutableIntStateOf(settings.locationIntervalSeconds) }
+    var powerMode by remember { mutableStateOf(settings.powerMode) }
     var cachedTerrain by remember { mutableStateOf(0L) }
     var importedMaps by remember { mutableStateOf<List<com.rhecyee.firelinemap.geopdf.ImportedMap>>(emptyList()) }
     var keypadOpen by remember { mutableStateOf(true) }
@@ -582,12 +585,31 @@ fun FirelineApp() {
         }
     }
 
+    /**
+     * Pushes a changed rate or power mode straight through.
+     *
+     * Applied at once rather than at the next launch: someone picking Saver is
+     * doing it because the battery is going now, and someone picking Precise is
+     * about to walk a line they need recorded properly.
+     */
+    fun applyLocationSettings() {
+        locationRepository.refresh()
+        if (watching) {
+            val intent = Intent(context, TrackRecordingService::class.java).apply {
+                action = TrackRecordingService.ACTION_START
+                putExtra(TrackRecordingService.EXTRA_INCIDENT_ID, activeIncident?.id)
+            }
+            ContextCompat.startForegroundService(context, intent)
+        }
+    }
+
     val toolArmed = measuring || placingResources || simMode || showSearch
-    LaunchedEffect(lastInteraction, toolArmed, chromeVisible) {
+    LaunchedEffect(lastInteraction, toolArmed, chromeVisible, chromeTimeout) {
         // An armed tool holds the controls open; nothing is more irritating
         // than a panel vanishing mid-measurement.
+        val timeout = settings.chromeTimeoutMillis() ?: return@LaunchedEffect
         if (chromeVisible && !toolArmed) {
-            kotlinx.coroutines.delay(CHROME_TIMEOUT_MILLIS)
+            kotlinx.coroutines.delay(timeout)
             chromeVisible = false
         }
     }
@@ -836,6 +858,20 @@ fun FirelineApp() {
             },
             wifiOnly = wifiOnly,
             onWifiOnly = { settings.autoDownloadWifiOnly = it; wifiOnly = it },
+            chromeTimeoutSeconds = chromeTimeout,
+            onChromeTimeout = { settings.chromeTimeoutSeconds = it; chromeTimeout = it },
+            locationIntervalSeconds = locationInterval,
+            onLocationInterval = {
+                settings.locationIntervalSeconds = it
+                locationInterval = settings.locationIntervalSeconds
+                applyLocationSettings()
+            },
+            powerMode = powerMode,
+            onPowerMode = {
+                settings.powerMode = it
+                powerMode = it
+                applyLocationSettings()
+            },
             cachedTerrainBytes = cachedTerrain,
             onClearTerrain = {
                 scope.launch {
@@ -1328,7 +1364,6 @@ private fun parseLineString(geoJson: String): List<Pair<Double, Double>> {
 }
 
 /** Twenty seconds of no touching and the controls fold away again. */
-private const val CHROME_TIMEOUT_MILLIS = 20_000L
 
 @Composable
 private fun MapStatusRow(map: ImportedMap?, message: String?) {

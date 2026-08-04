@@ -14,9 +14,9 @@ import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
-import com.google.android.gms.location.Priority
 import com.rhecyee.firelinemap.FirelineApplication
 import com.rhecyee.firelinemap.MainActivity
+import com.rhecyee.firelinemap.data.AppSettings
 import com.rhecyee.firelinemap.data.TrackEntity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -49,6 +49,10 @@ class TrackRecordingService : Service() {
     private var lastAccuracy = 0f
     private var lastSpeed = 0.0
 
+    /** What the running request was built from, so a change can be noticed. */
+    private var appliedInterval = 0L
+    private var appliedMode: com.rhecyee.firelinemap.data.PowerMode? = null
+
     private val client by lazy { LocationServices.getFusedLocationProviderClient(this) }
     private val callback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
@@ -73,6 +77,7 @@ class TrackRecordingService : Service() {
                 // Re-read in case the sheet or the setting changed while armed.
                 detector.settings = settingsStore.settings()
                 detector.anchors = (application as FirelineApplication).dropPoints
+                applyLocationRequest()
             }
         }
         // Restarting after process death resumes watching; the open track is
@@ -97,21 +102,51 @@ class TrackRecordingService : Service() {
         detector.anchors = (application as FirelineApplication).dropPoints
         startForeground(NOTIFICATION_ID, notification("Watching for travel"))
 
-        val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 5_000L)
+        applyLocationRequest()
+
+        scope.launch { recoverOpenTrack() }
+    }
+
+    /**
+     * Builds the location request from the current settings, replacing the
+     * running one if the rate or power mode moved.
+     *
+     * Separate from arming because the settings can change while the service
+     * is already resident, and a service that only reads them once means the
+     * battery mode appears to do nothing until the app is killed.
+     */
+    private fun applyLocationRequest() {
+        if (!armed) return
+        val settings = AppSettings(this)
+        // The operator's interval, but never so slow that the detector's
+        // movement window holds a single fix -- with nothing to compare
+        // against it can never conclude anyone is moving, and auto recording
+        // would silently stop working in Saver. Three fixes to a window is
+        // the least that still decides.
+        val ceiling = detector.settings.movementWindowMillis / 3
+        val interval = settings.effectiveLocationIntervalMillis().coerceAtMost(ceiling)
+        val mode = settings.powerMode
+        if (interval == appliedInterval && mode == appliedMode) return
+        appliedInterval = interval
+        appliedMode = mode
+
+        client.removeLocationUpdates(callback)
+        val request = LocationRequest.Builder(
+            LocationRepository.priorityFor(mode), interval
+        )
             // No displacement filter: the detector needs the stationary fixes
             // to decide that travel has ended.
             .setMinUpdateDistanceMeters(0f)
             .setWaitForAccurateLocation(false)
             .build()
         client.requestLocationUpdates(request, callback, mainLooper)
-
-        scope.launch { recoverOpenTrack() }
     }
 
     private fun disarm() {
         TrackRecordingState.clear()
         client.removeLocationUpdates(callback)
         armed = false
+        appliedMode = null
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -314,7 +349,7 @@ class TrackRecordingService : Service() {
         private const val CHANNEL_ID = "travel_recording"
         private const val NOTIFICATION_ID = 4102
 
-        /** At a five second update this is roughly once a minute. */
+        /** A minute or so at the default rate; less often if the rate is slower. */
         private const val PERSIST_EVERY_FIXES = 12
         private val NAME_FORMAT = SimpleDateFormat("MMM d HH:mm", Locale.US)
     }
