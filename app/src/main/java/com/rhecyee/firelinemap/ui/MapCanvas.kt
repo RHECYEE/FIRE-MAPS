@@ -3,9 +3,12 @@ package com.rhecyee.firelinemap.ui
 import android.graphics.Bitmap
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroidSize
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -25,6 +28,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,6 +54,9 @@ import com.rhecyee.firelinemap.measure.MeasureMode
 import com.rhecyee.firelinemap.measure.MeasurePoint
 import com.rhecyee.firelinemap.geopdf.DropPoint
 import com.rhecyee.firelinemap.geopdf.ImportedMap
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.input.pointer.positionChanged
+import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.roundToInt
 
@@ -83,6 +90,15 @@ fun MapCanvas(
     var viewport by remember { mutableStateOf(IntSize.Zero) }
     var draggingMarkerId by remember { mutableStateOf<String?>(null) }
     var dragPoint by remember { mutableStateOf(Offset.Zero) }
+
+    // Held in updated state so the gesture handler below can key on the map
+    // alone. Putting these in the pointerInput keys restarts the gesture
+    // coroutine on every recomposition, and with a GPS fix arriving every few
+    // seconds that means taps are being dropped more often than not.
+    val currentMarkers by rememberUpdatedState(markers)
+    val currentOnMapTap by rememberUpdatedState(onMapTap)
+    val currentOnMarkerTap by rememberUpdatedState(onMarkerTap)
+    val currentOnMarkerMoved by rememberUpdatedState(onMarkerMoved)
 
     Box(
         modifier = modifier
@@ -141,7 +157,10 @@ fun MapCanvas(
             val originY = (viewport.height - drawHeight) / 2f + offset.y
             val fx = (point.x - originX) / drawWidth
             val fy = (point.y - originY) / drawHeight
-            if (fx !in 0f..1f || fy !in 0f..1f) return null
+            // Not clamped to the sheet. Taps land on the terrain fill beyond
+            // the neatline all the time -- the drive in, ICP, a spot across the
+            // road -- and refusing them there was making the tools look dead
+            // whenever the sheet did not fill the view.
             // Bitmap y runs downward; PDF page space runs upward.
             return fx * pageWidthPoints.toDouble() to (1f - fy) * pageHeightPoints.toDouble()
         }
@@ -160,7 +179,7 @@ fun MapCanvas(
             )
         }
 
-        fun markerAt(point: Offset): MarkerEntity? = markers.lastOrNull { marker ->
+        fun markerAt(point: Offset): MarkerEntity? = currentMarkers.lastOrNull { marker ->
             val position = markerScreenPosition(marker) ?: return@lastOrNull false
             // Generous target: this gets used with gloves on.
             (point - position).getDistance() <= 48f
@@ -175,56 +194,60 @@ fun MapCanvas(
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(map.id, markers, onMarkerMoved) {
-                    if (onMarkerMoved != null) {
-                        detectDragGestures(
-                            onDragStart = { start ->
-                                markerAt(start)?.let {
-                                    draggingMarkerId = it.id
-                                    dragPoint = start
-                                }
-                            },
-                            onDrag = { change, amount ->
-                                if (draggingMarkerId != null) {
-                                    change.consume()
-                                    dragPoint += amount
-                                }
-                            },
-                            onDragEnd = {
-                                val id = draggingMarkerId
-                                val marker = markers.firstOrNull { it.id == id }
-                                if (marker != null) {
-                                    screenToGeoPoint(dragPoint)?.let { (lat, lon) ->
-                                        onMarkerMoved(marker, lat, lon)
-                                    }
-                                }
-                                draggingMarkerId = null
-                            },
-                            onDragCancel = { draggingMarkerId = null }
-                        )
-                    }
-                }
+                // One handler for everything. Three competing pointerInput
+                // blocks meant drag and transform each claimed the pointer
+                // stream and taps frequently never arrived at all.
                 .pointerInput(map.id) {
-                    detectTransformGestures { _, pan, zoom, _ ->
-                        val next = (scale * zoom).coerceIn(1f, 12f)
-                        scale = next
-                        offset = clamp(offset + pan, next)
-                    }
-                }
-                .pointerInput(map.id, markers, onMapTap, onMarkerTap) {
-                    detectTapGestures { point ->
-                        // A tap on a pin is about that pin, never about the
-                        // ground underneath it.
-                        val hit = markerAt(point)
-                        if (hit != null) {
-                            onMarkerTap?.invoke(hit)
-                            return@detectTapGestures
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        val grabbed = if (currentOnMarkerMoved != null) {
+                            markerAt(down.position)
+                        } else {
+                            null
                         }
-                        val onTap = onMapTap ?: return@detectTapGestures
-                        val page = screenToPagePoints(point) ?: return@detectTapGestures
-                        val geo = map.frame?.pageToGeo(page.first, page.second)
-                            ?: return@detectTapGestures
-                        onTap(geo.latitude, geo.longitude)
+
+                        if (grabbed != null) {
+                            draggingMarkerId = grabbed.id
+                            dragPoint = down.position
+                            var moved = false
+                            drag(down.id) { change ->
+                                dragPoint += change.positionChange()
+                                moved = true
+                                change.consume()
+                            }
+                            draggingMarkerId = null
+                            if (moved) {
+                                screenToGeoPoint(dragPoint)?.let { (lat, lon) ->
+                                    currentOnMarkerMoved?.invoke(grabbed, lat, lon)
+                                }
+                            } else {
+                                // A press that never moved is a tap on the pin.
+                                currentOnMarkerTap?.invoke(grabbed)
+                            }
+                            return@awaitEachGesture
+                        }
+
+                        var travelled = 0f
+                        var pointers = 1
+                        do {
+                            val event = awaitPointerEvent()
+                            pointers = maxOf(pointers, event.changes.count { it.pressed })
+                            val zoomChange = event.calculateZoom()
+                            val panChange = event.calculatePan()
+                            travelled += panChange.getDistance() + abs(1f - zoomChange) * 200f
+
+                            if (travelled > viewConfiguration.touchSlop) {
+                                val next = (scale * zoomChange).coerceIn(1f, 12f)
+                                scale = next
+                                offset = clamp(offset + panChange, next)
+                                event.changes.forEach { if (it.positionChanged()) it.consume() }
+                            }
+                        } while (event.changes.any { it.pressed })
+
+                        if (travelled <= viewConfiguration.touchSlop && pointers == 1) {
+                            val geo = screenToGeoPoint(down.position)
+                            if (geo != null) currentOnMapTap?.invoke(geo.first, geo.second)
+                        }
                     }
                 }
         ) {

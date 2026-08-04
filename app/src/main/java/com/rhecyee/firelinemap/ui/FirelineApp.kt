@@ -124,6 +124,7 @@ fun FirelineApp() {
     var pendingPlacement by remember { mutableStateOf<Pair<Double, Double>?>(null) }
     var inspecting by remember { mutableStateOf<MarkerEntity?>(null) }
     var inspectingReports by remember { mutableIntStateOf(0) }
+    var dropping by remember { mutableStateOf(false) }
 
     val measureSession = remember { MeasureSession() }
     var measuring by remember { mutableStateOf(false) }
@@ -492,6 +493,10 @@ fun FirelineApp() {
                 OffMapBanner("OFF THIS SHEET — $distance, bearing $bearing° back onto it")
             }
 
+            if (dropping) {
+                SimulatedBanner("DROP MODE — tap the map to place a marker")
+            }
+
             if (placingResources) {
                 ResourcePalette(
                     selected = selectedSymbol,
@@ -549,7 +554,10 @@ fun FirelineApp() {
                     scope.launch { resources.move(marker, lat, lon) }
                 },
                 onMapTap = { lat, lon ->
-                    if (placingResources && selectedSymbol != null) {
+                    if (dropping) {
+                        selectedSymbol = ResourceSymbol.OTHER
+                        pendingPlacement = lat to lon
+                    } else if (placingResources && selectedSymbol != null) {
                         pendingPlacement = lat to lon
                     } else if (measuring) {
                         measureSession.mode = measureMode
@@ -584,13 +592,23 @@ fun FirelineApp() {
                     Modifier.weight(1f)
                 ) {
                     measuring = !measuring
-                    if (measuring) placingResources = false
+                    if (measuring) { placingResources = false; dropping = false }
                     if (!measuring) {
                         measureSession.clear()
                         measurePoints = emptyList()
                     }
                 }
-                ToolButton("Drop", Icons.Default.AddLocationAlt, Modifier.weight(1f))
+                ToolButton(
+                    if (dropping) "✕ Drop" else "Drop",
+                    Icons.Default.AddLocationAlt,
+                    Modifier.weight(1f)
+                ) {
+                    dropping = !dropping
+                    if (dropping) {
+                        measuring = false
+                        placingResources = false
+                    }
+                }
                 ToolButton(
                     if (placingResources) "✕ Resources" else "Resources",
                     Icons.Default.People,
@@ -599,6 +617,7 @@ fun FirelineApp() {
                     placingResources = !placingResources
                     if (placingResources) {
                         measuring = false
+                        dropping = false
                     } else {
                         selectedSymbol = null
                     }
@@ -607,7 +626,14 @@ fun FirelineApp() {
                     if (simulated != null) "✕ Sim" else "Draw",
                     Icons.Default.Draw,
                     Modifier.weight(1f)
-                ) { if (simulated != null) simulated = null }
+                ) {
+                    if (simulated != null) {
+                        simulated = null
+                    } else {
+                        // Better to say so than to look broken.
+                        statusMessage = "Drawing tools are not built yet."
+                    }
+                }
             }
 
             Button(
