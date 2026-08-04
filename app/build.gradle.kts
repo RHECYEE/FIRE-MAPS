@@ -10,6 +10,7 @@ android {
     compileSdk = 35
 
     defaultConfig {
+        ksp { arg("room.schemaLocation", "$projectDir/schemas") }
         applicationId = "com.rhecyee.firelinemap"
         minSdk = 26
         targetSdk = 35
@@ -32,6 +33,9 @@ android {
     }
 }
 
+// Exported schemas are checked in. Room compares the entity definitions
+// against them at build time, so a field added without a version bump shows
+// up as a diff in review rather than as a crash on someone's device.
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
     implementation("androidx.core:core-ktx:1.15.0")

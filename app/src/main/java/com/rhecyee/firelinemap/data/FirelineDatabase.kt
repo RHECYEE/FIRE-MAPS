@@ -20,8 +20,8 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         LayerPackageEntity::class,
         OfflineRegionEntity::class
     ],
-    version = 4,
-    exportSchema = false
+    version = 5,
+    exportSchema = true
 )
 abstract class FirelineDatabase : RoomDatabase() {
     abstract fun dao(): FirelineDao
@@ -146,7 +146,56 @@ abstract class FirelineDatabase : RoomDatabase() {
                     )
                     """.trimIndent()
                 )
+                // Carried here too, so a database that never reached 4 through
+                // a working build is repaired on the way past.
+                addColumnIfMissing(db, "medical_reports", "radioNameOverride", "TEXT")
+                addColumnIfMissing(
+                    db, "medical_reports", "hasPosition", "INTEGER NOT NULL DEFAULT 1"
+                )
             }
+        }
+
+        /**
+         * Repairs medical_reports.
+         *
+         * Two fields were added to the entity without the database version
+         * being raised with them, so an install that already held the older
+         * table opened against a schema Room did not recognise and threw. The
+         * columns are added if they are absent; an install that already has
+         * them fails the statement harmlessly and carries on.
+         *
+         * The lesson is the obvious one: a shipped migration is history and
+         * must not be edited, and a field added to an entity always costs a
+         * version.
+         */
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                addColumnIfMissing(db, "medical_reports", "radioNameOverride", "TEXT")
+                addColumnIfMissing(
+                    db, "medical_reports", "hasPosition", "INTEGER NOT NULL DEFAULT 1"
+                )
+            }
+        }
+
+        /**
+         * SQLite has no ADD COLUMN IF NOT EXISTS, and a migration must not
+         * take the app down for having already been applied.
+         */
+        private fun addColumnIfMissing(
+            db: SupportSQLiteDatabase,
+            table: String,
+            column: String,
+            definition: String
+        ) {
+            val present = runCatching {
+                db.query("PRAGMA table_info(`$table`)").use { cursor ->
+                    val nameIndex = cursor.getColumnIndex("name")
+                    generateSequence { if (cursor.moveToNext()) cursor.getString(nameIndex) else null }
+                        .toSet()
+                }
+            }.getOrDefault(emptySet())
+            if (column in present) return
+            runCatching { db.execSQL("ALTER TABLE `$table` ADD COLUMN `$column` $definition") }
         }
 
         fun create(context: Context): FirelineDatabase =
@@ -154,6 +203,7 @@ abstract class FirelineDatabase : RoomDatabase() {
                 context.applicationContext,
                 FirelineDatabase::class.java,
                 "fireline-map.db"
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build()
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .build()
     }
 }
