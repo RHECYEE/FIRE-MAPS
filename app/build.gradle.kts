@@ -14,8 +14,10 @@ android {
         applicationId = "com.rhecyee.firelinemap"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        // Bumped per build that goes out, so a phone can answer "which
+        // one is this" from its own settings rather than from memory.
+        versionCode = 18
+        versionName = "0.18.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
