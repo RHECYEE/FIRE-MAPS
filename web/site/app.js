@@ -126,6 +126,19 @@ const view = {
 let position = null;      // the live fix
 let heldTiles = 0;
 
+/**
+ * A position set by tapping instead of by a receiver.
+ *
+ * For checking the map indoors, and marked in orange everywhere it appears so
+ * it can never be mistaken for a fix. The phone has the same thing for the
+ * same reason.
+ */
+let simulated = null;
+let simMode = false;
+
+/** The area a searched coordinate could be in, when digits were missing. */
+let searchRegion = null;
+
 /** Web Mercator, in pixels at a given zoom. Drawing only. */
 function project(latitude, longitude, zoom) {
     const scale = TILE * Math.pow(2, zoom);
@@ -267,9 +280,89 @@ function draw() {
 
     drawTracks();
     drawMeasure();
+    drawSearchRegion();
     drawPins();
     drawLandingZone();
     drawMe();
+    drawLegend();
+}
+
+/**
+ * What the colours mean, for the things currently drawn.
+ *
+ * Enough is on the map now -- three kinds of track line, a measurement, a
+ * landing zone, a search area -- that the colours stopped explaining
+ * themselves. Only for what is on screen: a key listing things nobody has
+ * turned on is more to read, not less.
+ */
+function drawLegend() {
+    if (!chromeVisible) return;
+    const entries = [[simulated ? '#E65100' : '#2196F3',
+        simulated ? 'Simulated position' : 'You', true]];
+    if (live.recorder) entries.push(['#EF5350', 'Recording now', false]);
+    if (tracks.some(t => trackQuality(t) === 'recorded')) {
+        entries.push([TRACK_COLOURS[0], 'Recorded track', false]);
+    }
+    if (tracks.some(t => trackQuality(t) === 'imported')) {
+        entries.push(['#90A4AE', 'Received track', false]);
+    }
+    if (measure.on) entries.push(['#FFC400', 'Measurement', false]);
+    if (searchRegion) entries.push(['#40C4FF', 'Search area', false]);
+    if (plan && plan.airPickupLatitude != null) entries.push(['#D50000', 'Landing zone', false]);
+    if (entries.length < 2) return;
+
+    ctx.font = '600 11px system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    const width = 14 + Math.max(...entries.map(e => ctx.measureText(e[1]).width)) + 24;
+    const height = entries.length * 16 + 10;
+    const top = 8;
+
+    ctx.fillStyle = 'rgba(11,23,31,0.82)';
+    ctx.fillRect(8, top, width, height);
+    entries.forEach((entry, index) => {
+        const y = top + 13 + index * 16;
+        ctx.fillStyle = entry[0];
+        if (entry[2]) {
+            ctx.beginPath();
+            ctx.arc(16, y, 5, 0, Math.PI * 2);
+            ctx.fill();
+        } else {
+            ctx.fillRect(11, y - 2, 11, 4);
+        }
+        ctx.fillStyle = 'rgba(255,255,255,0.88)';
+        ctx.fillText(entry[1], 27, y);
+    });
+}
+
+/**
+ * Where a partly-known position could be.
+ *
+ * A coordinate read over a radio arrives with digits missing more often than
+ * not. The phone draws the box those digits leave rather than picking a point
+ * inside it and pretending, and so does this: a point drawn where the answer
+ * merely might be is worse than an outline that says how much is unknown.
+ */
+function drawSearchRegion() {
+    if (!searchRegion) return;
+    const nw = toScreen(searchRegion.north, searchRegion.west);
+    const se = toScreen(searchRegion.south, searchRegion.east);
+    ctx.strokeStyle = '#40C4FF';
+    if (searchRegion.exact) {
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(nw.x, nw.y, 20, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = '#40C4FF';
+        ctx.beginPath();
+        ctx.arc(nw.x, nw.y, 6, 0, Math.PI * 2);
+        ctx.fill();
+        return;
+    }
+    ctx.fillStyle = 'rgba(64,196,255,0.22)';
+    ctx.fillRect(nw.x, nw.y, se.x - nw.x, se.y - nw.y);
+    ctx.lineWidth = 3.5;
+    ctx.strokeRect(nw.x, nw.y, se.x - nw.x, se.y - nw.y);
 }
 
 /**
@@ -430,6 +523,17 @@ function drawPins() {
 }
 
 function drawMe() {
+    if (simulated) {
+        const spot = toScreen(simulated.latitude, simulated.longitude);
+        ctx.fillStyle = '#E65100';
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(spot.x, spot.y, 9, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        return;
+    }
     if (!position) return;
     const at = toScreen(position.latitude, position.longitude);
     if (position.accuracy) {
@@ -592,12 +696,22 @@ function startLocating() {
 const FORMATS = ['DDM', 'DD', 'UTM', 'MGRS'];
 let formatIndex = 0;
 
+function here() {
+    return simulated || position;
+}
+
 function showCoordinates() {
     const label = document.getElementById('coords');
-    if (!position) { label.textContent = 'Waiting for GPS…'; return; }
-    label.textContent = formatted(position.latitude, position.longitude);
-    document.getElementById('accuracy').textContent =
-        position.accuracy ? '±' + Math.round(position.accuracy) + ' m' : '—';
+    const at = here();
+    if (!at) {
+        label.textContent = simMode ? 'Tap the map to set a test position'
+            : 'Waiting for GPS…';
+        return;
+    }
+    label.textContent = formatted(at.latitude, at.longitude);
+    document.getElementById('accuracy').textContent = simulated
+        ? 'SIMULATED — NOT A FIX'
+        : (at.accuracy ? '±' + Math.round(at.accuracy) + ' m' : '—');
     document.getElementById('held').textContent = 'tiles ' + heldTiles;
 }
 
@@ -619,8 +733,9 @@ document.getElementById('format').onclick = () => {
 };
 
 document.getElementById('copyCoords').onclick = async () => {
-    if (!position) { banner('No position to copy yet.', 'warn'); return; }
-    const text = formatted(position.latitude, position.longitude);
+    const at = here();
+    if (!at) { banner('No position to copy yet.', 'warn'); return; }
+    const text = formatted(at.latitude, at.longitude);
     try { await navigator.clipboard.writeText(text); banner('Copied.', 'good'); }
     catch (e) { banner('Could not reach the clipboard.', 'bad'); }
 };
@@ -981,6 +1096,14 @@ function onTap(mapX, mapY) {
         return;
     }
 
+    if (simMode) {
+        simulated = { latitude: where.latitude, longitude: where.longitude };
+        showCoordinates();
+        draw();
+        banner('Simulated position set — this is not a GPS fix.', 'warn');
+        return;
+    }
+
     if (measure.on) { addMeasurePoint(where.latitude, where.longitude); return; }
 
     if (movingPin !== null) {
@@ -1336,9 +1459,9 @@ function blankPlan() {
     return {
         createdAt: Date.now(),
         incidentName: incident,
-        latitude: position ? position.latitude : null,
-        longitude: position ? position.longitude : null,
-        accuracyMeters: position ? position.accuracy : null,
+        latitude: here() ? here().latitude : null,
+        longitude: here() ? here().longitude : null,
+        accuracyMeters: simulated ? null : (position ? position.accuracy : null),
         reporterName: Store.read('author', '') || null,
         priority: 'RED',
         patientCount: 1,
@@ -1590,6 +1713,53 @@ document.getElementById('listTool').onclick = () => {
         };
     });
 };
+
+// ---------------------------------------------------------- folding chrome
+
+/**
+ * The controls fold away when nothing is being done with them.
+ *
+ * The reason is the map. Every panel takes a strip of screen, and the screen
+ * is how far ahead the operator can see; on a phone in a truck that is the
+ * difference between reading the next drainage and not. Touching anything
+ * brings them straight back.
+ *
+ * An armed tool holds them open. Nothing is more irritating than a
+ * measurement's readout vanishing halfway through taking it.
+ */
+const CHROME_CHOICES = [[0, 'Never'], [10, '10 s'], [20, '20 s'], [45, '45 s'], [90, '90 s']];
+
+let chromeSeconds = Store.read('chromeSeconds', 20);
+let chromeVisible = true;
+let chromeTimer = null;
+
+function toolArmed() {
+    return measure.on || pinArmed || placingLandingZone || simMode;
+}
+
+function isSheetOpen() {
+    return !document.getElementById('sheet').classList.contains('hidden');
+}
+
+function setChrome(visible) {
+    if (chromeVisible === visible) return;
+    chromeVisible = visible;
+    document.getElementById('chrome').classList.toggle('hidden', !visible);
+    document.getElementById('topbar').classList.toggle('hidden', !visible);
+    resize();
+}
+
+function touched() {
+    setChrome(true);
+    clearTimeout(chromeTimer);
+    if (!chromeSeconds) return;
+    chromeTimer = setTimeout(() => {
+        if (!toolArmed() && !isSheetOpen()) setChrome(false);
+    }, chromeSeconds * 1000);
+}
+
+['pointerdown', 'keydown'].forEach(kind =>
+    document.addEventListener(kind, touched, { passive: true }));
 
 // ------------------------------------------------------------- incidents
 
@@ -1855,6 +2025,23 @@ function showSettings() {
           shift into fragments at every gate; long merges genuinely separate trips.</p>
         <div>${chips}</div>
 
+        <h4>Hide the controls after</h4>
+        <p class="note">Every panel takes a strip of screen, and the screen is how
+          far ahead you can see. Touching anything brings them back, and an armed
+          tool holds them open.</p>
+        <div>${CHROME_CHOICES.map(([value, label]) =>
+            `<button class="chip" data-chrome="${value}" style="margin:3px;background:${
+                chromeSeconds === value ? '#1565C0' : '#25404F'}">${label}</button>`
+        ).join('')}</div>
+
+        <h4>Test position</h4>
+        <button class="toggle" id="simToggle">
+          <span class="label">Simulate a position<small>Tap the map to stand
+            somewhere, for checking the map indoors. Drawn in orange everywhere it
+            appears so it can never be read as a fix.</small></span>
+          <span class="state${simMode ? ' on' : ''}">${simMode ? 'ON' : 'OFF'}</span>
+        </button>
+
         <h4>Own terrain</h4>
         <p class="note">This browser draws on the USGS National Map and its own
           contours — there is no product sheet to import here. Change what is
@@ -1893,6 +2080,28 @@ function showSettings() {
         };
     });
 
+    document.querySelectorAll('[data-chrome]').forEach(button => {
+        button.onclick = () => {
+            captureSettings();
+            chromeSeconds = +button.dataset.chrome;
+            Store.write('chromeSeconds', chromeSeconds);
+            touched();
+            showSettings();
+        };
+    });
+
+    document.getElementById('simToggle').onclick = () => {
+        captureSettings();
+        simMode = !simMode;
+        if (!simMode) {
+            // Back to the receiver, and the orange dot goes with it.
+            simulated = null;
+            showCoordinates();
+            draw();
+        }
+        showSettings();
+    };
+
     document.getElementById('saveSettings').onclick = () => {
         captureSettings();
         closeSheet();
@@ -1912,11 +2121,21 @@ function showSettings() {
  */
 document.getElementById('searchTool').onclick = showSearch;
 
+/*
+ * Every mark a position can arrive with, on one screen.
+ *
+ * A phone keyboard buries the degree sign three taps deep, and the
+ * alternative is somebody typing a position wrong while a radio waits.
+ *
+ * X is the important one. It stands for a digit that was not caught, and the
+ * result then covers every value that digit could have been -- so a position
+ * half heard becomes an area to search rather than a guess presented as a fix.
+ */
 const KEYS = [
     '1', '2', '3', '°', 'N', 'S',
     '4', '5', '6', '′', 'E', 'W',
     '7', '8', '9', '″', '−', '+',
-    '.', '0', ',', ' ', '⌫', 'GO'
+    '.', '0', ',', ' ', 'X', '⌫'
 ];
 
 function showSearch() {
@@ -1927,6 +2146,10 @@ function showSearch() {
         <input id="searchText" placeholder="N 45 12.345 W 117 38.220" autocomplete="off">
         <p class="note" id="searchState">—</p>
         <div id="keys"></div>
+        <p class="note">Use <b>X</b> for a digit you did not catch — "45 12.3XX"
+          searches every position it could have been, drawn as a box rather than
+          a point somebody would take for a fix.</p>
+        <button class="wide" id="searchGo">GO THERE</button>
     `);
 
     const field = document.getElementById('searchText');
@@ -1940,10 +2163,16 @@ function showSearch() {
             state.className = 'note';
             return null;
         }
+        const across = K.distanceMeters(
+            parsed.south, parsed.west, parsed.south, parsed.east);
+        const down = K.distanceMeters(
+            parsed.south, parsed.west, parsed.north, parsed.west);
         state.textContent = parsed.format + ' · ' +
             K.formatDdm(parsed.latitude, parsed.longitude) +
-            (parsed.exact ? '' : ' · approximate — digits missing');
-        state.className = 'note good';
+            (parsed.exact ? ''
+              : ' · anywhere in ' + Math.round(across) + ' × ' + Math.round(down) +
+                ' m — digits missing');
+        state.className = parsed.exact ? 'note good' : 'note warn';
         return parsed;
     };
 
@@ -1955,6 +2184,11 @@ function showSearch() {
         view.latitude = parsed.latitude;
         view.longitude = parsed.longitude;
         view.zoom = parsed.exact ? 15 : 12;
+        searchRegion = {
+            north: parsed.north, south: parsed.south,
+            west: parsed.west, east: parsed.east,
+            exact: parsed.exact
+        };
         closeSheet();
         draw();
         banner('Centred on ' + K.formatDdm(parsed.latitude, parsed.longitude), 'good');
@@ -1963,15 +2197,15 @@ function showSearch() {
     field.oninput = check;
     field.onkeydown = event => { if (event.key === 'Enter') go(); };
 
+    document.getElementById('searchGo').onclick = go;
+
     const holder = document.getElementById('keys');
     KEYS.forEach(key => {
         const button = document.createElement('button');
-        button.textContent = key;
-        if (key === '⌫' || key === 'GO') button.className = 'dim';
-        if (key === ' ') button.textContent = 'SPC';
+        button.textContent = key === ' ' ? 'SPC' : key;
+        if (key === '⌫') button.className = 'dim';
         button.onclick = () => {
             if (key === '⌫') field.value = field.value.slice(0, -1);
-            else if (key === 'GO') { go(); return; }
             else field.value += key;
             check();
         };
@@ -2098,6 +2332,7 @@ if (window.ResizeObserver) {
 refreshTopBar();
 refreshStatus();
 showPalette();
+touched();
 resize();
 // The safe-area insets land a frame late on iOS, so the map is measured again
 // once the column has actually settled. Skipping this leaves the canvas a few
