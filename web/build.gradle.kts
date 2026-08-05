@@ -71,6 +71,7 @@ kotlin {
                 "com/rhecyee/firelinemap/share/TextCodec.kt",
                 "com/rhecyee/firelinemap/share/TrackSimplify.kt",
                 "com/rhecyee/firelinemap/terrain/ContourBuilder.kt",
+                "com/rhecyee/firelinemap/terrain/DemSource.kt",
                 "com/rhecyee/firelinemap/terrain/ContourInterval.kt",
                 "com/rhecyee/firelinemap/terrain/ContourRender.kt",
                 "com/rhecyee/firelinemap/terrain/ElevationGrid.kt",

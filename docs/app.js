@@ -24,6 +24,13 @@ const K = (() => {
     return found ? found.Fireline : null;
 })();
 
+const C = (() => {
+    const module = (typeof web !== 'undefined' && web) || window.web || {};
+    const found = module.com && module.com.rhecyee &&
+        module.com.rhecyee.firelinemap.web;
+    return found ? found.FirelineContours : null;
+})();
+
 const T = (() => {
     const module = (typeof web !== 'undefined' && web) || window.web || {};
     const found = module.com && module.com.rhecyee &&
@@ -278,6 +285,7 @@ function draw() {
         }
     }
 
+    drawContours();
     drawTracks();
     drawMeasure();
     drawSearchRegion();
@@ -404,6 +412,143 @@ function drawLandingZone() {
         ctx.strokeText(plan.airPickupName.slice(0, 14), at.x, at.y + 38);
         ctx.fillText(plan.airPickupName.slice(0, 14), at.x, at.y + 38);
     }
+}
+
+// ------------------------------------------------------------- contours
+
+/**
+ * Contours, traced from the same elevation data the phone uses.
+ *
+ * The browser does the two things a browser is good at -- fetch a tile and
+ * read its pixels -- and hands the numbers to the phone's own code for
+ * everything after that: decoding terrarium into metres, choosing an interval
+ * off the USGS quadrangle ladder, tracing the lines. A contour is a claim
+ * about the shape of the ground, and two apps tracing it differently would put
+ * the same ridge in two places.
+ *
+ * Retraced only when the view has actually moved somewhere new. Tracing is the
+ * expensive part and a pan is not a reason to redo it: the lines are held in
+ * geography, so panning just draws them again somewhere else.
+ */
+let contoursOn = Store.read('contours', false);
+let contourDetail = Store.read('contourDetail', 'NORMAL');
+const contourState = { lines: [], intervalFeet: 0, key: null, busy: false };
+
+const demCache = new Map();
+
+/** One DEM tile, decoded to metres. Held once read; they are not small. */
+function demTile(zoom, x, y) {
+    const key = zoom + '/' + x + '/' + y;
+    if (demCache.has(key)) return demCache.get(key);
+
+    const entry = { heights: null };
+    demCache.set(key, entry);
+
+    const image = new Image();
+    image.crossOrigin = 'anonymous';
+    image.onload = () => {
+        const size = C.tileSize;
+        const scratch = document.createElement('canvas');
+        scratch.width = size;
+        scratch.height = size;
+        const paint = scratch.getContext('2d', { willReadFrequently: true });
+        paint.drawImage(image, 0, 0);
+        const data = paint.getImageData(0, 0, size, size).data;
+        const heights = new Float64Array(size * size);
+        for (let i = 0; i < heights.length; i++) {
+            heights[i] = C.elevationOf(data[i * 4], data[i * 4 + 1], data[i * 4 + 2]);
+        }
+        entry.heights = heights;
+        contourState.key = null;   // force a retrace now there is more ground
+        refreshContours();
+    };
+    image.onerror = () => { demCache.delete(key); };
+    image.src = C.tileUrl(zoom, x, y);
+    return entry;
+}
+
+/**
+ * Builds the grid under the current view and traces it.
+ *
+ * Sampled onto a grid of its own rather than handed the tiles directly, so the
+ * trace does not have to know about tile seams. Coarse on purpose: contours
+ * are a shape, and a grid finer than the data underneath it only traces the
+ * elevation model's own noise.
+ */
+function refreshContours() {
+    if (!contoursOn || !C) { contourState.lines = []; return; }
+
+    const level = Math.min(C.maxZoom, Math.max(6, Math.round(view.zoom)));
+    const width = canvas.width / dpr();
+    const height = canvas.height / dpr();
+    const nw = toGeo(0, 0);
+    const se = toGeo(width, height);
+    const key = level + '|' + nw.latitude.toFixed(3) + '|' + nw.longitude.toFixed(3) +
+        '|' + se.latitude.toFixed(3) + '|' + se.longitude.toFixed(3) + '|' + contourDetail;
+    if (key === contourState.key) return;
+    contourState.key = key;
+
+    const size = C.tileSize;
+    const count = Math.pow(2, level);
+    const columns = 128;
+    const rows = 128;
+    const heights = new Array(columns * rows);
+    let known = 0;
+
+    for (let row = 0; row < rows; row++) {
+        const latitude = nw.latitude + (se.latitude - nw.latitude) * (row / (rows - 1));
+        for (let column = 0; column < columns; column++) {
+            const longitude = nw.longitude +
+                (se.longitude - nw.longitude) * (column / (columns - 1));
+            const px = (longitude + 180) / 360 * count * size;
+            const sin = Math.sin(Math.max(-85.05, Math.min(85.05, latitude)) * Math.PI / 180);
+            const py = (0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI)) * count * size;
+            const tileX = Math.floor(px / size);
+            const tileY = Math.floor(py / size);
+            if (tileY < 0 || tileY >= count) { heights[row * columns + column] = 0; continue; }
+            const held = demTile(level, ((tileX % count) + count) % count, tileY);
+            if (!held.heights) { heights[row * columns + column] = 0; continue; }
+            const inX = Math.min(size - 1, Math.max(0, Math.floor(px - tileX * size)));
+            const inY = Math.min(size - 1, Math.max(0, Math.floor(py - tileY * size)));
+            heights[row * columns + column] = held.heights[inY * size + inX];
+            known++;
+        }
+    }
+
+    // Nothing is drawn from a grid that is mostly holes: a contour traced
+    // across missing ground is a line nobody walked.
+    if (known < columns * rows * 0.6) { contourState.lines = []; return; }
+
+    const traced = JSON.parse(C.trace(
+        heights, columns, rows,
+        nw.latitude, se.latitude, nw.longitude, se.longitude,
+        level, contourDetail
+    ));
+    contourState.lines = traced.lines || [];
+    contourState.intervalFeet = traced.intervalFeet || 0;
+    refreshStatus();
+    draw();
+}
+
+function drawContours() {
+    if (!contoursOn || !contourState.lines.length) return;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    contourState.lines.forEach(line => {
+        const points = line.points;
+        if (points.length < 4) return;
+        // Index lines heavier and lighter in colour: they are the ones that
+        // carry the numbers, and on a busy slope they are what makes the rest
+        // countable.
+        ctx.strokeStyle = line.index ? 'rgba(180,120,60,0.95)' : 'rgba(150,100,50,0.65)';
+        ctx.lineWidth = line.index ? 1.8 : 1;
+        ctx.beginPath();
+        for (let i = 0; i < points.length; i += 2) {
+            const at = toScreen(points[i], points[i + 1]);
+            if (i === 0) ctx.moveTo(at.x, at.y); else ctx.lineTo(at.x, at.y);
+        }
+        ctx.stroke();
+    });
 }
 
 /** Past two minutes of silence the receiver was not reporting, not stopped. */
@@ -664,6 +809,7 @@ function panBy(dx, dy) {
     view.latitude = moved.latitude;
     view.longitude = moved.longitude;
     draw();
+    refreshContours();
 }
 
 // ------------------------------------------------------------------- GPS
@@ -751,10 +897,10 @@ document.getElementById('follow').onclick = () => {
 };
 
 document.getElementById('zoomIn').onclick = () => {
-    view.zoom = Math.min(16, view.zoom + 1); draw();
+    view.zoom = Math.min(16, view.zoom + 1); draw(); refreshContours();
 };
 document.getElementById('zoomOut').onclick = () => {
-    view.zoom = Math.max(3, view.zoom - 1); draw();
+    view.zoom = Math.max(3, view.zoom - 1); draw(); refreshContours();
 };
 
 // ------------------------------------------------------------- recording
@@ -1840,6 +1986,8 @@ function refreshStatus() {
     row.className = 'card ok';
     row.textContent = (chosen ? chosen[1] : basemap) +
         (hydroOn ? ' + water' : '') +
+        (contoursOn ? ' + contours' + (contourState.intervalFeet
+            ? ' at ' + contourState.intervalFeet + ' ft' : '') : '') +
         ' · ' + heldTiles + ' tile' + (heldTiles === 1 ? '' : 's') + ' held';
     row.classList.remove('hidden');
 }
@@ -2011,6 +2159,18 @@ function showLayers() {
         <h4>Basemap</h4>
         ${rows}
         <h4>Overlay</h4>
+        <button class="toggle" id="contourToggle">
+          <span class="label">Contour lines<small>Traced from public-domain USGS
+            elevation data, at the interval a paper quad would use for this zoom
+            and this much relief.${contoursOn && contourState.intervalFeet
+              ? ' Currently ' + contourState.intervalFeet + ' ft.' : ''}</small></span>
+          <span class="state${contoursOn ? ' on' : ''}">${contoursOn ? 'ON' : 'OFF'}</span>
+        </button>
+        ${contoursOn ? `<div>${['FINE', 'NORMAL', 'COARSE'].map(name =>
+            `<button class="chip" data-detail="${name}" style="margin:3px;background:${
+              contourDetail === name ? '#1565C0' : '#25404F'}">${name}</button>`).join('')}
+          </div>
+          <p class="note">${escapeHtml(C ? C.attribution : '')}</p>` : ''}
         <button class="toggle" id="hydroToggle">
           <span class="label">Water<small>Streams and bodies, drawn over the
             basemap. Useful on imagery, where drainages are hard to read.</small></span>
@@ -2033,6 +2193,26 @@ function showLayers() {
             basemap = button.dataset.base;
             Store.write('basemap', basemap);
             forgetTiles();
+            showLayers();
+        };
+    });
+
+    document.getElementById('contourToggle').onclick = () => {
+        contoursOn = !contoursOn;
+        Store.write('contours', contoursOn);
+        contourState.key = null;
+        if (!contoursOn) contourState.lines = [];
+        refreshContours();
+        draw();
+        showLayers();
+    };
+
+    document.querySelectorAll('[data-detail]').forEach(button => {
+        button.onclick = () => {
+            contourDetail = button.dataset.detail;
+            Store.write('contourDetail', contourDetail);
+            contourState.key = null;
+            refreshContours();
             showLayers();
         };
     });
@@ -2397,6 +2577,7 @@ refreshTopBar();
 refreshStatus();
 refreshSimBanner();
 showPalette();
+refreshContours();
 touched();
 resize();
 // The safe-area insets land a frame late on iOS, so the map is measured again

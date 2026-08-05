@@ -154,7 +154,7 @@ class DemTileCache(context: Context) {
     }
 
     companion object {
-        const val ENDPOINT = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium"
+        const val ENDPOINT = DemSource.ENDPOINT
 
         /**
          * The wording the USGS asks for, carried verbatim.
@@ -162,14 +162,12 @@ class DemTileCache(context: Context) {
          * Public domain data still gets credited. It costs a line on the key
          * and it is the reason this layer can exist at all.
          */
-        const val ATTRIBUTION =
-            "United States 3DEP (formerly NED) and global GMTED2010 and SRTM " +
-                "terrain data courtesy of the U.S. Geological Survey."
+        const val ATTRIBUTION = DemSource.ATTRIBUTION
 
-        const val TILE_SIZE = 256
+        const val TILE_SIZE = DemSource.TILE_SIZE
 
         /** The source stops here; asking beyond it returns nothing forever. */
-        const val MAX_ZOOM = 15
+        const val MAX_ZOOM = DemSource.MAX_ZOOM
 
         const val RETRY_AFTER_MILLIS = 60_000L
 
