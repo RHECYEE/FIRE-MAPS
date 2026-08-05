@@ -356,10 +356,16 @@ class BasemapTileCache(context: Context) {
      * between a map that dims during a pinch and one that disappears.
      */
     @Volatile
-    private var protectedLevel: Int = -1
+    private var protectedLevel: Int = PERMANENT_PROTECTED_LEVEL
 
     fun protectBelow(level: Int) {
-        protectedLevel = level
+        // Never below the permanent floor. The dynamic guard follows the zoom,
+        // so zooming out lowers it and the middle levels get evicted -- then
+        // zooming back in finds nothing to stand on. The floor is what makes
+        // a fallback exist across a whole session rather than only within one
+        // zoom level: at level ten a tile is twenty-seven kilometres of
+        // ground, so a working area is a handful of them.
+        protectedLevel = maxOf(level, PERMANENT_PROTECTED_LEVEL)
     }
 
     private fun levelOf(key: String): Int =
@@ -428,6 +434,15 @@ class BasemapTileCache(context: Context) {
          * gesture's worth of stale ones ahead of it.
          */
         const val MAX_IN_FLIGHT = 24
+
+        /**
+         * Levels at or below this are never evicted, whatever the zoom.
+         *
+         * Ten, where a tile is twenty-seven kilometres across: a working area
+         * is a handful of them, and they are what remains to draw when a
+         * gesture has moved somewhere nothing finer has been fetched for.
+         */
+        const val PERMANENT_PROTECTED_LEVEL = 10
 
         /**
          * How far past a level boundary the view has to travel before the

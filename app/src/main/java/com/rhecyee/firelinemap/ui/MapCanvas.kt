@@ -895,29 +895,33 @@ private fun DrawScope.drawBasemap(
     drawHeight: Float,
     held: TileZoomHolder
 ) {
-    // Every way out of this leads through the rescue.
+    // Whatever is already decoded goes down first, every frame.
     //
-    // The checks below are all reasons the wanted level cannot be worked out,
-    // and each used to return outright -- leaving the screen empty because the
-    // arithmetic was uncertain, which is the worst possible response to
-    // uncertainty on a navigation tool. Whatever is already decoded gets drawn
-    // instead. It may be soft and it may be the wrong level; it is ground, and
-    // ground is what the screen is for.
+    // This used to run only when everything else had failed, and the reading
+    // off a phone showed why that is not enough: a hundred and eighty-seven
+    // tiles held, nothing fetching, nothing waiting, and a blank screen. The
+    // tiles existed; none of them were where the view had just moved to, and
+    // by the time the ones that were had decoded, a frame had gone by with
+    // nothing in it. That frame is the flash.
+    //
+    // Drawn underneath rather than instead, so it is simply the oldest thing
+    // on screen and the current level covers it as it arrives. Cheap: the
+    // cache is a couple of hundred entries and almost all of them are rejected
+    // by an off-screen test costing two multiplications.
+    val underlay = runCatching {
+        drawHeldTiles(basemap, projection, originX, originY, drawWidth, drawHeight)
+    }.getOrDefault(0)
+
     val drawn = runCatching {
         drawTerrain(basemap, projection, originX, originY, drawWidth, drawHeight, held)
     }.getOrElse {
         basemap.lastFailure = it::class.java.simpleName
         0
     }
-    if (drawn > 0) return
+    basemap.lastRescue = underlay
+    if (drawn > 0 || underlay > 0) return
 
-    val rescued = runCatching {
-        drawHeldTiles(basemap, projection, originX, originY, drawWidth, drawHeight)
-    }.getOrDefault(0)
-    basemap.lastRescue = rescued
-    if (rescued > 0) return
-
-    // Nothing at all. Say so on the map rather than leaving a grey rectangle
+    // Nothing anywhere. Say so on the map rather than leaving a grey rectangle
     // that is indistinguishable from the app having failed, and say enough
     // that the next report is a fact instead of a description.
     drawEmptyTerrainNotice(basemap.diagnostics())

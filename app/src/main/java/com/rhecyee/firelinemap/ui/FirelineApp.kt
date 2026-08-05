@@ -310,13 +310,47 @@ fun FirelineApp() {
         }
     }
 
+    /**
+     * Importing, off the main thread and several at a time.
+     *
+     * It used to run in this callback directly, which is the main thread.
+     * Reading a georeferenced PDF means inflating its object streams and
+     * scanning every viewport in it -- seconds of work for a large product
+     * map, during which nothing on screen answers. That is what was reporting
+     * the app as unresponsive, and it kept doing so after the app was closed
+     * because the work carried on.
+     *
+     * Several at a time because a crew arrives with a folder of sheets, not
+     * one, and picking them individually through a file browser with gloves on
+     * is its own kind of failure.
+     */
+    var importing by remember { mutableStateOf(0) }
     val importLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri: Uri? ->
-        if (uri != null) {
-            val imported = repository.importFrom(uri)
-            activeMap = imported ?: activeMap
-            statusMessage = if (imported == null) "That file could not be read as a PDF." else null
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris: List<Uri> ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        scope.launch {
+            importing = uris.size
+            var lastGood: com.rhecyee.firelinemap.geopdf.ImportedMap? = null
+            var failed = 0
+            for (uri in uris) {
+                // One at a time. Each holds a copy of the file and its parsed
+                // structure; several at once is how the memory ran out.
+                val imported = withContext(Dispatchers.IO) {
+                    runCatching { repository.importFrom(uri) }.getOrNull()
+                }
+                if (imported != null) lastGood = imported else failed++
+                importing--
+            }
+            importing = 0
+            importedMaps = withContext(Dispatchers.IO) { repository.imported() }
+            if (lastGood != null) activeMap = lastGood
+            statusMessage = when {
+                failed == 0 -> null
+                lastGood == null && failed == 1 -> "That file could not be read as a PDF."
+                lastGood == null -> "None of those $failed files could be read as PDFs."
+                else -> "$failed of ${uris.size} could not be read as PDFs."
+            }
         }
     }
 
@@ -1079,7 +1113,14 @@ fun FirelineApp() {
                     IconButton(onClick = { showUrlDialog = true }) {
                         Icon(Icons.Default.Link, contentDescription = "Import from URL")
                     }
-                    IconButton(onClick = { importLauncher.launch(arrayOf("application/pdf")) }) {
+                    IconButton(onClick = {
+                        // Some file providers hand PDFs over as a generic
+                        // binary, and a picker that hides them is a picker
+                        // that says the map does not exist.
+                        importLauncher.launch(
+                            arrayOf("application/pdf", "application/octet-stream")
+                        )
+                    }) {
                         Icon(Icons.Default.FileOpen, contentDescription = "Import from file")
                     }
                 }
@@ -1118,7 +1159,13 @@ fun FirelineApp() {
                 }
             )
 
-            if (chromeVisible && !showSearch) MapStatusRow(activeMap, statusMessage)
+            if (chromeVisible && !showSearch) {
+                MapStatusRow(
+                    activeMap,
+                    if (importing > 0) "Reading $importing sheet${if (importing > 1) "s" else ""}…"
+                    else statusMessage
+                )
+            }
 
             if (chromeVisible && !showSearch && simMode && simulated == null) {
                 SimulatedBanner("SIM MODE — tap the map to set a test position")
