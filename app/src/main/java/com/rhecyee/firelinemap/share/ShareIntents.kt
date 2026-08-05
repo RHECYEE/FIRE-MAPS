@@ -22,6 +22,55 @@ object ShareIntents {
     /** Where shared files are written. Matches res/xml/shared_files.xml. */
     private const val DIRECTORY = "shares"
 
+    /**
+     * What a picture message will actually carry.
+     *
+     * Carriers cap MMS, commonly at three hundred kilobytes and sometimes
+     * lower, and an attachment over the cap is refused rather than shrunk --
+     * usually with no error worth reading. Two hundred and fifty thousand
+     * bytes is under every cap in common use, so a file prepared to this size
+     * sends rather than silently failing on a hilltop with one bar.
+     *
+     * RCS and iMessage carry far more, but neither is guaranteed to be what
+     * the message goes out over, and the failure only shows up in the field.
+     */
+    const val MESSAGE_BUDGET_BYTES = 250_000
+
+    /**
+     * Sends the positions as the text of a message.
+     *
+     * The path that always works. No attachment, so nothing can refuse it on
+     * size or type, and the person receiving it needs nothing installed -- the
+     * coordinates are readable on the screen, over a radio, and can be typed
+     * straight back into this app's search, which reads the form written here.
+     */
+    fun text(context: Context, pkg: SharePackage): Boolean {
+        if (pkg.isEmpty) return false
+        val body = ShareText.message(pkg)
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, body)
+            putExtra(Intent.EXTRA_SUBJECT, pkg.incidentName)
+        }
+        val chooser = Intent.createChooser(intent, "Text ${pkg.describe()}").apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        return runCatching { context.startActivity(chooser); true }.getOrDefault(false)
+    }
+
+    /**
+     * Prepares the file, thinned if it has to be to go in a message.
+     *
+     * Returns what was done as well as the package, so the operator is told
+     * rather than finding out later that a switchback is missing from a track
+     * they sent somebody.
+     */
+    fun prepareForMessage(pkg: SharePackage): TrackSimplify.Simplified =
+        TrackSimplify.toFit(pkg, MESSAGE_BUDGET_BYTES) { GpxFormat.write(it).length }
+
+    /** Bytes the file would take, without writing it. */
+    fun sizeOf(pkg: SharePackage): Int = GpxFormat.write(pkg).length
+
     fun authority(context: Context): String = "${context.packageName}.shares"
 
     /**

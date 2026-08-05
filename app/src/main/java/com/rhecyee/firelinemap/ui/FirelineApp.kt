@@ -220,6 +220,9 @@ fun FirelineApp() {
     var viewReport by remember { mutableStateOf<String?>(null) }
     var importedMaps by remember { mutableStateOf<List<com.rhecyee.firelinemap.geopdf.ImportedMap>>(emptyList()) }
     var showIncidents by remember { mutableStateOf(false) }
+    // Held while the operator chooses how to send it, so the package is
+    // built once and every size shown in the dialog is the real one.
+    var sharing by remember { mutableStateOf<SharePackage?>(null) }
     var incidentTallies by remember { mutableStateOf<Map<String, IncidentTally>>(emptyMap()) }
     // Set when the app made an incident by itself, so it can ask for the real
     // name once rather than leaving a placeholder on every medical report.
@@ -1339,6 +1342,29 @@ fun FirelineApp() {
         null
     }
 
+    sharing?.let { pkg ->
+        ShareSheet(
+            pkg = pkg,
+            onText = {
+                statusMessage = if (ShareIntents.text(context, pkg)) null
+                else "Nothing on this phone will send a message."
+                sharing = null
+            },
+            onSendFile = {
+                val prepared = ShareIntents.prepareForMessage(pkg)
+                statusMessage = if (ShareIntents.share(context, prepared.pkg)) null
+                else "Could not prepare the file to send."
+                sharing = null
+            },
+            onSendFullFile = {
+                statusMessage = if (ShareIntents.share(context, pkg)) null
+                else "Could not prepare the file to send."
+                sharing = null
+            },
+            onDismiss = { sharing = null }
+        )
+    }
+
     if (showIncidents) {
         IncidentSheet(
             incidents = incidents,
@@ -1453,10 +1479,10 @@ fun FirelineApp() {
                     IconButton(onClick = {
                         touched()
                         val pkg = sharePackage()
-                        statusMessage = when {
-                            pkg.isEmpty -> "Nothing to send yet — no tracks or pins."
-                            ShareIntents.share(context, pkg) -> null
-                            else -> "Could not prepare the file to send."
+                        if (pkg.isEmpty) {
+                            statusMessage = "Nothing to send yet — no tracks or pins."
+                        } else {
+                            sharing = pkg
                         }
                     }) {
                         Icon(Icons.Default.Share, contentDescription = "Send tracks and pins")
