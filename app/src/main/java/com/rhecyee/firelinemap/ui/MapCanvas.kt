@@ -140,16 +140,7 @@ fun MapCanvas(
      */
     var zoomAnchor by remember { mutableStateOf<Offset?>(null) }
 
-    /**
-     * Set by the draw when it could not put anything on screen.
-     *
-     * A safety net, and named as one. The right fix is for the view never to
-     * reach a state with no ground in it, and that is still being chased; in
-     * the meantime an operator should not have to know that a particular
-     * button is the way out. A map that recovers itself after a moment is
-     * usable. One that needs a specific press, discovered by trial, is not.
-     */
-    var terrainEmptySince by remember { mutableStateOf(0L) }
+
 
     // The tile level last drawn at, so it can be held across a pinch. A plain
     // holder rather than snapshot state on purpose: this is written during the
@@ -426,23 +417,34 @@ fun MapCanvas(
 
         // Recovers the view if the map has had nothing on it for a moment.
         //
-        // Does exactly what pressing centre-on-me does, which is the only
-        // thing found to fix it, and only after a full second so a normal
-        // gesture is never interrupted. Announced through the status message
-        // rather than done silently: a view that moves on its own without
-        // saying why is its own bug report.
-        androidx.compose.runtime.LaunchedEffect(terrainEmptySince) {
-            if (terrainEmptySince == 0L) return@LaunchedEffect
-            kotlinx.coroutines.delay(EMPTY_RECOVERY_MILLIS)
-            if (terrainEmptySince == 0L) return@LaunchedEffect
-            if (centreOnPosition()) {
-                terrainEmptySince = 0L
-            } else {
-                // No fix to centre on. Fit the whole thing instead, which is
-                // always somewhere with ground in it.
-                scale = 1f
-                offset = Offset.Zero
-                terrainEmptySince = 0L
+        // A safety net, and named as one. The right fix is for the view never
+        // to reach a state with no ground in it, and that is still being
+        // chased; meanwhile an operator should not have to know which button
+        // is the way out. A map that recovers itself is usable; one that needs
+        // a specific press, discovered by trial, is not.
+        //
+        // Polled rather than driven by the draw. The draw reporting into
+        // Compose state was a write during the drawing phase, which schedules
+        // a composition, which draws, which writes again -- at frame rate,
+        // through every zoom, until the app was killed. That was the crash.
+        val watched = basemap
+        androidx.compose.runtime.LaunchedEffect(watched, projection) {
+            if (watched == null) return@LaunchedEffect
+            while (true) {
+                kotlinx.coroutines.delay(EMPTY_POLL_MILLIS)
+                val since = watched.emptySinceMillis
+                if (since == 0L) continue
+                if (System.currentTimeMillis() - since < EMPTY_RECOVERY_MILLIS) continue
+                if (!centreOnPosition()) {
+                    // No fix to centre on. Fit the whole thing instead, which
+                    // is always somewhere with ground in it.
+                    scale = 1f
+                    offset = Offset.Zero
+                }
+                // Cleared here rather than waiting for the next draw, so a
+                // recovery that does not help is retried rather than repeated
+                // without pause.
+                watched.emptySinceMillis = 0L
             }
         }
 
@@ -572,7 +574,6 @@ fun MapCanvas(
             // the sheet, the position and the tracks with it -- a blank
             // screen instead of a missing background.
             if (basemap != null) {
-                val had = basemap.lastDrewSomething
                 drawBasemap(
                     basemap = basemap,
                     projection = projection,
@@ -582,12 +583,6 @@ fun MapCanvas(
                     drawHeight = drawHeight,
                     held = tileZoom
                 )
-                // Read after the draw, so this reflects the frame just made.
-                if (basemap.lastDrewSomething) {
-                    if (terrainEmptySince != 0L) terrainEmptySince = 0L
-                } else if (terrainEmptySince == 0L || had) {
-                    terrainEmptySince = System.currentTimeMillis()
-                }
             }
 
             // Only the part of the sheet that is actually on screen.
@@ -827,6 +822,9 @@ private const val BASE_LAYER_STEPS = 3
  */
 private const val EMPTY_RECOVERY_MILLIS = 1_000L
 
+/** How often the watcher looks. Cheap: it reads one long. */
+private const val EMPTY_POLL_MILLIS = 250L
+
 
 
 /** How long the view has to hold still before contours are re-cut. */
@@ -968,7 +966,9 @@ private fun DrawScope.drawBasemap(
         0
     }
     basemap.lastRescue = underlay
-    basemap.lastDrewSomething = drawn > 0 || underlay > 0
+    // Recorded on the cache, which is a plain field. Reporting this into
+    // Compose state from here would be a write during the drawing phase.
+    basemap.noteDraw(drawn > 0 || underlay > 0, System.currentTimeMillis())
     if (drawn > 0 || underlay > 0) return
 
     // Nothing anywhere. Say so on the map rather than leaving a grey rectangle

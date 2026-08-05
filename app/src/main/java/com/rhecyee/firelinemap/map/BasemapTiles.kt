@@ -352,6 +352,28 @@ class BasemapTileCache(context: Context) {
     var lastDrewSomething: Boolean = true
 
     /**
+     * When the terrain last went empty, or zero while there is something on it.
+     *
+     * A plain field rather than Compose state, deliberately. This is written
+     * from inside the draw, and snapshot state written there schedules another
+     * composition -- which draws, which writes again. During a zoom, when the
+     * terrain is briefly absent between levels, that is a loop that runs at
+     * frame rate until the app is killed. The watcher polls this instead.
+     */
+    @Volatile
+    var emptySinceMillis: Long = 0L
+
+    /** Records whether a frame drew anything, and since when it has not. */
+    fun noteDraw(drewSomething: Boolean, atMillis: Long) {
+        lastDrewSomething = drewSomething
+        emptySinceMillis = when {
+            drewSomething -> 0L
+            emptySinceMillis == 0L -> atMillis
+            else -> emptySinceMillis
+        }
+    }
+
+    /**
      * Levels at or below this are never evicted.
      *
      * The coarse layer is what stands in while a finer one is arriving, so
