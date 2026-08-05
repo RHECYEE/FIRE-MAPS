@@ -598,21 +598,46 @@ fun FirelineApp() {
     // the drawn content growing to a size a float cannot place things in.
     var groundSpan by remember { mutableStateOf(GroundProjection.DEFAULT_SPAN_METERS) }
     var groundScale by remember { mutableStateOf(1f) }
+    // Re-anchored on what is being looked at, not on where the operator is.
+    //
+    // It used to follow the position: walk far enough from the anchor and the
+    // projection was re-cut around you, which resets the pan and drags the view
+    // back onto your own marker. On a small span that is a few hundred metres
+    // of walking, so a deliberate look at the far end of a division kept being
+    // hauled back. Where the operator is standing is not a reason to move the
+    // map.
+    //
+    // What this is actually for is keeping the projection's centre near the
+    // ground being drawn, so the numbers stay well inside a float's precision.
+    // Anchoring on the view's own centre does that and is invisible: the pan
+    // becomes zero because the centre is now the anchor, and the same ground
+    // stays on screen.
+    LaunchedEffect(view) {
+        val here = view ?: return@LaunchedEffect
+        if (activeMap != null) return@LaunchedEffect
+        val centreLatitude = (here.north + here.south) / 2.0
+        val centreLongitude = (here.west + here.east) / 2.0
+        val current = groundAnchor
+        val far = current == null ||
+            MapCoverage.distanceMeters(current.first, current.second, centreLatitude, centreLongitude) >
+            groundSpan * GroundProjection.REANCHOR_FRACTION
+        if (far) {
+            groundAnchor = centreLatitude to centreLongitude
+            settings.lastAnchor = centreLatitude to centreLongitude
+        }
+    }
+
+    // The anchor is also where the map opens next time, so it follows the
+    // operator while there is no view to speak of yet.
     LaunchedEffect(displayLatitude, displayLongitude) {
         val lat = displayLatitude ?: return@LaunchedEffect
         val lon = displayLongitude ?: return@LaunchedEffect
-        val current = groundAnchor
-        // Re-cut the working area when the operator has travelled clear of it.
-        // Rare inside one incident, and cheaper than carrying a whole-world
-        // projection for the sake of a case that happens on the drive home.
-        val far = current == null ||
-            MapCoverage.distanceMeters(current.first, current.second, lat, lon) >
-            groundSpan * GroundProjection.REANCHOR_FRACTION
-        if (far) {
+        if (groundAnchor == null) {
             groundAnchor = lat to lon
             settings.lastAnchor = lat to lon
         }
     }
+
 
     val projection = remember(
         activeMap?.id, pageWidth, pageHeight, bitmap, groundAnchor, groundSpan
@@ -1272,8 +1297,9 @@ fun FirelineApp() {
                 basemap = basemap.takeIf { topographyOn },
                 contours = contourSet.takeIf { contoursOn },
                 boundaries = boundaries.takeIf { landOwnershipOn },
-                onViewBounds = { north, south, west, east, zoom ->
+                onViewBounds = { north, south, west, east, zoom, atScale ->
                     view = MapView(north, south, west, east, zoom)
+                    groundScale = atScale
                 },
                 initialScale = groundScale,
                 onSpanChange = { factor, lat, lon ->

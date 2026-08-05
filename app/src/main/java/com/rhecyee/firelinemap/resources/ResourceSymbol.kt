@@ -21,7 +21,6 @@ enum class ResourceSymbol(
     HAND_CREW("hand_crew", "Hand crew", "CRW", ResourceCategory.CREW, 0xFF2E7D32.toInt()),
     HOTSHOT("hotshot", "Hotshots", "IHC", ResourceCategory.CREW, 0xFF1B5E20.toInt()),
     HELITACK("helitack", "Helitack", "HTK", ResourceCategory.CREW, 0xFF00695C.toInt()),
-    DOZER_CREW("dozer_crew", "Dozer crew", "DZR", ResourceCategory.CREW, 0xFF6D4C41.toInt()),
     MEDIC("medic", "Medic", "MED", ResourceCategory.CREW, 0xFFC62828.toInt()),
     REMS("rems", "REMS", "REM", ResourceCategory.CREW, 0xFFAD1457.toInt()),
     DIVISION("division", "Division", "DIV", ResourceCategory.CREW, 0xFF4527A0.toInt()),
@@ -39,7 +38,18 @@ enum class ResourceSymbol(
     DROP_POINT("drop_point", "Drop point", "DP", ResourceCategory.FACILITY, 0xFF1565C0.toInt()),
     HELISPOT("helispot", "Helispot", "H", ResourceCategory.FACILITY, 0xFF00ACC1.toInt()),
 
-    MEDICAL_INCIDENT("medical_incident", "Medical", "MED", ResourceCategory.POINT, 0xFFD50000.toInt()),
+    /**
+     * Where a medical happened, as opposed to the medic who is treating it.
+     *
+     * Kept apart from [MEDIC] because they answer different questions on a
+     * radio -- one is a resource to send somewhere, the other is a place to
+     * send it to -- but they used to carry the same three letters and sat next
+     * to each other in the palette, which read as the same pin listed twice.
+     */
+    MEDICAL_INCIDENT(
+        "medical_incident", "Medical incident", "911", ResourceCategory.POINT,
+        0xFFD50000.toInt()
+    ),
     HAZARD("hazard", "Hazard", "!", ResourceCategory.POINT, 0xFFE65100.toInt()),
     SNAG("snag", "Snag", "SNG", ResourceCategory.POINT, 0xFF8D6E63.toInt()),
     WATER("water", "Water", "H2O", ResourceCategory.POINT, 0xFF0288D1.toInt()),
@@ -50,7 +60,21 @@ enum class ResourceSymbol(
     OTHER("other", "Point", "•", ResourceCategory.POINT, 0xFF546E7A.toInt());
 
     companion object {
-        fun byId(id: String?): ResourceSymbol = entries.firstOrNull { it.id == id } ?: OTHER
+        /**
+         * Symbols no longer offered, and what they became.
+         *
+         * Retired rather than deleted. A pin dropped last season carries its
+         * identifier into the database, and an identifier that resolves to
+         * nothing turns a dozer somebody placed into a generic dot. Nothing
+         * already on a map is allowed to change meaning because a list was
+         * tidied.
+         */
+        private val RETIRED = mapOf("dozer_crew" to "dozer")
+
+        fun byId(id: String?): ResourceSymbol {
+            val wanted = RETIRED[id] ?: id
+            return entries.firstOrNull { it.id == wanted } ?: OTHER
+        }
 
         /**
          * The one palette.
@@ -61,10 +85,12 @@ enum class ResourceSymbol(
          * kind of thing a mark was before placing it, which is a filing
          * question asked at the worst possible moment.
          */
-        val RESOURCES: List<ResourceSymbol> = listOf(
-            HAND_CREW, ENGINE, DOZER, MEDIC, HAZARD, MEDICAL_INCIDENT
-        ) + entries.filter {
-            it !in listOf(HAND_CREW, ENGINE, DOZER, MEDIC, HAZARD, MEDICAL_INCIDENT)
+        val RESOURCES: List<ResourceSymbol> = run {
+            val leading = listOf(HAND_CREW, ENGINE, DOZER, MEDIC, HAZARD, MEDICAL_INCIDENT)
+            // distinct() rather than trusting the two lists not to overlap:
+            // an entry appearing in both is how the palette came to show a
+            // medic and a dozer twice each.
+            (leading + entries).distinct()
         }
 
         /**
@@ -75,9 +101,10 @@ enum class ResourceSymbol(
          * even though the same symbols also exist as tracked resources with
          * identifiers and a position history.
          */
-        val POINTS: List<ResourceSymbol> = listOf(
-            HAND_CREW, DOZER, ENGINE
-        ) + entries.filter { it.category == ResourceCategory.POINT }
+        val POINTS: List<ResourceSymbol> = (
+            listOf(HAND_CREW, DOZER, ENGINE) +
+                entries.filter { it.category == ResourceCategory.POINT }
+            ).distinct()
     }
 }
 

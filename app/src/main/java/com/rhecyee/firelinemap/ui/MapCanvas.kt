@@ -94,7 +94,9 @@ fun MapCanvas(
     searchRegion: SearchRegion? = null,
     contours: com.rhecyee.firelinemap.terrain.ContourRender? = null,
     boundaries: com.rhecyee.firelinemap.land.BoundaryRender? = null,
-    onViewBounds: ((north: Double, south: Double, west: Double, east: Double, zoom: Int) -> Unit)? = null,
+    onViewBounds: ((
+        north: Double, south: Double, west: Double, east: Double, zoom: Int, scale: Float
+    ) -> Unit)? = null,
     onContourDrawFailed: ((Throwable) -> Unit)? = null,
     onWhereAmILooking: ((String) -> Unit)? = null,
     /**
@@ -404,7 +406,7 @@ fun MapCanvas(
             if (reportBounds == null) return@LaunchedEffect
             kotlinx.coroutines.delay(VIEW_SETTLE_MILLIS)
             val (box, zoom) = viewBounds() ?: return@LaunchedEffect
-            reportBounds?.invoke(box[0], box[1], box[2], box[3], zoom)
+            reportBounds?.invoke(box[0], box[1], box[2], box[3], zoom, scale)
         }
 
         /** Puts the current position in the middle of the view. */
@@ -427,36 +429,26 @@ fun MapCanvas(
             return true
         }
 
-        // Recovers the view if the map has had nothing on it for a moment.
+        // Recovers the view only when it is genuinely broken.
         //
-        // A safety net, and named as one. The right fix is for the view never
-        // to reach a state with no ground in it, and that is still being
-        // chased; meanwhile an operator should not have to know which button
-        // is the way out. A map that recovers itself is usable; one that needs
-        // a specific press, discovered by trial, is not.
+        // This used to fire whenever the terrain had been empty for a second,
+        // which was right while a pan could be poisoned into holding a value
+        // that was not a number. That is fixed at the source now, and an empty
+        // terrain by itself means nothing is wrong: it is what offline ground
+        // nobody has downloaded looks like. Recovering from it threw the view
+        // to the operator's position, or all the way out, in the middle of a
+        // deliberate look at somewhere else -- which is the map jumping around
+        // on its own, and far worse than a patch with no picture on it.
         //
-        // Polled rather than driven by the draw. The draw reporting into
-        // Compose state was a write during the drawing phase, which schedules
-        // a composition, which draws, which writes again -- at frame rate,
-        // through every zoom, until the app was killed. That was the crash.
-        val watched = basemap
-        androidx.compose.runtime.LaunchedEffect(watched, projection) {
-            if (watched == null) return@LaunchedEffect
+        // What is left is the narrow case that cannot be worked out of by any
+        // gesture: a pan or a zoom that is not a finite number. That cannot
+        // happen spuriously, so this cannot fire spuriously.
+        androidx.compose.runtime.LaunchedEffect(projection) {
             while (true) {
                 kotlinx.coroutines.delay(EMPTY_POLL_MILLIS)
-                val since = watched.emptySinceMillis
-                if (since == 0L) continue
-                if (System.currentTimeMillis() - since < EMPTY_RECOVERY_MILLIS) continue
-                if (!centreOnPosition()) {
-                    // No fix to centre on. Fit the whole thing instead, which
-                    // is always somewhere with ground in it.
-                    scale = 1f
-                    offset = Offset.Zero
-                }
-                // Cleared here rather than waiting for the next draw, so a
-                // recovery that does not help is retried rather than repeated
-                // without pause.
-                watched.emptySinceMillis = 0L
+                if (offset.x.isFinite() && offset.y.isFinite() && scale.isFinite()) continue
+                scale = projection.minScale
+                offset = Offset.Zero
             }
         }
 
@@ -923,15 +915,6 @@ private const val MAX_TILES_PER_FRAME = 220L
  * softer than what is wanted.
  */
 private const val BASE_LAYER_STEPS = 3
-
-/**
- * How long the map may have nothing on it before the view is recovered.
- *
- * A second. Long enough that tiles arriving normally are never interrupted,
- * short enough that nobody has to work out for themselves which button brings
- * the map back.
- */
-private const val EMPTY_RECOVERY_MILLIS = 1_000L
 
 /** Prints a float so a broken one is unmistakable rather than rounded away. */
 private fun Float.describe(): String = if (isFinite()) "%.0f".format(this) else toString()
