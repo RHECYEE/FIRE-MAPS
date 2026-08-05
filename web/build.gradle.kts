@@ -57,6 +57,8 @@ kotlin {
                 "com/rhecyee/firelinemap/map/MapProjection.kt",
                 "com/rhecyee/firelinemap/map/TileMath.kt",
                 "com/rhecyee/firelinemap/map/ViewClamp.kt",
+                "com/rhecyee/firelinemap/land/LandOwnership.kt",
+                "com/rhecyee/firelinemap/land/LandStatus.kt",
                 "com/rhecyee/firelinemap/measure/Measurement.kt",
                 "com/rhecyee/firelinemap/measure/ElevationQuery.kt",
                 "com/rhecyee/firelinemap/medical/MedicalReport.kt",

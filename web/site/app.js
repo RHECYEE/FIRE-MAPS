@@ -31,6 +31,13 @@ const C = (() => {
     return found ? found.FirelineContours : null;
 })();
 
+const L = (() => {
+    const module = (typeof web !== 'undefined' && web) || window.web || {};
+    const found = module.com && module.com.rhecyee &&
+        module.com.rhecyee.firelinemap.web;
+    return found ? found.FirelineLand : null;
+})();
+
 const T = (() => {
     const module = (typeof web !== 'undefined' && web) || window.web || {};
     const found = module.com && module.com.rhecyee &&
@@ -1328,7 +1335,11 @@ function onTap(mapX, mapY) {
         where.latitude, where.longitude, JSON.stringify({ tracks })
     );
     const parsed = report && JSON.parse(report);
-    if (parsed && parsed.count > 0) showOverlap(parsed);
+    if (parsed && parsed.count > 0) { showOverlap(parsed); return; }
+
+    // Last, because a pin or a track under the finger is the more specific
+    // question than the ground beneath it.
+    if (landOn) showLandStatus(where.latitude, where.longitude);
 }
 
 /** Set while a pin is waiting for a tap to say where it goes. */
@@ -2171,6 +2182,11 @@ function showLayers() {
               contourDetail === name ? '#1565C0' : '#25404F'}">${name}</button>`).join('')}
           </div>
           <p class="note">${escapeHtml(C ? C.attribution : '')}</p>` : ''}
+        <button class="toggle" id="landToggle">
+          <span class="label">Land status<small>Tap anywhere to ask who administers
+            that ground. Needs a connection; there is no offline answer.</small></span>
+          <span class="state${landOn ? ' on' : ''}">${landOn ? 'ON' : 'OFF'}</span>
+        </button>
         <button class="toggle" id="hydroToggle">
           <span class="label">Water<small>Streams and bodies, drawn over the
             basemap. Useful on imagery, where drainages are hard to read.</small></span>
@@ -2217,6 +2233,12 @@ function showLayers() {
         };
     });
 
+    document.getElementById('landToggle').onclick = () => {
+        landOn = !landOn;
+        Store.write('land', landOn);
+        showLayers();
+    };
+
     document.getElementById('hydroToggle').onclick = () => {
         hydroOn = !hydroOn;
         Store.write('hydro', hydroOn);
@@ -2238,6 +2260,73 @@ function forgetTiles() {
     heldTiles = 0;
     refreshStatus();
     draw();
+}
+
+// ----------------------------------------------------------- land status
+
+/**
+ * Who administers the ground under a tap.
+ *
+ * Three public services, asked at once and read by the phone's own parsers.
+ * None of them needs a key or an agreement, which is the test every source in
+ * this app has to pass -- anything behind an account would not be usable by
+ * the people it is built for.
+ *
+ * No landowner is named, here or on the phone. The federal layer is
+ * administrative and names units rather than people, and private ground reads
+ * as "Private" and stops there. Naming an owner needs a commercial agreement
+ * that explicitly authorises display, caching and export; until there is one
+ * this does not ask for it and has nowhere to put it.
+ */
+let landOn = Store.read('land', false);
+
+async function showLandStatus(latitude, longitude) {
+    if (!L) return;
+    openSheet('Land status', '<p class="note">Looking up…</p>');
+
+    const get = async url => {
+        try {
+            const reply = await fetch(url);
+            return reply.ok ? await reply.text() : null;
+        } catch (e) {
+            return null;
+        }
+    };
+
+    const [owner, unit, county] = await Promise.all([
+        get(L.ownerUrl(latitude, longitude)),
+        get(L.protectedUnitUrl(latitude, longitude)),
+        get(L.countyUrl(latitude, longitude))
+    ]);
+
+    if (owner === null && unit === null && county === null) {
+        openSheet('Land status', `<p class="note bad">No answer. This needs a
+            connection; there is no offline land record.</p>`);
+        return;
+    }
+
+    const out = JSON.parse(L.statusOf(owner, unit, county));
+    const row = (label, value) =>
+        value ? `<div class="figure"><span>${label}</span><b>${escapeHtml(value)}</b></div>`
+        : '';
+
+    openSheet('Land status', `
+        <p class="note">${K ? escapeHtml(K.formatDdm(latitude, longitude)) : ''}</p>
+        ${out.empty ? `<p class="note warn">No public land record here, which
+            usually means private ground rather than a failed lookup.</p>`
+          : `<h4>${escapeHtml(out.headline || 'Ground')}</h4>
+             ${row('Agency', out.agency)}
+             ${row('Unit', out.unit)}
+             ${row('Designation', out.designation)}
+             ${row('Surface', out.surface)}`}
+        ${row('County', out.county)}
+        ${row('FIPS', out.fips)}
+        <h4>What this is</h4>
+        <p class="note">BLM Surface Management Agency, generalised for national
+          mapping, with named units from the USGS Protected Areas Database and
+          county from US Census TIGERweb. It says who administers the ground.
+          It is <b>not</b> a land status record and no landowner is named.</p>
+    `);
 }
 
 // --------------------------------------------------------------- settings
