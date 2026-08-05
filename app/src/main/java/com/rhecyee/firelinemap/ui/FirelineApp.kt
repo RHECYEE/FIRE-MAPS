@@ -34,7 +34,9 @@ import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Straighten
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -44,6 +46,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -202,6 +205,7 @@ fun FirelineApp() {
     var powerMode by remember { mutableStateOf(settings.powerMode) }
     var cachedTerrain by remember { mutableStateOf(0L) }
     var terrainDiagnostics by remember { mutableStateOf("") }
+    var viewReport by remember { mutableStateOf<String?>(null) }
     var importedMaps by remember { mutableStateOf<List<com.rhecyee.firelinemap.geopdf.ImportedMap>>(emptyList()) }
     var keypadOpen by remember { mutableStateOf(true) }
     val landOwnership = remember { LandOwnershipService() }
@@ -914,6 +918,21 @@ fun FirelineApp() {
         )
     }
 
+    viewReport?.let { report ->
+        AlertDialog(
+            onDismissRequest = { viewReport = null },
+            title = { Text("Where the map is looking") },
+            text = {
+                Text(
+                    report,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                )
+            },
+            confirmButton = { TextButton(onClick = { viewReport = null }) { Text("Done") } }
+        )
+    }
+
     landLookupAt?.let { (lat, lon) ->
         LandOwnerDialog(
             status = landStatus,
@@ -1234,6 +1253,13 @@ fun FirelineApp() {
                 boundaries = boundaries.takeIf { landOwnershipOn },
                 onViewBounds = { north, south, west, east, zoom ->
                     view = MapView(north, south, west, east, zoom)
+                },
+                onWhereAmILooking = { report ->
+                    val clipboard = context.getSystemService(ClipboardManager::class.java)
+                    clipboard?.setPrimaryClip(
+                        ClipData.newPlainText("Fireline Map view", report)
+                    )
+                    viewReport = report
                 },
                 onContourDrawFailed = {
                     // Turn the layer off rather than let it fail every frame,

@@ -150,4 +150,46 @@ class ViewClampTest {
         assertEquals(0f, x, 0f)
         assertEquals(0f, y, 0f)
     }
+
+    /**
+     * The whole of the blank-map fault, in one place.
+     *
+     * A pinch's centroid comes back as a pair of NaNs whenever no pointer was
+     * down both this event and last -- which is the instant a finger lifts.
+     * Multiplying that by anything, zero included, gives NaN, and coercing NaN
+     * returns NaN because every comparison against it is false. So it passes
+     * through the bound untouched, settles into the view and never leaves.
+     * From there every tile projects to NaN and is discarded as off screen,
+     * the view corners will not convert so nothing is even fetched, and the
+     * map is blank with a full cache behind it -- a hundred and sixty-four
+     * tiles held, none drawn, nothing fetching, which is exactly what the
+     * screen reported. Only centring recovered it, because that is the one
+     * path that builds the pan from scratch rather than from itself.
+     */
+    @Test
+    fun aPanThatIsNotANumberDoesNotSurviveTheClamp() {
+        for (bad in listOf(Float.NaN, Float.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY)) {
+            val (x, y) = clamp(bad, bad, scale = 2f)
+            assertTrue("x was $x", x.isFinite())
+            assertTrue("y was $y", y.isFinite())
+            // And it lands somewhere with ground in it, not merely somewhere
+            // representable.
+            val (width, height) = contentAt(2f)
+            assertTrue(ViewClamp.contentIsVisible(x, width, viewportWidth))
+            assertTrue(ViewClamp.contentIsVisible(y, height, viewportHeight))
+        }
+    }
+
+    @Test
+    fun oneBadAxisDoesNotTakeTheOtherWithIt() {
+        val (x, y) = clamp(Float.NaN, 300f, scale = 1f)
+        assertTrue(x.isFinite())
+        assertEquals("the good axis must be left alone", 300f, y, 0f)
+    }
+
+    @Test
+    fun aContentSizeThatIsNotANumberGivesNoLimitRatherThanANaNOne() {
+        assertEquals(0f, ViewClamp.limit(Float.NaN, viewportWidth), 0f)
+        assertEquals(0f, ViewClamp.limit(1000f, Float.NaN), 0f)
+    }
 }

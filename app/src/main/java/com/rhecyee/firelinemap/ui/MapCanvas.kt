@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.GpsFixed
+import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.IconButtonDefaults
@@ -94,6 +95,7 @@ fun MapCanvas(
     boundaries: com.rhecyee.firelinemap.land.BoundaryRender? = null,
     onViewBounds: ((north: Double, south: Double, west: Double, east: Double, zoom: Int) -> Unit)? = null,
     onContourDrawFailed: ((Throwable) -> Unit)? = null,
+    onWhereAmILooking: ((String) -> Unit)? = null,
     centreOn: Pair<Double, Double>? = null,
     onCentred: () -> Unit = {},
     onInteraction: () -> Unit = {},
@@ -505,9 +507,34 @@ fun MapCanvas(
                             do {
                                 val event = awaitPointerEvent()
                                 pointers = maxOf(pointers, event.changes.count { it.pressed })
+                                // All three of these can come back as not a
+                                // number, and one that gets through poisons
+                                // the pan permanently.
+                                //
+                                // calculateCentroid returns Offset.Unspecified
+                                // -- which is a pair of NaNs -- whenever no
+                                // pointer was down both this event and last,
+                                // which happens the instant a finger lifts off
+                                // a pinch. Multiplying it by anything, zero
+                                // included, gives NaN; the pan becomes NaN and
+                                // stays NaN. From there every tile projects to
+                                // NaN and is rejected as off screen, the view
+                                // corners will not convert so nothing is even
+                                // fetched, and the map is blank with a full
+                                // cache behind it. Only centring recovers,
+                                // because it is the one path that builds the
+                                // pan from scratch instead of from itself.
+                                //
+                                // That is the whole of the blank-map fault,
+                                // and lately the crash as well: the notice
+                                // added to diagnose it rounds the geometry for
+                                // display, and rounding NaN throws.
                                 val zoomChange = event.calculateZoom()
+                                    .takeIf { it.isFinite() && it > 0f } ?: 1f
                                 val panChange = event.calculatePan()
+                                    .takeIf { it.x.isFinite() && it.y.isFinite() } ?: Offset.Zero
                                 val centroid = event.calculateCentroid(useCurrent = false)
+                                    .takeIf { it.x.isFinite() && it.y.isFinite() }
                                 travelled += panChange.getDistance() + abs(1f - zoomChange) * 200f
 
                                 if (travelled > viewConfiguration.touchSlop) {
@@ -529,7 +556,8 @@ fun MapCanvas(
                                     // and the pan has to grow with it or the ground
                                     // under the pinch shoots off across the view.
                                     // That was the map appearing to teleport.
-                                    val focus = centroid.takeIf { pointers > 1 } ?: canvasCentre
+                                    val focus =
+                                        centroid?.takeIf { pointers > 1 } ?: canvasCentre
                                     if (pointers > 1) zoomAnchor = focus
                                     val zoomed = offset * applied +
                                         (focus - canvasCentre) * (1f - applied)
@@ -791,6 +819,50 @@ fun MapCanvas(
             FilledTonalIconButton(onClick = { scale = 1f; offset = Offset.Zero }) {
                 Icon(Icons.Default.CenterFocusStrong, contentDescription = "Fit sheet to view")
             }
+            if (onWhereAmILooking != null) {
+                // Reports where the view actually is, in the terms the drawing
+                // uses. Asked for after the map went blank several times with
+                // no way to say anything about it beyond that it was blank.
+                FilledTonalIconButton(onClick = {
+                    val bounds = viewBounds()
+                    onWhereAmILooking(
+                        buildString {
+                            appendLine("scale %.3f".format(scale))
+                            appendLine("pan ${offset.x.describe()}, ${offset.y.describe()}")
+                            appendLine(
+                                "viewport ${viewport.width}x${viewport.height} · " +
+                                    "content ${contentWidth.toInt()}x${contentHeight.toInt()} · " +
+                                    "fit %.4f".format(fitScale())
+                            )
+                            val (width, height) = contentSize(scale)
+                            val at = origin(scale)
+                            appendLine(
+                                "drawn ${width.describe()}x${height.describe()} " +
+                                    "at ${at.x.describe()},${at.y.describe()}"
+                            )
+                            appendLine(
+                                if (projection.hasSheet) "sheet projection"
+                                else "own ground, span %.0f km".format(
+                                    projection.contentSpanMeters / 1000.0
+                                )
+                            )
+                            if (bounds == null) {
+                                appendLine("VIEW BOUNDS UNAVAILABLE")
+                            } else {
+                                val (box, zoom) = bounds
+                                appendLine(
+                                    "N %.5f S %.5f".format(box[0], box[1]) +
+                                        " W %.5f E %.5f".format(box[2], box[3])
+                                )
+                                appendLine("wants level $zoom")
+                            }
+                            append(basemap?.diagnostics() ?: "no terrain layer")
+                        }
+                    )
+                }) {
+                    Icon(Icons.Default.HelpOutline, contentDescription = "Where am I looking")
+                }
+            }
         }
     }
 }
@@ -821,6 +893,9 @@ private const val BASE_LAYER_STEPS = 3
  * the map back.
  */
 private const val EMPTY_RECOVERY_MILLIS = 1_000L
+
+/** Prints a float so a broken one is unmistakable rather than rounded away. */
+private fun Float.describe(): String = if (isFinite()) "%.0f".format(this) else toString()
 
 /** How often the watcher looks. Cheap: it reads one long. */
 private const val EMPTY_POLL_MILLIS = 250L

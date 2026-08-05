@@ -36,9 +36,11 @@ object ViewClamp {
      * half its width either side of centre, the screen reaches half its own
      * width past that, and [MIN_CONTENT_ON_SCREEN] of the screen is held back.
      */
-    fun limit(contentSize: Float, viewportSize: Float): Float =
-        ((contentSize + viewportSize) / 2f - viewportSize * MIN_CONTENT_ON_SCREEN)
+    fun limit(contentSize: Float, viewportSize: Float): Float {
+        if (!contentSize.isFinite() || !viewportSize.isFinite()) return 0f
+        return ((contentSize + viewportSize) / 2f - viewportSize * MIN_CONTENT_ON_SCREEN)
             .coerceAtLeast(0f)
+    }
 
     /**
      * Bounds a pan.
@@ -65,9 +67,20 @@ object ViewClamp {
         viewportWidth: Float,
         viewportHeight: Float
     ): Pair<Float, Float> {
+        // A pan that is not a number is not a pan.
+        //
+        // Coercing NaN silently returns NaN -- comparisons against it are all
+        // false, so it passes through every bound untouched. One NaN reaching
+        // here settles into the view and never leaves: everything drawn
+        // projects to NaN and is discarded as off screen, so the map goes
+        // blank with a full cache behind it. Whatever produced it, it stops
+        // here, and the middle of the content is the one answer that is always
+        // safe.
+        val x = if (offsetX.isFinite()) offsetX else 0f
+        val y = if (offsetY.isFinite()) offsetY else 0f
         val limitX = limit(contentWidth, viewportWidth)
         val limitY = limit(contentHeight, viewportHeight)
-        return offsetX.coerceIn(-limitX, limitX) to offsetY.coerceIn(-limitY, limitY)
+        return x.coerceIn(-limitX, limitX) to y.coerceIn(-limitY, limitY)
     }
 
     /**
