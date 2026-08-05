@@ -78,6 +78,7 @@ import com.rhecyee.firelinemap.resources.ResourceRepository
 import com.rhecyee.firelinemap.resources.ResourceSymbol
 import com.rhecyee.firelinemap.incident.IncidentNaming
 import com.rhecyee.firelinemap.share.ShareIntents
+import com.rhecyee.firelinemap.share.SmsSender
 import com.rhecyee.firelinemap.share.TextCodec
 import com.rhecyee.firelinemap.share.SharePackage
 import com.rhecyee.firelinemap.share.SharePin
@@ -93,7 +94,9 @@ import com.rhecyee.firelinemap.geopdf.PdfKind
 import com.rhecyee.firelinemap.geopdf.RemotePdf
 import com.rhecyee.firelinemap.geopdf.UrlProbe
 import com.rhecyee.firelinemap.location.LocationRepository
+import com.rhecyee.firelinemap.location.OverlapReport
 import com.rhecyee.firelinemap.location.TrackGeometry
+import com.rhecyee.firelinemap.location.TrackOverlap
 import com.rhecyee.firelinemap.location.TrackRecordingState
 import com.rhecyee.firelinemap.medical.MedicalReport
 import com.rhecyee.firelinemap.medical.MedicalRepository
@@ -228,6 +231,9 @@ fun FirelineApp() {
     // so closing it to go and copy the next part does not lose the ones
     // already in, which is exactly what an operator will do.
     var pasted by remember { mutableStateOf(TextCodec.Assembly()) }
+    // A run of texts waiting on permission. Held rather than sent, so the
+    // grant dialog cannot turn into messages nobody confirmed.
+    var textingParts by remember { mutableStateOf<List<String>?>(null) }
     var incidentTallies by remember { mutableStateOf<Map<String, IncidentTally>>(emptyMap()) }
     // Set when the app made an incident by itself, so it can ask for the real
     // name once rather than leaving a placeholder on every medical report.
@@ -282,6 +288,22 @@ fun FirelineApp() {
         // point is what left the panel stuck on "waiting for GPS".
         hasLocationPermission = grants.values.any { it }
         if (hasLocationPermission) locationRepository.start()
+    }
+
+    // Asked for at the moment it is used, never at startup. A map that wants
+    // to send texts before it has drawn anything is a map nobody trusts.
+    val smsPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        val parts = textingParts
+        if (!granted) {
+            statusMessage = "Texts not permitted — use COPY PART instead."
+            textingParts = null
+        } else if (parts != null) {
+            // Permission only; the send itself still waits for the
+            // confirmation dialog, which names the number and the count.
+            statusMessage = null
+        }
     }
 
     val speechLauncher = rememberLauncherForActivityResult(
@@ -572,6 +594,18 @@ fun FirelineApp() {
         }
     }
     var inspectingTrack by remember { mutableStateOf<SavedTrack?>(null) }
+
+    // The same tracks, but carrying their times, which is what a speed needs.
+    // Kept apart from the drawing list because drawing only wants positions
+    // and rebuilding times per frame would be wasted work.
+    val trackLines = remember(trackEntities) {
+        trackEntities.filter { !it.isRecording }.mapNotNull { entity ->
+            val fixes = TrackGeometry.read(entity.geometryGeoJson)
+            if (fixes.size < 2) null
+            else com.rhecyee.firelinemap.location.TrackLine(entity.id, entity.name, fixes)
+        }
+    }
+    var overlapAt by remember { mutableStateOf<OverlapReport?>(null) }
 
 
     val markers by (activeIncident?.id?.let { app.database.dao().observeMarkers(it) }
@@ -1347,6 +1381,32 @@ fun FirelineApp() {
         null
     }
 
+    // Only once permission is actually held. Offering a send that cannot
+    // happen is worse than not offering it.
+    overlapAt?.let { report ->
+        TrackOverlapSheet(
+            report = report,
+            onDismiss = { overlapAt = null }
+        )
+    }
+
+    textingParts?.takeIf { SmsSender.hasPermission(context) }?.let { parts ->
+        val pkg = sharing ?: sharePackage()
+        TextSendDialog(
+            pkg = pkg,
+            parts = parts,
+            initialNumber = remember { SmsSender.lastNumber(context) },
+            canSend = SmsSender.hasTelephony(context),
+            onSend = { number ->
+                val outcome = SmsSender.send(context, number, parts)
+                statusMessage = outcome.describe()
+                textingParts = null
+                if (outcome.allSent) sharing = null
+            },
+            onDismiss = { textingParts = null }
+        )
+    }
+
     sharing?.let { pkg ->
         ShareSheet(
             pkg = pkg,
@@ -1366,6 +1426,17 @@ fun FirelineApp() {
                 statusMessage = if (ShareIntents.share(context, pkg)) null
                 else "Could not prepare the file to send."
                 sharing = null
+            },
+            onTextAll = { parts ->
+                // Permission first, then the confirmation. Neither on its own
+                // is enough: one grants the ability, the other agrees to the
+                // number and the count.
+                if (!SmsSender.hasPermission(context)) {
+                    textingParts = parts
+                    smsPermissionLauncher.launch(android.Manifest.permission.SEND_SMS)
+                } else {
+                    textingParts = parts
+                }
             },
             onCopyPart = { part ->
                 val clipboard =
@@ -1775,6 +1846,13 @@ fun FirelineApp() {
                             }
                             elevationPending = false
                         }
+                    } else if (
+                        TrackOverlap.at(lat, lon, trackLines).passes.isNotEmpty()
+                    ) {
+                        // A tap on drawn tracks asks about those tracks. More
+                        // specific than "whose ground is this", and it is what
+                        // the line under the finger is there for.
+                        overlapAt = TrackOverlap.at(lat, lon, trackLines)
                     } else if (landOwnershipOn) {
                         // Nothing else claimed the tap: ask whose ground it is.
                         landLookupAt = lat to lon
