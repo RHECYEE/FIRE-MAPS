@@ -16,6 +16,15 @@
 
 'use strict';
 
+/**
+ * Which build this is.
+ *
+ * On screen in Settings because an installed web app updates quietly and there
+ * is otherwise no way to answer "have you got the fix yet" -- which turns every
+ * report of a bug into a guess about whether it is even the same code.
+ */
+const BUILD = '0.18.2';
+
 // The Kotlin bundle exports itself under a module object; find it either way.
 const K = (() => {
     const module = (typeof web !== 'undefined' && web) || window.web || {};
@@ -216,12 +225,36 @@ function toGeo(screenX, screenY) {
     );
 }
 
-/** Puts a position in the middle of the sheet, when it is on the sheet at all. */
-function centreSheetOn(latitude, longitude) {
-    if (!sheet) return;
+/**
+ * Whether a position is actually on the sheet.
+ *
+ * The transform does not stop at the frame's edge -- it is an affine, and it
+ * will happily report a page coordinate twenty pages to the right for ground
+ * the sheet does not cover. So the answer has to be checked against the frame
+ * box rather than against whether the arithmetic produced a number.
+ */
+function onSheet(latitude, longitude) {
+    if (!sheet) return false;
     const pageX = sheet.frame.pageX(latitude, longitude);
     const pageY = sheet.frame.pageY(latitude, longitude);
-    if (!isFinite(pageX) || !isFinite(pageY)) return;
+    if (!isFinite(pageX) || !isFinite(pageY)) return false;
+    return pageX >= sheet.frame.left && pageX <= sheet.frame.right &&
+        pageY >= sheet.frame.bottom && pageY <= sheet.frame.top;
+}
+
+/**
+ * Puts a position in the middle of the sheet, when it is on the sheet at all.
+ *
+ * Refusing to centre on ground the sheet does not cover is the whole point.
+ * Following a receiver a state away used to drag the page thousands of pixels
+ * off screen, and what the operator saw was an empty map -- not "you are not on
+ * this sheet", just nothing, with no way to tell the difference from a broken
+ * import.
+ */
+function centreSheetOn(latitude, longitude) {
+    if (!onSheet(latitude, longitude)) return;
+    const pageX = sheet.frame.pageX(latitude, longitude);
+    const pageY = sheet.frame.pageY(latitude, longitude);
     sheetView.x = pageX / sheet.pageWidth;
     sheetView.y = 1 - pageY / sheet.pageHeight;
 }
@@ -245,6 +278,18 @@ function screenToSheet(x, y) {
         x: (x - width / 2) / (size.width * sheetView.scale) + sheetView.x,
         y: (y - height / 2) / (size.height * sheetView.scale) + sheetView.y
     };
+}
+
+/**
+ * Keeps at least a corner of the sheet on screen.
+ *
+ * A backstop, not the fix: whatever else goes wrong, the map must never end up
+ * showing nothing at all. A blank screen reads as a broken app, and there is no
+ * way to tell it apart from one.
+ */
+function clampSheetView() {
+    sheetView.x = Math.max(-0.25, Math.min(1.25, sheetView.x));
+    sheetView.y = Math.max(-0.25, Math.min(1.25, sheetView.y));
 }
 
 /** The sheet drawn to fit the view at scale 1, so zoom 1 shows the whole page. */
@@ -903,6 +948,7 @@ function panBy(dx, dy) {
         const size = sheetSize();
         sheetView.x += dx / (size.width * sheetView.scale);
         sheetView.y += dy / (size.height * sheetView.scale);
+        clampSheetView();
         draw();
         return;
     }
@@ -936,6 +982,7 @@ function startLocating() {
         }
         onFix();
         showCoordinates();
+        refreshOffSheet();
         draw();
     }, error => {
         banner('No position: ' + error.message, 'bad');
@@ -2090,6 +2137,37 @@ function refreshSimBanner() {
     bar.classList.remove('hidden');
 }
 
+/**
+ * Says when the operator is not on the open sheet.
+ *
+ * The phone carries this, and it is the difference between "you are off this
+ * map, it is 340 miles that way" and a screen that simply shows nothing. The
+ * second reads as a broken app, and there is no way to tell it apart from one.
+ */
+function refreshOffSheet() {
+    const bar = document.getElementById('offSheet');
+    const at = here();
+    if (!sheet || !at) { bar.classList.add('hidden'); return; }
+    if (onSheet(at.latitude, at.longitude)) { bar.classList.add('hidden'); return; }
+
+    // Distance and bearing back onto it, from the phone's own arithmetic.
+    const midLat = (sheet.frame.north + sheet.frame.south) / 2;
+    const midLon = (sheet.frame.east + sheet.frame.west) / 2;
+    const away = K ? K.distanceMeters(at.latitude, at.longitude, midLat, midLon) : 0;
+    bar.textContent = 'OFF THIS SHEET — you are ' +
+        (K ? DISTANCE(away) : '') + ' from it. The sheet is still usable; your ' +
+        'position just is not on it.';
+    bar.className = 'banner';
+    bar.classList.remove('hidden');
+}
+
+/** Miles once it is past a mile, which is how anyone would say it. */
+function DISTANCE(metres) {
+    const feet = metres * 3.280839895;
+    if (feet < 5280) return Math.round(feet) + ' ft';
+    return (feet / 5280).toFixed(feet / 5280 < 10 ? 1 : 0) + ' mi';
+}
+
 function refreshStatus() {
     const row = document.getElementById('status');
     if (sheet) {
@@ -2523,6 +2601,12 @@ function showSettings() {
           recording, but if the page is suspended anyway the unobserved stretch is
           drawn as a dotted gap rather than a line across ground nobody walked.</p>
 
+        <h4>This build</h4>
+        <p class="note">Version <b>${BUILD}</b>. An installed web app updates
+          quietly in the background, so if something was supposed to be fixed and
+          is not, check this first.</p>
+        <button class="wide quiet" id="forceUpdate">CHECK FOR AN UPDATE NOW</button>
+
         <h4>Install it</h4>
         <p class="note">Add to Home Screen from the browser's share menu. It then
           opens full screen and keeps working with no signal.</p>
@@ -2570,6 +2654,25 @@ function showSettings() {
         }
         refreshSimBanner();
         showSettings();
+    };
+
+    // Drops the cached app and reloads. Sheets, pins and tracks are untouched:
+    // they are in storage, not in the cache being cleared.
+    document.getElementById('forceUpdate').onclick = async () => {
+        banner('Checking…', 'good');
+        try {
+            if (navigator.serviceWorker) {
+                const workers = await navigator.serviceWorker.getRegistrations();
+                await Promise.all(workers.map(worker => worker.unregister()));
+            }
+            if (window.caches) {
+                const names = await caches.keys();
+                await Promise.all(names
+                    .filter(name => !name.startsWith('fireline-tiles'))
+                    .map(name => caches.delete(name)));
+            }
+        } catch (e) { /* Nothing cached to drop. */ }
+        location.reload();
     };
 
     document.getElementById('saveSettings').onclick = () => {
@@ -2716,6 +2819,7 @@ async function openSheetMap(id) {
         activeSheetId = null;
         Store.write('sheet.' + activeIncidentId, null);
         refreshStatus();
+        refreshOffSheet();
         draw();
         return;
     }
@@ -2735,7 +2839,11 @@ async function openSheetMap(id) {
         sheetView.scale = 1;
         sheetView.x = 0.5;
         sheetView.y = 0.5;
+        // Only if the operator is actually on this ground. Otherwise the whole
+        // sheet stays in view, which is what somebody looking at a map of
+        // somewhere else wants to see.
         if (position) centreSheetOn(position.latitude, position.longitude);
+        refreshOffSheet();
         refreshStatus();
         draw();
         banner(held.name + ' is on screen.', 'good');

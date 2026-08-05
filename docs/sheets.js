@@ -118,19 +118,36 @@ function latin1Of(bytes) {
  * trailing bytes, so the stream is cut at its `endstream` keyword first.
  */
 async function inflateStream(bytes, latin1, start) {
-    const end = latin1.indexOf('endstream', start);
-    const slice = bytes.subarray(start, end < 0 ? bytes.length : end);
-    if (!slice.length || typeof DecompressionStream === 'undefined') return null;
-    try {
-        const stream = new Blob([slice]).stream()
-            .pipeThrough(new DecompressionStream('deflate'));
-        const out = new Uint8Array(await new Response(stream).arrayBuffer());
-        return out.length ? out : null;
-    } catch (e) {
-        // A stream that will not inflate is skipped, exactly as the phone
-        // skips one its inflater rejects. The viewport is usually not in it.
-        return null;
+    const marker = latin1.indexOf('endstream', start);
+    let end = marker < 0 ? bytes.length : marker;
+
+    // Back off the end-of-line PDF writers put between the data and the
+    // `endstream` keyword. The phone's inflater stops when the compressed
+    // stream ends and ignores whatever follows; DecompressionStream refuses
+    // trailing bytes outright, so those two characters were enough to make
+    // every object stream in the file fail to inflate.
+    while (end > start) {
+        const last = bytes[end - 1];
+        if (last === 0x0a || last === 0x0d || last === 0x20) end--;
+        else break;
     }
+
+    const slice = bytes.subarray(start, end);
+    if (!slice.length || typeof DecompressionStream === 'undefined') return null;
+
+    // FlateDecode is zlib-wrapped, but not every producer writes the wrapper,
+    // so raw deflate is tried second rather than the stream being given up on.
+    for (const format of ['deflate', 'deflate-raw']) {
+        try {
+            const stream = new Blob([slice]).stream()
+                .pipeThrough(new DecompressionStream(format));
+            const out = new Uint8Array(await new Response(stream).arrayBuffer());
+            if (out.length) return out;
+        } catch (e) {
+            // Try the other framing before giving up on this stream.
+        }
+    }
+    return null;
 }
 
 /** The searchable text the parser expects: the raw file plus inflated streams. */
