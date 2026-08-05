@@ -3,8 +3,21 @@ package com.rhecyee.firelinemap.medical
 import com.rhecyee.firelinemap.util.CoordinateFormat
 import com.rhecyee.firelinemap.util.CoordinateFormatter
 
-/** One numbered block of a readout, so it can be read a line at a time. */
-data class ReadoutLine(val number: Int, val heading: String, val body: String)
+/**
+ * One numbered block of a readout, so it can be read a line at a time.
+ *
+ * [spokenNow] is false for the slots that exist to be filled later. Lines 7
+ * and 8 are follow-up traffic: on the first call there is genuinely nothing to
+ * say, and reading "updates: none yet, changes: none reported" aloud is two
+ * lines of nothing at the end of an emergency transmission. The form still
+ * shows them, because the numbering is what people are copying.
+ */
+data class ReadoutLine(
+    val number: Int,
+    val heading: String,
+    val body: String,
+    val spokenNow: Boolean = true
+)
 
 /**
  * Turns a report into something that can be read straight off the screen.
@@ -31,15 +44,29 @@ object RadioReadout {
         ReportFormat.MIR -> medicalIncidentReport(report)
     }
 
-    /** The whole thing as one block, for reading aloud or copying out. */
+    /**
+     * The whole thing as one block, for reading aloud or copying out.
+     *
+     * Only the lines that have something to say. Line 1 already carries the
+     * standby call, so the script does not print it again above the list, and
+     * the empty follow-up slots are left out rather than read as blanks.
+     *
+     * It ends by handing the channel back. A transmission that just stops
+     * leaves the other station waiting for more, which on a medical is the
+     * worst pause there is.
+     */
     fun script(report: MedicalReport): String = buildString {
-        appendLine(STANDBY)
-        appendLine()
-        lines(report).forEach { line ->
+        lines(report).filter { it.spokenNow }.forEach { line ->
             appendLine("${line.number}. ${line.heading}")
             appendLine("   ${line.body}")
         }
+        appendLine()
+        append(signOff(report))
     }.trimEnd()
+
+    /** How the call ends: who is talking, and a prompt for the read-back. */
+    private fun signOff(report: MedicalReport): String =
+        "${report.radioName} Medical, how copy?"
 
     /**
      * A single spoken paragraph, for when there is no time for headings.
@@ -52,7 +79,7 @@ object RadioReadout {
         append(report.priority.spoken)
         append(", ")
         append(patients(report))
-        report.natureOfInjury?.takeIf { it.isNotBlank() }?.let { append(" $it") }
+        report.natureOfInjury?.takeIf { it.isNotBlank() }?.let { append(", $it") }
         append(". ")
         append("${report.radioName} Medical. ")
         report.incidentCommander?.takeIf { it.isNotBlank() }?.let { append("IC $it. ") }
@@ -77,6 +104,7 @@ object RadioReadout {
             }
         }
         report.patientAssessment?.takeIf { it.isNotBlank() }?.let { append("${sentence(it)}. ") }
+        append(signOff(report))
     }.trim()
 
 
@@ -97,9 +125,7 @@ object RadioReadout {
             val where = if (
                 report.airPickupLatitude != null && report.airPickupLongitude != null
             ) {
-                CoordinateFormatter.format(
-                    report.airPickupLatitude, report.airPickupLongitude, CoordinateFormat.DDM
-                )
+                spokenPosition(report.airPickupLatitude, report.airPickupLongitude)
             } else {
                 null
             }
@@ -160,16 +186,9 @@ object RadioReadout {
             if (report.resources.isEmpty()) "None."
             else report.resources.joinToString(", ") { it.label } + "."
         ),
-        ReadoutLine(6, "Documentation", documentation(report)),
-        ReadoutLine(
-            7, "Updates",
-            if (report.updates.isEmpty()) "None yet."
-            else report.updates.joinToString(" ") { sentence(it.text) + "." }
-        ),
-        ReadoutLine(
-            8, "Patient Transport / Incident Changes",
-            report.notes?.takeIf { it.isNotBlank() } ?: "No changes reported."
-        )
+        documentationLine(report),
+        updatesLine(report),
+        changesLine(report, "Patient Transport / Incident Changes")
     )
 
     private fun medicalIncidentReport(report: MedicalReport): List<ReadoutLine> = listOf(
@@ -203,17 +222,37 @@ object RadioReadout {
             if (report.resources.isEmpty()) "None."
             else report.resources.joinToString(", ") { it.label } + "."
         ),
-        ReadoutLine(6, "Documentation", documentation(report)),
-        ReadoutLine(
-            7, "Updates",
-            if (report.updates.isEmpty()) "None yet."
-            else report.updates.joinToString(" ") { sentence(it.text) + "." }
-        ),
-        ReadoutLine(
-            8, "Transport / Changes",
-            report.notes?.takeIf { it.isNotBlank() } ?: "No changes reported."
-        )
+        documentationLine(report),
+        updatesLine(report),
+        changesLine(report, "Transport / Changes")
     )
+
+    /**
+     * Who wrote it down. Read out only when it names somebody.
+     *
+     * "Recorded in Fireline Map" is a note to whoever opens the file later,
+     * not something to say on a medical.
+     */
+    private fun documentationLine(report: MedicalReport): ReadoutLine {
+        val named = !report.reporterName.isNullOrBlank()
+        return ReadoutLine(6, "Documentation", documentation(report), spokenNow = named)
+    }
+
+    private fun updatesLine(report: MedicalReport): ReadoutLine = ReadoutLine(
+        7, "Updates",
+        if (report.updates.isEmpty()) "Nothing yet — read these back as they come."
+        else report.updates.joinToString(" ") { sentence(it.text) + "." },
+        spokenNow = report.updates.isNotEmpty()
+    )
+
+    private fun changesLine(report: MedicalReport, heading: String): ReadoutLine {
+        val notes = report.notes?.takeIf { it.isNotBlank() }
+        return ReadoutLine(
+            8, heading,
+            notes ?: "Nothing yet — this is the follow-up call, once they move.",
+            spokenNow = notes != null
+        )
+    }
 
     private fun documentation(report: MedicalReport): String = buildString {
         report.reporterName?.takeIf { it.isNotBlank() }?.let {
@@ -248,7 +287,18 @@ object RadioReadout {
     /** Coordinates in degrees and decimal minutes, as aircraft use them. */
     private fun coordinates(report: MedicalReport): String =
         if (!report.hasPosition) "POSITION NOT YET FIXED"
-        else CoordinateFormatter.format(report.latitude, report.longitude, CoordinateFormat.DDM)
+        else spokenPosition(report.latitude, report.longitude)
+
+    /**
+     * A position as it is said, not as it is tabulated.
+     *
+     * The formatter pads latitude and longitude apart so a column of them
+     * lines up on screen. Read aloud that gap is a stumble, so the two halves
+     * are separated by a comma here instead.
+     */
+    private fun spokenPosition(latitude: Double, longitude: Double): String =
+        CoordinateFormatter.format(latitude, longitude, CoordinateFormat.DDM)
+            .replace("  ", ", ")
 
     private fun spokenList(items: List<String>): String = when (items.size) {
         0 -> ""

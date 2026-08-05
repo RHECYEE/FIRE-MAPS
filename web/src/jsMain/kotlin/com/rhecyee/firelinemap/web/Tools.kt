@@ -4,6 +4,13 @@ import com.rhecyee.firelinemap.measure.AreaUnit
 import com.rhecyee.firelinemap.measure.DistanceUnit
 import com.rhecyee.firelinemap.measure.MeasureMode
 import com.rhecyee.firelinemap.measure.MeasureSession
+import com.rhecyee.firelinemap.medical.MedicalReport
+import com.rhecyee.firelinemap.medical.MedicalResource
+import com.rhecyee.firelinemap.medical.Priority
+import com.rhecyee.firelinemap.medical.RadioReadout
+import com.rhecyee.firelinemap.medical.ReportFormat
+import com.rhecyee.firelinemap.medical.TransportMode
+import kotlin.js.Json
 import kotlin.js.json
 
 /**
@@ -78,4 +85,86 @@ object Tools {
         val scaled = kotlin.math.round(value * scale) / scale
         return if (places == 0) scaled.toInt().toString() else scaled.toString()
     }
+
+    /**
+     * Builds a 206 and reads it back in radio order.
+     *
+     * The order is the whole point of the form: whoever is copying writes the
+     * same things in the same sequence every time, and a version that reorders
+     * them costs the person copying more than it saves. So the browser calls
+     * the phone's own readout rather than composing its own.
+     */
+    fun medicalPlan(fieldsJson: String): String {
+        val raw = JSON.parse<Json>(fieldsJson)
+        fun text(key: String): String? =
+            (raw[key] as? String)?.takeIf { it.isNotBlank() }
+        fun number(key: String): Double? = (raw[key] as? Number)?.toDouble()
+
+        val report = MedicalReport(
+            id = "web",
+            incidentId = "web",
+            createdAt = (raw["createdAt"] as? Number)?.toLong() ?: 0L,
+            incidentName = text("incidentName") ?: "Incident",
+            mapName = null,
+            latitude = number("latitude") ?: 0.0,
+            longitude = number("longitude") ?: 0.0,
+            elevationMeters = number("elevationMeters"),
+            accuracyMeters = number("accuracyMeters")?.toFloat(),
+            reporterName = text("reporterName"),
+            reporterQualification = text("reporterQualification"),
+            priority = Priority.entries.firstOrNull { it.name == raw["priority"] }
+                ?: Priority.RED,
+            patientCount = (raw["patientCount"] as? Number)?.toInt() ?: 1,
+            transport = TransportMode.entries.firstOrNull { it.name == raw["transport"] }
+                ?: TransportMode.GROUND,
+            resources = (raw["resources"] as? Array<*>).orEmpty()
+                .mapNotNull { name -> MedicalResource.entries.firstOrNull { it.name == name } }
+                .toSet(),
+            natureOfInjury = text("natureOfInjury"),
+            patientAssessment = text("patientAssessment"),
+            lzHazards = text("lzHazards"),
+            notes = text("notes"),
+            airPickupName = text("airPickupName"),
+            airPickupLatitude = number("airPickupLatitude"),
+            airPickupLongitude = number("airPickupLongitude"),
+            hasPosition = number("latitude") != null,
+            format = ReportFormat.entries.firstOrNull { it.name == raw["format"] }
+                ?: ReportFormat.MIR
+        )
+
+        return JSON.stringify(
+            json(
+                "lines" to RadioReadout.lines(report).map { line ->
+                    json(
+                        "number" to line.number,
+                        "heading" to line.heading,
+                        "body" to line.body
+                    )
+                }.toTypedArray(),
+                "script" to RadioReadout.script(report),
+                "spoken" to RadioReadout.spoken(report),
+                // What would leave a gap on the radio, so the form can say so
+                // before somebody keys the mic rather than after.
+                "missing" to report.missing.toTypedArray(),
+                "ready" to report.isReadyToTransmit,
+                "needsAir" to report.transport.needsAir,
+                "radioName" to report.radioName
+            )
+        )
+    }
+
+    /** The choices the phone offers, so the two forms cannot drift apart. */
+    fun medicalChoices(): String = JSON.stringify(
+        json(
+            "priority" to Priority.entries.map {
+                json("id" to it.name, "label" to it.label)
+            }.toTypedArray(),
+            "transport" to TransportMode.entries.map {
+                json("id" to it.name, "label" to it.label, "needsAir" to it.needsAir)
+            }.toTypedArray(),
+            "resources" to MedicalResource.entries.map {
+                json("id" to it.name, "label" to it.label)
+            }.toTypedArray()
+        )
+    )
 }

@@ -89,6 +89,9 @@ fun MapCanvas(
     measurePoints: List<MeasurePoint> = emptyList(),
     measureMode: MeasureMode = MeasureMode.DISTANCE,
     markers: List<MarkerEntity> = emptyList(),
+    /** The landing zone on the open 206, so it is visible where it was set. */
+    landingZone: Pair<Double, Double>? = null,
+    landingZoneName: String? = null,
     trackPoints: List<Pair<Double, Double>> = emptyList(),
     savedTracks: List<SavedTrack> = emptyList(),
     searchRegion: SearchRegion? = null,
@@ -788,6 +791,15 @@ fun MapCanvas(
                     title = marker.title,
                     lifted = marker.id == draggingMarkerId
                 )
+            }
+
+            // Above the pins: it is the thing an aircraft is coming to, and
+            // for as long as the 206 is open it outranks everything else on
+            // the sheet.
+            landingZone?.let { (lzLatitude, lzLongitude) ->
+                place(lzLatitude, lzLongitude)?.let {
+                    drawLandingZone(it, landingZoneName)
+                }
             }
 
             if (latitude == null || longitude == null) return@Canvas
@@ -1605,6 +1617,39 @@ private fun DrawScope.drawResourcePin(
                 setShadowLayer(4f, 0f, 0f, android.graphics.Color.BLACK)
             }
             drawText(title.take(12), center.x, top + halfHeight * 2 * scale + 22f, labelPaint)
+        }
+    }
+}
+
+/**
+ * The landing zone named on the medical, drawn where it was put.
+ *
+ * A coordinate typed into a form is a number somebody has to trust. Drawn on
+ * the map it can be checked against the ground in a glance -- which is the
+ * whole reason for dropping it as a pin rather than reading it off a GPS.
+ */
+private fun DrawScope.drawLandingZone(center: Offset, name: String?) {
+    val red = Color(0xFFD50000)
+    // A ring wide enough to read as a place rather than a point.
+    drawCircle(Color.Black, radius = 26f, center = center, alpha = 0.45f)
+    drawCircle(Color.White, radius = 24f, center = center, style = Stroke(width = 6f))
+    drawCircle(red, radius = 24f, center = center, style = Stroke(width = 3f))
+    drawCircle(red, radius = 6f, center = center)
+
+    drawContext.canvas.nativeCanvas.apply {
+        val paint = android.graphics.Paint().apply {
+            color = android.graphics.Color.WHITE
+            textAlign = android.graphics.Paint.Align.CENTER
+            textSize = 23f
+            isAntiAlias = true
+            isFakeBoldText = true
+            setShadowLayer(5f, 0f, 0f, android.graphics.Color.BLACK)
+        }
+        // "LZ" always, and the helispot name under it when there is one: the
+        // name is what goes over the radio, the mark is what gets flown to.
+        drawText("LZ", center.x, center.y - 32f, paint)
+        name?.takeIf { it.isNotBlank() }?.let {
+            drawText(it.take(14), center.x, center.y + 48f, paint)
         }
     }
 }

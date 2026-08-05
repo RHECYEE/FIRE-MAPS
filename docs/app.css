@@ -247,3 +247,40 @@ textarea { min-height: 96px; resize: vertical; }
 .good { color: var(--good); }
 .warn { color: var(--warn); }
 .bad { color: var(--bad); }
+
+/*
+ * The 206, always on screen.
+ *
+ * Red, bottom left, clear of the toolbar and the zoom controls. Held at a
+ * comfortable target size rather than shrunk to fit the label: it is the one
+ * control that has to be hit first time with gloves on and a patient on the
+ * ground.
+ */
+.medical {
+    position: fixed;
+    left: 10px;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 96px);
+    min-width: 74px;
+    min-height: 46px;
+    padding: 0 16px;
+    border: 0;
+    border-radius: 23px;
+    background: #D50000;
+    color: #fff;
+    font-size: 16px;
+    font-weight: 900;
+    letter-spacing: 0.5px;
+    z-index: 4;
+}
+
+.medical.on { background: #7F0000; }
+
+.readout {
+    background: var(--deep);
+    border-radius: 9px;
+    padding: 10px 12px;
+    margin-top: 8px;
+    white-space: pre-wrap;
+    font-size: 14px;
+    line-height: 1.5;
+}

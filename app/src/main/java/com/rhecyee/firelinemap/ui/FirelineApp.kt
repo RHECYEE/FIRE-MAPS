@@ -336,7 +336,7 @@ fun FirelineApp() {
                     DictationField.HAZARDS -> "LZ hazards"
                     DictationField.UPDATE -> "Update"
                     DictationField.RADIO_NAME -> "Radio name"
-                    DictationField.LANDING -> "Helispot or landing zone"
+                    DictationField.LANDING -> "Helispot or drop point"
                 }
             )
         }
@@ -1004,8 +1004,17 @@ fun FirelineApp() {
                     DictationField.ASSESSMENT -> "Patient assessment"
                     DictationField.HAZARDS -> "LZ hazards"
                     DictationField.RADIO_NAME -> "Radio name"
-                    DictationField.LANDING -> "Helispot or landing zone"
+                    DictationField.LANDING -> "Helispot or drop point"
                     DictationField.UPDATE -> "Update"
+                },
+                // Named places only. A coordinate here would be read out as
+                // the destination of the carry, which is not what a helispot
+                // or a drop point is called on the radio.
+                hint = when (field) {
+                    DictationField.LANDING ->
+                        "The name on the IAP — a helispot like H-3, or a drop " +
+                            "point like DP-7. Not a coordinate: drop a pin for that."
+                    else -> null
                 },
                 initial = when (field) {
                     DictationField.NATURE -> report.natureOfInjury.orEmpty()
@@ -1041,7 +1050,11 @@ fun FirelineApp() {
         }
     }
 
-    medicalReport?.let { report ->
+    // Hidden, not closed, while the map is waiting for the landing zone tap.
+    // The form covers the map, so leaving it up to "pick a spot" asks for a
+    // tap on something that is not there. It comes straight back afterwards
+    // with the answer filled in.
+    medicalReport?.takeIf { !placingLandingZone }?.let { report ->
         if (showReadout) {
             RadioReadoutDialog(
                 report = report,
@@ -1066,7 +1079,8 @@ fun FirelineApp() {
                 placingLandingZone = true
                 medicalReport?.let { report -> scope.launch { medical.save(report) } }
                 showReadout = false
-                statusMessage = "Tap the map where the aircraft can land."
+                statusMessage = "Tap the map where the aircraft can land. " +
+                    "The 206 comes back with it filled in."
             },
             // A drop point is a place the responding unit already has on
             // their own map. Offering it saves reading a coordinate aloud.
@@ -1823,6 +1837,16 @@ fun FirelineApp() {
                 markers = markers,
                 trackPoints = liveTrack.points,
                 savedTracks = savedTracks,
+                landingZone = medicalReport?.let { report ->
+                    val lzLatitude = report.airPickupLatitude
+                    val lzLongitude = report.airPickupLongitude
+                    if (lzLatitude != null && lzLongitude != null) {
+                        lzLatitude to lzLongitude
+                    } else {
+                        null
+                    }
+                },
+                landingZoneName = medicalReport?.airPickupName,
                     searchRegion = searchRegion,
                     centreOn = centreRequest,
                     onCentred = { centreRequest = null },
@@ -1844,7 +1868,7 @@ fun FirelineApp() {
                             airPickupLongitude = lon
                         )
                         medicalReport?.let { report -> scope.launch { medical.save(report) } }
-                        statusMessage = "Landing zone set."
+                        statusMessage = "Landing zone set. It is marked LZ on the map."
                     } else if (placingResources && selectedSymbol != null) {
                         pendingPlacement = lat to lon
                     } else if (simMode) {

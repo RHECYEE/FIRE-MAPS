@@ -57,6 +57,8 @@ kotlin {
                 "com/rhecyee/firelinemap/map/TileMath.kt",
                 "com/rhecyee/firelinemap/map/ViewClamp.kt",
                 "com/rhecyee/firelinemap/measure/Measurement.kt",
+                "com/rhecyee/firelinemap/medical/MedicalReport.kt",
+                "com/rhecyee/firelinemap/medical/RadioReadout.kt",
                 "com/rhecyee/firelinemap/resources/ResourceSymbol.kt",
                 "com/rhecyee/firelinemap/share/ExactDuplicates.kt",
                 "com/rhecyee/firelinemap/share/GpxFormat.kt",
@@ -71,6 +73,7 @@ kotlin {
                 "com/rhecyee/firelinemap/terrain/ContourRender.kt",
                 "com/rhecyee/firelinemap/terrain/ElevationGrid.kt",
                 "com/rhecyee/firelinemap/terrain/TerrainMath.kt",
+                "com/rhecyee/firelinemap/util/CoordinateFormatter.kt",
                 "com/rhecyee/firelinemap/util/CoordinateParser.kt",
                 "com/rhecyee/firelinemap/util/GridCoordinates.kt",
             )

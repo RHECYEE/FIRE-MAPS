@@ -225,14 +225,78 @@ class RadioReadoutTest {
     @Test
     fun theScriptIsReadableTopToBottom() {
         val script = RadioReadout.script(report())
-        assertTrue(script.startsWith(RadioReadout.STANDBY))
-        // Every heading present, in order.
+        // Line 1 carries the standby call; the script does not print it twice.
+        assertTrue(script.startsWith("1. Contact Communications"))
+        assertEquals(1, script.split(RadioReadout.STANDBY).size - 1)
+
+        // Every heading that has something to say, in order.
         var cursor = 0
-        for (line in RadioReadout.lines(report())) {
+        for (line in RadioReadout.lines(report()).filter { it.spokenNow }) {
             val at = script.indexOf(line.heading, cursor)
             assertTrue("${line.heading} out of order", at >= cursor)
             cursor = at
         }
+    }
+
+    /**
+     * How it ends.
+     *
+     * The empty follow-up slots used to be read out as "None yet." and "No
+     * changes reported." -- two lines of nothing at the close of an emergency
+     * transmission, and no handoff, so the other station is left waiting for
+     * more that is not coming.
+     */
+    @Test
+    fun theCallEndsByHandingTheChannelBack() {
+        val script = RadioReadout.script(report())
+        assertTrue(script, script.trimEnd().endsWith("Medical, how copy?"))
+        assertTrue(RadioReadout.spoken(report()).trimEnd().endsWith("Medical, how copy?"))
+    }
+
+    @Test
+    fun theEmptyFollowUpSlotsAreNotReadOut() {
+        val script = RadioReadout.script(report())
+        assertFalse(script, script.contains("None yet"))
+        assertFalse(script, script.contains("No changes reported"))
+        assertFalse(script, script.contains("Nothing yet"))
+    }
+
+    /** But the form still shows them, because the numbering is the point. */
+    @Test
+    fun theFormStillCarriesAllEightLines() {
+        val lines = RadioReadout.lines(report())
+        assertEquals(listOf(1, 2, 3, 4, 5, 6, 7, 8), lines.map { it.number })
+        assertTrue(lines.first { it.number == 7 }.body.contains("Nothing yet"))
+        assertFalse(lines.first { it.number == 7 }.spokenNow)
+    }
+
+    @Test
+    fun aFilledFollowUpLineIsReadOut() {
+        val moved = report().copy(notes = "Patient loaded, en route to Grande Ronde")
+        val script = RadioReadout.script(moved)
+        assertTrue(script, script.contains("Patient loaded, en route to Grande Ronde"))
+    }
+
+    /**
+     * The position is read as two halves, not as one run-on.
+     *
+     * The formatter pads them apart so a column of coordinates lines up on
+     * screen; spoken, that gap is a stumble in the middle of the one thing
+     * that has to be copied exactly.
+     */
+    @Test
+    fun theSpokenPositionSeparatesLatitudeFromLongitude() {
+        val spoken = RadioReadout.spoken(report())
+        assertFalse(spoken, spoken.contains("'  "))
+        assertTrue(spoken, spoken.contains("', W "))
+    }
+
+    @Test
+    fun theNatureOfTheInjuryIsSeparatedFromTheCount() {
+        // "one patient fall, lower leg" ran the two together.
+        val spoken = RadioReadout.spoken(report())
+        assertFalse(spoken, spoken.contains("patient fall"))
+        assertTrue(spoken, spoken.contains("one patient, "))
     }
 }
 

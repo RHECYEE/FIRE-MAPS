@@ -126,9 +126,9 @@ fun MedicalSheet(
                     Section("WHERE DOES IT LAND")
                     Text(
                         "If the aircraft cannot land on the patient, name the helispot " +
-                            "or drop a pin for the LZ. The readout then says the patient " +
-                            "is carried to it, which is what tells dispatch a ground unit " +
-                            "is needed as well.",
+                            "or drop point, or drop a pin for the LZ. The readout then " +
+                            "says the patient is carried to it, which is what tells " +
+                            "dispatch a ground unit is needed as well.",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -146,8 +146,11 @@ fun MedicalSheet(
                             modifier = Modifier.weight(1f),
                             fontWeight = FontWeight.Bold
                         )
-                        Chip("Helispot", selected = false) { onType(DictationField.LANDING) }
-                        Chip("Drop LZ pin", selected = false) { onDropLandingZone() }
+                        Chip("Name it", selected = false) { onType(DictationField.LANDING) }
+                        Chip(
+                            if (report.hasSeparateLandingZone) "Move pin" else "Drop LZ pin",
+                            selected = false
+                        ) { onDropLandingZone() }
                     }
                     if (report.hasSeparateLandingZone) {
                         Chip("Lands at the patient instead", selected = false) {
@@ -280,6 +283,8 @@ enum class DictationField { NATURE, ASSESSMENT, HAZARDS, UPDATE, RADIO_NAME, LAN
 fun TextEntryDialog(
     label: String,
     initial: String,
+    /** What belongs in the box, for the fields where that is not obvious. */
+    hint: String? = null,
     onDismiss: () -> Unit,
     onConfirm: (String) -> Unit
 ) {
@@ -290,12 +295,22 @@ fun TextEntryDialog(
         onDismissRequest = onDismiss,
         title = { Text(label) },
         text = {
-            androidx.compose.material3.OutlinedTextField(
-                value = text.value,
-                onValueChange = { text.value = it },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = false
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                androidx.compose.material3.OutlinedTextField(
+                    value = text.value,
+                    onValueChange = { text.value = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = false,
+                    placeholder = hint?.let { { Text("e.g. H-3, or DP-7") } }
+                )
+                hint?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
         },
         confirmButton = { TextButton(onClick = { onConfirm(text.value) }) { Text("Save") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }

@@ -202,7 +202,49 @@ function draw() {
     drawTracks();
     drawMeasure();
     drawPins();
+    drawLandingZone();
     drawMe();
+}
+
+/**
+ * The landing zone on the open 206, drawn where it was put.
+ *
+ * A coordinate typed into a form is a number somebody has to trust. Drawn on
+ * the map it can be checked against the ground in a glance, which is the whole
+ * reason for dropping it as a pin instead of reading it off a GPS.
+ */
+function drawLandingZone() {
+    if (!plan || plan.airPickupLatitude == null || plan.airPickupLongitude == null) return;
+    const at = toScreen(plan.airPickupLatitude, plan.airPickupLongitude);
+
+    ctx.beginPath();
+    ctx.arc(at.x, at.y, 24, 0, Math.PI * 2);
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    ctx.stroke();
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#D50000';
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(at.x, at.y, 6, 0, Math.PI * 2);
+    ctx.fillStyle = '#D50000';
+    ctx.fill();
+
+    ctx.font = '800 13px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = 'rgba(0,0,0,0.75)';
+    ctx.fillStyle = '#fff';
+    // "LZ" always, and the name under it when there is one: the name is what
+    // goes over the radio, the mark is what gets flown to.
+    ctx.strokeText('LZ', at.x, at.y - 34);
+    ctx.fillText('LZ', at.x, at.y - 34);
+    if (plan.airPickupName) {
+        ctx.strokeText(plan.airPickupName.slice(0, 14), at.x, at.y + 38);
+        ctx.fillText(plan.airPickupName.slice(0, 14), at.x, at.y + 38);
+    }
 }
 
 /** Past two minutes of silence the receiver was not reporting, not stopped. */
@@ -793,6 +835,18 @@ function pinAt(clientX, clientY) {
 function onTap(clientX, clientY) {
     const where = toGeo(clientX, clientY);
 
+    if (placingLandingZone) {
+        // The one tap the 206 is waiting on, so it comes before every tool.
+        placingLandingZone = false;
+        plan.airPickupLatitude = where.latitude;
+        plan.airPickupLongitude = where.longitude;
+        savePlan();
+        banner('Landing zone set. It is marked LZ on the map.', 'good');
+        draw();
+        showPlan();
+        return;
+    }
+
     if (measure.on) { addMeasurePoint(where.latitude, where.longitude); return; }
 
     if (movingPin !== null) {
@@ -1133,6 +1187,217 @@ function applyParts(body) {
         filtered.describe + ' from ' + (incoming.author || incoming.incidentName),
         (fresh.pins || []).length + (fresh.tracks || []).length ? 'good' : 'warn'
     );
+}
+
+
+// -------------------------------------------------------------------- 206
+
+/**
+ * The medical plan, which is the one thing here that has to work first time.
+ *
+ * The form is filled in from what the app already knows -- incident, position,
+ * who is reporting -- because nobody types a coordinate with a patient on the
+ * ground. Everything it produces comes from the phone's own readout, in the
+ * phone's own order: whoever is copying it writes the same things in the same
+ * sequence every time, and a browser that reordered them would cost the person
+ * copying more than it saved.
+ */
+let plan = Store.read('medical', null);
+
+function blankPlan() {
+    return {
+        createdAt: Date.now(),
+        incidentName: incident,
+        latitude: position ? position.latitude : null,
+        longitude: position ? position.longitude : null,
+        accuracyMeters: position ? position.accuracy : null,
+        reporterName: Store.read('author', '') || null,
+        priority: 'RED',
+        patientCount: 1,
+        transport: 'GROUND',
+        resources: [],
+        natureOfInjury: null,
+        patientAssessment: null,
+        lzHazards: null,
+        airPickupName: null,
+        airPickupLatitude: null,
+        airPickupLongitude: null,
+        format: 'MIR'
+    };
+}
+
+function savePlan() { Store.write('medical', plan); }
+
+/** Set while the next map tap is to become the landing zone. */
+let placingLandingZone = false;
+
+document.getElementById('medicalTool').onclick = () => {
+    if (!plan) { plan = blankPlan(); savePlan(); }
+    showPlan();
+};
+
+/**
+ * The nearest drop point or helispot already on the map.
+ *
+ * Offered because it is somewhere the responding unit already has, and can
+ * drive to without anybody reading a coordinate aloud. Only when it is close
+ * enough to be the same place.
+ */
+function nearestDropPoint() {
+    if (!plan || plan.latitude == null || !K) return null;
+    let best = null, bestAway = 1609;
+    pins.forEach(pin => {
+        if (pin.symbolId !== 'drop_point' && pin.symbolId !== 'helispot') return;
+        const away = K.distanceMeters(plan.latitude, plan.longitude,
+            pin.latitude, pin.longitude);
+        if (away < bestAway) { bestAway = away; best = pin; }
+    });
+    return best ? { pin: best, away: bestAway } : null;
+}
+
+function showPlan() {
+    if (!T || !K) { banner('The 206 did not load.', 'bad'); return; }
+    const out = JSON.parse(T.medicalPlan(JSON.stringify(plan)));
+    const choices = JSON.parse(T.medicalChoices());
+    const near = nearestDropPoint();
+
+    const chips = (list, current, group) => list.map(c =>
+        `<button class="chip" data-group="${group}" data-id="${c.id}"
+            style="margin:3px;background:${
+                (Array.isArray(current) ? current.includes(c.id) : current === c.id)
+                ? '#1565C0' : '#25404F'}">${c.label}</button>`).join('');
+
+    openSheet('206 — Medical plan', `
+        ${out.missing.length ? `<p class="note warn">Still needed before this goes
+            out: ${out.missing.join(', ')}.</p>`
+          : '<p class="note good">Ready to transmit.</p>'}
+
+        <h4>Priority</h4><div>${chips(choices.priority, plan.priority, 'priority')}</div>
+        <h4>Patients</h4><div>${chips(
+            [1,2,3,4].map(n => ({ id: String(n), label: n === 4 ? '4+' : String(n) })),
+            String(plan.patientCount), 'patients')}</div>
+        <h4>Transport</h4><div>${chips(choices.transport, plan.transport, 'transport')}</div>
+
+        ${out.needsAir ? `
+          <h4>Where does it land</h4>
+          <p class="note">If the aircraft cannot land on the patient, name the
+            helispot or drop point, or drop a pin for the LZ. The readout then says
+            the patient is carried to it, which is what tells dispatch a ground unit
+            is needed too.</p>
+          <input id="planLanding" value="${escapeHtml(plan.airPickupName || '')}"
+                 placeholder="Helispot or drop point — H-3, DP-7">
+          <p class="note">The name on the IAP, not a coordinate — that is what
+            goes over the radio. Drop a pin for the position.</p>
+          <button class="wide quiet" id="planDropLz">${
+            (plan.airPickupLatitude != null) ? 'LZ PIN SET — MOVE IT'
+            : 'DROP A PIN FOR THE LZ'}</button>
+          ${(plan.airPickupLatitude != null || plan.airPickupName) ? `
+            <button class="wide quiet" id="planNoLz">IT LANDS AT THE PATIENT</button>` : ''}
+          <h4>LZ hazards</h4>
+          <input id="planHazards" value="${escapeHtml(plan.lzHazards || '')}"
+                 placeholder="Wires north, snags east…">` : ''}
+
+        <h4>Resources</h4><div>${chips(choices.resources, plan.resources, 'resources')}</div>
+
+        <h4>Nature of injury</h4>
+        <input id="planNature" value="${escapeHtml(plan.natureOfInjury || '')}">
+        <h4>Patient assessment</h4>
+        <input id="planAssessment" value="${escapeHtml(plan.patientAssessment || '')}">
+
+        <h4>Radio name</h4>
+        <p class="note"><b>${escapeHtml(out.radioName)} Medical</b> — this is the
+          incident name, not a callsign.</p>
+
+        ${near ? `<p class="note warn">Nearest drop point:
+            ${escapeHtml(near.pin.title)}, ${
+              Math.round(near.away * 3.280839895)} ft away — give this as the
+            location if it is close enough. It is already on their map.</p>` : ''}
+
+        <button class="wide" id="planRead">READ IT OUT</button>
+        <button class="wide quiet" id="planCopy">COPY THE SCRIPT</button>
+        <button class="wide danger" id="planClear">CLEAR THIS 206</button>
+    `);
+
+    document.querySelectorAll('#sheetBody .chip[data-group]').forEach(button => {
+        button.onclick = () => {
+            const id = button.dataset.id;
+            switch (button.dataset.group) {
+                case 'priority': plan.priority = id; break;
+                case 'patients': plan.patientCount = +id; break;
+                case 'transport': plan.transport = id; break;
+                case 'resources':
+                    plan.resources = plan.resources.includes(id)
+                        ? plan.resources.filter(r => r !== id)
+                        : plan.resources.concat([id]);
+                    break;
+            }
+            capturePlanText();
+            savePlan();
+            showPlan();
+        };
+    });
+
+    document.getElementById('planDropLz') && (
+        document.getElementById('planDropLz').onclick = () => {
+            capturePlanText(); savePlan();
+            placingLandingZone = true;
+            // The form covers the map, so it goes away for the one tap and
+            // comes straight back with the answer in it.
+            closeSheet();
+            banner('Tap the map where the aircraft can land. ' +
+                'The 206 comes back with it filled in.', 'good');
+        });
+
+    // Clears the carry entirely: no name, no pin, so the readout goes back to
+    // saying the aircraft lands on the patient.
+    document.getElementById('planNoLz') && (
+        document.getElementById('planNoLz').onclick = () => {
+            plan.airPickupName = null;
+            plan.airPickupLatitude = null;
+            plan.airPickupLongitude = null;
+            savePlan();
+            draw();
+            showPlan();
+        });
+
+    document.getElementById('planRead').onclick = () => {
+        capturePlanText(); savePlan();
+        openSheet('Read this out', `
+            ${out.missing.length ? `<p class="note warn">Gaps: ${
+                out.missing.join(', ')}.</p>` : ''}
+            <div class="readout">${escapeHtml(
+                JSON.parse(T.medicalPlan(JSON.stringify(plan))).script)}</div>
+            <button class="wide quiet" id="backToPlan">BACK TO THE FORM</button>`);
+        document.getElementById('backToPlan').onclick = showPlan;
+    };
+
+    document.getElementById('planCopy').onclick = async () => {
+        capturePlanText(); savePlan();
+        const script = JSON.parse(T.medicalPlan(JSON.stringify(plan))).script;
+        try { await navigator.clipboard.writeText(script); banner('Copied.', 'good'); }
+        catch (e) { banner('Could not reach the clipboard.', 'bad'); }
+    };
+
+    document.getElementById('planClear').onclick = () => {
+        plan = null; Store.write('medical', null); closeSheet();
+        banner('206 cleared.', 'warn');
+    };
+}
+
+/** Reads the typed fields back before anything redraws the form. */
+function capturePlanText() {
+    const take = id => {
+        const element = document.getElementById(id);
+        return element ? (element.value.trim() || null) : undefined;
+    };
+    const nature = take('planNature');
+    const assessment = take('planAssessment');
+    const hazards = take('planHazards');
+    const landing = take('planLanding');
+    if (nature !== undefined) plan.natureOfInjury = nature;
+    if (assessment !== undefined) plan.patientAssessment = assessment;
+    if (hazards !== undefined) plan.lzHazards = hazards;
+    if (landing !== undefined) plan.airPickupName = landing;
 }
 
 // ------------------------------------------------------------------ list
