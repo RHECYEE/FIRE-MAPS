@@ -78,6 +78,7 @@ import com.rhecyee.firelinemap.resources.ResourceRepository
 import com.rhecyee.firelinemap.resources.ResourceSymbol
 import com.rhecyee.firelinemap.incident.IncidentNaming
 import com.rhecyee.firelinemap.share.ShareIntents
+import com.rhecyee.firelinemap.share.TextCodec
 import com.rhecyee.firelinemap.share.SharePackage
 import com.rhecyee.firelinemap.share.SharePin
 import com.rhecyee.firelinemap.share.SharePoint
@@ -223,6 +224,10 @@ fun FirelineApp() {
     // Held while the operator chooses how to send it, so the package is
     // built once and every size shown in the dialog is the real one.
     var sharing by remember { mutableStateOf<SharePackage?>(null) }
+    // Parts pasted in from a message. Held here rather than in the dialog
+    // so closing it to go and copy the next part does not lose the ones
+    // already in, which is exactly what an operator will do.
+    var pasted by remember { mutableStateOf(TextCodec.Assembly()) }
     var incidentTallies by remember { mutableStateOf<Map<String, IncidentTally>>(emptyMap()) }
     // Set when the app made an incident by itself, so it can ask for the real
     // name once rather than leaving a placeholder on every medical report.
@@ -1345,6 +1350,7 @@ fun FirelineApp() {
     sharing?.let { pkg ->
         ShareSheet(
             pkg = pkg,
+            assembly = pasted,
             onText = {
                 statusMessage = if (ShareIntents.text(context, pkg)) null
                 else "Nothing on this phone will send a message."
@@ -1361,6 +1367,83 @@ fun FirelineApp() {
                 else "Could not prepare the file to send."
                 sharing = null
             },
+            onCopyPart = { part ->
+                val clipboard =
+                    context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("Fireline part", part))
+                statusMessage = "Copied — paste it into a message."
+            },
+            onPaste = { text ->
+                val part = TextCodec.readPart(text)
+                if (part == null) {
+                    statusMessage = "That is not a Fireline part — it should start FL1;"
+                } else {
+                    pasted = pasted.plus(part)
+                    statusMessage = null
+                }
+            },
+            onApplyPasted = {
+                val body = pasted.body()
+                val incoming = if (pasted.verified() && body != null) {
+                    TextCodec.decode(body)
+                } else {
+                    null
+                }
+                val target = incidentId
+                if (incoming == null || target == null) {
+                    statusMessage = "Those parts could not be read."
+                } else {
+                    scope.launch {
+                        // Added to whatever is open, and nothing already there
+                        // is touched. Somebody else's tracks are information,
+                        // not a replacement for your own.
+                        incoming.pins.forEach { pin ->
+                            resources.place(
+                                target,
+                                ResourceSymbol.byId(pin.symbolId),
+                                pin.title,
+                                pin.note,
+                                pin.latitude,
+                                pin.longitude
+                            )
+                        }
+                        incoming.tracks.forEach { track ->
+                            val fixes = track.points.map {
+                                com.rhecyee.firelinemap.location.Fix(
+                                    it.latitude, it.longitude, it.timeMillis ?: 0L
+                                )
+                            }
+                            var metres = 0.0
+                            for (index in 0 until fixes.lastIndex) {
+                                metres += MapCoverage.distanceMeters(
+                                    fixes[index].latitude, fixes[index].longitude,
+                                    fixes[index + 1].latitude, fixes[index + 1].longitude
+                                )
+                            }
+                            app.database.dao().upsertTrack(
+                                com.rhecyee.firelinemap.data.TrackEntity(
+                                    id = UUID.randomUUID().toString(),
+                                    incidentId = target,
+                                    // Whose track it is matters as much as
+                                    // where it went.
+                                    name = incoming.author?.let { "${track.name} ($it)" }
+                                        ?: track.name,
+                                    startedAt = track.startedAt ?: System.currentTimeMillis(),
+                                    endedAt = track.endedAt,
+                                    distanceMeters = metres,
+                                    geometryGeoJson = TrackGeometry.write(fixes),
+                                    note = "Received from ${incoming.author ?: "a message"}"
+                                )
+                            )
+                        }
+                        statusMessage = "Added ${incoming.describe()} from " +
+                            (incoming.author ?: incoming.incidentName) + "."
+                        pasted = TextCodec.Assembly()
+                        sharing = null
+                    }
+                }
+            },
+            onClearPasted = { pasted = TextCodec.Assembly() },
             onDismiss = { sharing = null }
         )
     }

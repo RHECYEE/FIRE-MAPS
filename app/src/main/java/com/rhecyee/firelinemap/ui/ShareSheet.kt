@@ -2,15 +2,26 @@ package com.rhecyee.firelinemap.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -18,133 +29,261 @@ import androidx.compose.ui.unit.dp
 import com.rhecyee.firelinemap.share.ShareIntents
 import com.rhecyee.firelinemap.share.SharePackage
 import com.rhecyee.firelinemap.share.ShareText
+import com.rhecyee.firelinemap.share.TextCodec
 
 /**
- * Choosing how positions leave the phone.
+ * Moving tracks and pins between phones, in both directions.
  *
- * Two paths, because they fail in different places. The file carries
- * everything and opens in any mapping app, but a picture message is capped by
- * the carrier and an unknown file type is sometimes refused outright, so it
- * can silently not arrive. The text carries only positions, but it reaches any
- * phone ever made, needs nothing installed at the other end, and can be read
- * out over a radio.
+ * Three ways out, because they fail in different places and the one that works
+ * depends on where you are standing.
  *
- * Both say what they will actually do before they do it -- how many parts the
- * message will arrive in, how big the file is, and whether a track had to be
- * thinned to fit.
+ * The file carries everything and opens in any mapping app, but a carrier caps
+ * a picture message and sometimes refuses an unfamiliar file type outright, so
+ * it can quietly not arrive. The readable text carries positions only, but
+ * reaches any phone and can be read over a radio. The pasted parts carry the
+ * whole thing -- track shapes, times, symbols -- as characters in the body of
+ * a message, which nothing between here and there can refuse.
+ *
+ * Receiving is in the same place as sending on purpose. It is one question --
+ * how does this get to somebody else, and how does theirs get to me -- and
+ * splitting it across two screens is how an operator ends up not knowing the
+ * second half exists.
  */
 @Composable
 fun ShareSheet(
     pkg: SharePackage,
+    assembly: TextCodec.Assembly,
     onText: () -> Unit,
     onSendFile: () -> Unit,
     onSendFullFile: () -> Unit,
+    onCopyPart: (String) -> Unit,
+    onPaste: (String) -> Unit,
+    onApplyPasted: () -> Unit,
+    onClearPasted: () -> Unit,
     onDismiss: () -> Unit
+) {
+    var receiving by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (receiving) "Paste from a message" else "Send ${pkg.describe()}") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 460.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = !receiving,
+                        onClick = { receiving = false },
+                        label = { Text("SEND") }
+                    )
+                    FilterChip(
+                        selected = receiving,
+                        onClick = { receiving = true },
+                        label = { Text("RECEIVE") }
+                    )
+                }
+                HorizontalDivider()
+
+                if (receiving) {
+                    Receive(
+                        assembly = assembly,
+                        onPaste = onPaste,
+                        onApply = onApplyPasted,
+                        onClear = onClearPasted
+                    )
+                } else {
+                    Send(
+                        pkg = pkg,
+                        onText = onText,
+                        onSendFile = onSendFile,
+                        onSendFullFile = onSendFullFile,
+                        onCopyPart = onCopyPart
+                    )
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("CLOSE") } }
+    )
+}
+
+@Composable
+private fun Send(
+    pkg: SharePackage,
+    onText: () -> Unit,
+    onSendFile: () -> Unit,
+    onSendFullFile: () -> Unit,
+    onCopyPart: (String) -> Unit
 ) {
     val message = remember(pkg) { ShareText.message(pkg) }
     val segments = remember(message) { ShareText.segments(message) }
     val fullBytes = remember(pkg) { ShareIntents.sizeOf(pkg) }
     val prepared = remember(pkg) { ShareIntents.prepareForMessage(pkg) }
+    val parts = remember(pkg) { TextCodec.parts(pkg) }
+    var nextPart by remember(pkg) { mutableIntStateOf(0) }
     val overBudget = fullBytes > ShareIntents.MESSAGE_BUDGET_BYTES
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Send ${pkg.describe()}") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-
-                Text(
-                    "TEXT IT",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Black,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Text(
-                    "Positions in the message itself. Arrives on any phone, needs " +
-                        "nothing installed, and reads out over a radio." +
-                        if (pkg.tracks.isNotEmpty()) " Track shapes are not included." else "",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Button(onClick = onText, modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        if (segments == 1) "TEXT IT — one message"
-                        else "TEXT IT — $segments parts",
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-                // Past about four parts phones start delivering out of order,
-                // and a coordinate gets reassembled by hand.
-                if (segments > 4) {
-                    Text(
-                        "That is a lot of parts. They can arrive out of order — " +
-                            "consider sending the file, or fewer pins.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color(0xFFFFB74D)
-                    )
-                }
-
-                Text(
-                    "SEND THE FILE",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Black,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Text(
-                    "A GPX, through whatever you pick — Bluetooth, a message, email, " +
-                        "a nearby phone. Opens in Gaia, CalTopo, Avenza or another " +
-                        "copy of this app, including on an iPhone.",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                if (overBudget) {
-                    // The whole reason this dialog exists rather than a single
-                    // button: over the carrier cap an attachment is refused,
-                    // usually with nothing worth reading as an error.
-                    Text(
-                        "Full detail is ${kilobytes(fullBytes)}, over what most carriers " +
-                            "will send in a picture message.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color(0xFFFFB74D)
-                    )
-                    if (prepared.fits) {
-                        Button(onClick = onSendFile, modifier = Modifier.fillMaxWidth()) {
-                            Text(
-                                "SEND FILE — ${kilobytes(ShareIntents.sizeOf(prepared.pkg))}, " +
-                                    "fits a text",
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                        Text(
-                            prepared.describe(pkg),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    } else {
-                        Text(
-                            "This will not fit a picture message even thinned. Send it " +
-                                "over email, Bluetooth or a nearby phone instead.",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color(0xFFFFB74D)
-                        )
-                    }
-                    OutlinedButton(onClick = onSendFullFile, modifier = Modifier.fillMaxWidth()) {
-                        Text("SEND FULL DETAIL — ${kilobytes(fullBytes)}")
-                    }
-                } else {
-                    Button(onClick = onSendFullFile, modifier = Modifier.fillMaxWidth()) {
-                        Text(
-                            "SEND FILE — ${kilobytes(fullBytes)}, full detail",
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-            }
-        },
-        confirmButton = {},
-        dismissButton = { TextButton(onClick = onDismiss) { Text("CANCEL") } }
+    Heading("PASTE-ABLE PARTS — REDRAWS EVERYTHING")
+    Note(
+        "Copy each part into a message. Whoever gets it pastes them back under " +
+            "RECEIVE and the tracks and pins redraw exactly. Nothing between here " +
+            "and there can refuse it — no attachment, no file type, no size cap."
     )
+    Button(
+        onClick = {
+            onCopyPart(parts[nextPart])
+            if (nextPart < parts.lastIndex) nextPart++
+        },
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Text(
+            if (parts.size == 1) "COPY — one part"
+            else "COPY PART ${nextPart + 1} OF ${parts.size}",
+            fontWeight = FontWeight.Bold
+        )
+    }
+    if (parts.size > 1) {
+        Note(
+            if (nextPart == parts.lastIndex) {
+                "Last one. Send them all — they can be pasted in any order."
+            } else {
+                "Paste that into a message, then come back for part ${nextPart + 2}."
+            }
+        )
+    }
+
+    HorizontalDivider()
+
+    Heading("TEXT IT — POSITIONS ONLY")
+    Note(
+        "Readable coordinates in the message itself, for somebody without this " +
+            "app." + if (pkg.tracks.isNotEmpty()) " Track shapes are not included." else ""
+    )
+    OutlinedButton(onClick = onText, modifier = Modifier.fillMaxWidth()) {
+        Text(if (segments == 1) "TEXT IT — one message" else "TEXT IT — $segments parts")
+    }
+
+    HorizontalDivider()
+
+    Heading("SEND THE FILE")
+    Note(
+        "A GPX, through whatever you pick — Bluetooth, a message, email, a nearby " +
+            "phone. Opens in Gaia, CalTopo, Avenza or another copy of this app."
+    )
+    if (overBudget) {
+        Warn(
+            "Full detail is ${kilobytes(fullBytes)}, over what most carriers will " +
+                "send in a picture message."
+        )
+        if (prepared.fits) {
+            OutlinedButton(onClick = onSendFile, modifier = Modifier.fillMaxWidth()) {
+                Text("SEND FILE — ${kilobytes(ShareIntents.sizeOf(prepared.pkg))}, fits a text")
+            }
+            Note(prepared.describe(pkg))
+        } else {
+            Warn(
+                "This will not fit a picture message even thinned. Use email, " +
+                    "Bluetooth, a nearby phone — or the pasted parts above."
+            )
+        }
+        OutlinedButton(onClick = onSendFullFile, modifier = Modifier.fillMaxWidth()) {
+            Text("SEND FULL DETAIL — ${kilobytes(fullBytes)}")
+        }
+    } else {
+        OutlinedButton(onClick = onSendFullFile, modifier = Modifier.fillMaxWidth()) {
+            Text("SEND FILE — ${kilobytes(fullBytes)}, full detail")
+        }
+    }
+}
+
+@Composable
+private fun Receive(
+    assembly: TextCodec.Assembly,
+    onPaste: (String) -> Unit,
+    onApply: () -> Unit,
+    onClear: () -> Unit
+) {
+    var typed by remember { mutableStateOf("") }
+
+    Note(
+        "Paste one part at a time from the message. Order does not matter, and " +
+            "extra text around it is ignored."
+    )
+    OutlinedTextField(
+        value = typed,
+        onValueChange = { typed = it },
+        label = { Text("Paste a part here") },
+        placeholder = { Text("FL1;…") },
+        modifier = Modifier.fillMaxWidth(),
+        maxLines = 4
+    )
+    Button(
+        onClick = {
+            onPaste(typed)
+            typed = ""
+        },
+        enabled = typed.isNotBlank(),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Text("ADD THIS PART", fontWeight = FontWeight.Bold)
+    }
+
+    Text(
+        assembly.describe(),
+        fontWeight = FontWeight.Bold,
+        color = if (assembly.isComplete) Color(0xFF69F0AE)
+        else MaterialTheme.colorScheme.onSurfaceVariant
+    )
+
+    if (assembly.isComplete) {
+        if (assembly.verified()) {
+            Button(onClick = onApply, modifier = Modifier.fillMaxWidth()) {
+                Text("DRAW IT ON THIS INCIDENT", fontWeight = FontWeight.Bold)
+            }
+            // Said plainly. The pins and tracks are added to whatever incident
+            // is open, and nothing is removed to make room.
+            Note("Adds to the incident you have open. Nothing already here is changed.")
+        } else {
+            // The checksum is the only thing standing between a paste that
+            // stopped halfway and a track that looks right and is not.
+            Warn(
+                "Those parts do not add up — something was cut short or came from " +
+                    "a different message. Clear and paste them again."
+            )
+        }
+    }
+
+    if (assembly.parts.isNotEmpty()) {
+        TextButton(onClick = onClear) { Text("CLEAR PASTED PARTS") }
+    }
+}
+
+@Composable
+private fun Heading(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.labelMedium,
+        fontWeight = FontWeight.Black,
+        color = MaterialTheme.colorScheme.primary
+    )
+}
+
+@Composable
+private fun Note(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+}
+
+@Composable
+private fun Warn(text: String) {
+    Text(text, style = MaterialTheme.typography.labelSmall, color = Color(0xFFFFB74D))
 }
 
 private fun kilobytes(bytes: Int): String {
