@@ -53,28 +53,39 @@ object TextCodec {
     fun encode(pkg: SharePackage): String {
         val records = mutableListOf<String>()
         records += listOf("i", escape(pkg.incidentName), escape(pkg.author ?: "")).join()
-
-        pkg.pins.forEach { pin ->
-            records += listOf(
-                "p",
-                escape(pin.title),
-                PolylineCodec.encodePoints(listOf(pin.latitude to pin.longitude)),
-                escape(pin.symbolId ?: ""),
-                escape(pin.note ?: "")
-            ).join()
-        }
-
-        pkg.tracks.forEach { track ->
-            records += listOf(
-                "t",
-                escape(track.name),
-                PolylineCodec.encodePoints(track.points.map { it.latitude to it.longitude }),
-                PolylineCodec.encodeTimes(track.points.map { it.timeMillis ?: 0L })
-            ).join()
-        }
-
+        pkg.pins.forEach { records += recordOf(it) }
+        pkg.tracks.forEach { records += recordOf(it) }
         return records.joinToString(RECORD.toString())
     }
+
+    /**
+     * One pin, exactly as it goes down the wire.
+     *
+     * Exposed so two copies of a pin can be compared as the bytes they encode
+     * to. That comparison is safe in a way a comparison of positions is not:
+     * it asks whether these are literally the same record, not whether two
+     * pins near each other are the same thing on the ground -- which is a
+     * judgement no app should be making about somebody's fire.
+     *
+     * Deliberately excludes the id and the time it was placed. Those differ on
+     * every phone that holds the same pin, and including them would mean a
+     * package received twice arrived as two of everything.
+     */
+    fun recordOf(pin: SharePin): String = listOf(
+        "p",
+        escape(pin.title),
+        PolylineCodec.encodePoints(listOf(pin.latitude to pin.longitude)),
+        escape(pin.symbolId ?: ""),
+        escape(pin.note ?: "")
+    ).join()
+
+    /** One track, exactly as it goes down the wire. */
+    fun recordOf(track: ShareTrack): String = listOf(
+        "t",
+        escape(track.name),
+        PolylineCodec.encodePoints(track.points.map { it.latitude to it.longitude }),
+        PolylineCodec.encodeTimes(track.points.map { it.timeMillis ?: 0L })
+    ).join()
 
     /**
      * The package as numbered parts, each ready to paste into a message.

@@ -77,6 +77,7 @@ import com.rhecyee.firelinemap.data.MarkerEntity
 import com.rhecyee.firelinemap.resources.ResourceRepository
 import com.rhecyee.firelinemap.resources.ResourceSymbol
 import com.rhecyee.firelinemap.incident.IncidentNaming
+import com.rhecyee.firelinemap.share.ExactDuplicates
 import com.rhecyee.firelinemap.share.ShareIntents
 import com.rhecyee.firelinemap.share.TextCodec
 import com.rhecyee.firelinemap.share.SharePackage
@@ -1419,11 +1420,19 @@ fun FirelineApp() {
                 if (incoming == null || target == null) {
                     statusMessage = "Those parts could not be read."
                 } else {
+                    // Copies of records already held are dropped. Not pins that
+                    // are merely near each other -- that is a judgement for a
+                    // radio -- only records that encode to exactly the same
+                    // bytes as one already here. The case this serves is a
+                    // sender adding one track and re-sending the whole
+                    // incident, which without it leaves two of everything else.
+                    val filtered = ExactDuplicates.filter(incoming, sharePackage())
+                    val fresh = filtered.kept
                     scope.launch {
                         // Added to whatever is open, and nothing already there
                         // is touched. Somebody else's tracks are information,
                         // not a replacement for your own.
-                        incoming.pins.forEach { pin ->
+                        fresh.pins.forEach { pin ->
                             resources.place(
                                 target,
                                 ResourceSymbol.byId(pin.symbolId),
@@ -1433,7 +1442,7 @@ fun FirelineApp() {
                                 pin.longitude
                             )
                         }
-                        incoming.tracks.forEach { track ->
+                        fresh.tracks.forEach { track ->
                             val fixes = track.points.map {
                                 com.rhecyee.firelinemap.location.Fix(
                                     it.latitude, it.longitude, it.timeMillis ?: 0L
@@ -1463,10 +1472,12 @@ fun FirelineApp() {
                                     id = UUID.randomUUID().toString(),
                                     incidentId = target,
                                     elapsedSeconds = elapsedSeconds,
-                                    // Whose track it is matters as much as
-                                    // where it went.
-                                    name = incoming.author?.let { "${track.name} ($it)" }
-                                        ?: track.name,
+                                    // Left exactly as it was sent. Adding
+                                    // the sender's name here would mean the
+                                    // stored track no longer encoded to what
+                                    // they sent, so re-sending planted a second
+                                    // copy. Whose it is lives in the note.
+                                    name = track.name,
                                     startedAt = track.startedAt ?: System.currentTimeMillis(),
                                     endedAt = track.endedAt,
                                     distanceMeters = metres,
@@ -1475,7 +1486,7 @@ fun FirelineApp() {
                                 )
                             )
                         }
-                        statusMessage = "Added ${incoming.describe()} from " +
+                        statusMessage = filtered.describe() + " from " +
                             (incoming.author ?: incoming.incidentName) + "."
                         pasted = TextCodec.Assembly()
                         sharing = null
