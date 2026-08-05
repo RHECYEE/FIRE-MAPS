@@ -1,6 +1,8 @@
 package com.rhecyee.firelinemap.web
 
 import com.rhecyee.firelinemap.location.OverlapReport
+import com.rhecyee.firelinemap.location.TrackRecord
+import com.rhecyee.firelinemap.share.ExactDuplicates
 import com.rhecyee.firelinemap.share.SharePackage
 import com.rhecyee.firelinemap.share.SharePin
 import com.rhecyee.firelinemap.share.SharePoint
@@ -71,6 +73,48 @@ internal object PackageJson {
                 note = track["note"] as? String
             )
         }
+
+    /**
+     * What was recorded and what was only inferred.
+     *
+     * The wording comes from the shared code rather than the page, so the
+     * browser cannot quietly drop the word "estimated" that the phone shows.
+     */
+    fun writeProvenance(record: TrackRecord): String = JSON.stringify(
+        json(
+            "provenance" to record.provenance.name,
+            "label" to record.provenance.label,
+            "summary" to record.summary().toTypedArray(),
+            "gaps" to record.gaps.map { gap ->
+                json(
+                    "startLatitude" to gap.startLatitude,
+                    "startLongitude" to gap.startLongitude,
+                    "endLatitude" to gap.endLatitude,
+                    "endLongitude" to gap.endLongitude,
+                    "elapsed" to OverlapReport.formatElapsed(gap.elapsedMillis),
+                    "straightLine" to
+                        OverlapReport.formatDistance(gap.displacementMeters),
+                    // Never "average". It is displacement over time, which is a
+                    // floor on the real travel speed and not a measurement of it.
+                    "atLeastSpeed" to gap.estimatedSpeedMetersPerSecond?.let {
+                        OverlapReport.formatSpeed(it)
+                    },
+                    "describe" to gap.describe()
+                )
+            }.toTypedArray()
+        )
+    )
+
+    /** What survived the duplicate filter, with the counts that were dropped. */
+    fun writeFiltered(result: ExactDuplicates.Result): String = JSON.stringify(
+        json(
+            "kept" to toJson(result.kept),
+            "duplicatePins" to result.duplicatePins,
+            "duplicateTracks" to result.duplicateTracks,
+            "duplicates" to result.duplicates,
+            "describe" to result.describe()
+        )
+    )
 
     /** The merge readout, with the figures already formatted the way it reads. */
     fun writeOverlap(report: OverlapReport): String = JSON.stringify(

@@ -46,6 +46,8 @@ kotlin {
                 "com/rhecyee/firelinemap/geopdf/UtmProjection.kt",
                 "com/rhecyee/firelinemap/location/TrackColours.kt",
                 "com/rhecyee/firelinemap/location/TrackDetector.kt",
+                "com/rhecyee/firelinemap/location/TrackMerge.kt",
+                "com/rhecyee/firelinemap/location/TrackProvenance.kt",
                 "com/rhecyee/firelinemap/location/TrackGeometry.kt",
                 "com/rhecyee/firelinemap/location/TrackOverlap.kt",
                 "com/rhecyee/firelinemap/map/Earth.kt",
@@ -56,6 +58,7 @@ kotlin {
                 "com/rhecyee/firelinemap/map/ViewClamp.kt",
                 "com/rhecyee/firelinemap/measure/Measurement.kt",
                 "com/rhecyee/firelinemap/resources/ResourceSymbol.kt",
+                "com/rhecyee/firelinemap/share/ExactDuplicates.kt",
                 "com/rhecyee/firelinemap/share/GpxFormat.kt",
                 "com/rhecyee/firelinemap/share/IsoTime.kt",
                 "com/rhecyee/firelinemap/share/PolylineCodec.kt",
@@ -81,3 +84,31 @@ kotlin {
 
 // The browser variant produces the bundle; it has no tests of its own.
 tasks.matching { it.name == "jsBrowserTest" }.configureEach { enabled = false }
+
+/**
+ * Assembles the site GitHub Pages serves.
+ *
+ * Output goes to docs/ on the default branch, which is one of the two sources
+ * Pages offers and the only one that needs no workflow, no token and no second
+ * branch to keep in step. The compiled Kotlin lands beside the page, so what
+ * is served is exactly what was built and tested.
+ *
+ * .nojekyll is not decoration. Without it Pages runs the site through Jekyll,
+ * which silently drops files and folders beginning with an underscore --
+ * including some of what a JavaScript bundle can emit.
+ */
+val site by tasks.registering(Copy::class) {
+    dependsOn(tasks.named("jsBrowserDistribution"))
+    description = "Builds the web app into docs/ for GitHub Pages."
+    group = "distribution"
+
+    into(rootProject.layout.projectDirectory.dir("docs"))
+    from(layout.projectDirectory.dir("site"))
+    from(layout.buildDirectory.dir("dist/js/productionExecutable")) {
+        include("fireline.js")
+    }
+    doLast {
+        rootProject.layout.projectDirectory.file("docs/.nojekyll").asFile
+            .writeText("")
+    }
+}

@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#0B171F">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Fireline">
+<title>Fireline Map</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<canvas id="map"></canvas>
+
+<!-- Always on screen. Coordinates are what goes over a radio. -->
+<div id="readout" class="panel">
+  <div class="row">
+    <strong id="coords">Waiting for GPS…</strong>
+    <button id="format" class="chip" title="Change format">DDM</button>
+  </div>
+  <div class="sub"><span id="accuracy">—</span> · <span id="held">tiles 0</span></div>
+</div>
+
+<div id="banner" class="banner hidden"></div>
+
+<div id="controls">
+  <button id="follow" class="round" title="Centre on me">◎</button>
+  <button id="zoomIn" class="round">+</button>
+  <button id="zoomOut" class="round">−</button>
+</div>
+
+<div id="toolbar">
+  <button id="pinTool" class="tool">Pin</button>
+  <button id="recordTool" class="tool">Record</button>
+  <button id="shareTool" class="tool">Share</button>
+  <button id="listTool" class="tool">List</button>
+</div>
+
+<!-- Sheets ------------------------------------------------------------- -->
+
+<div id="sheet" class="sheet hidden">
+  <div class="sheetInner">
+    <div class="sheetHead">
+      <strong id="sheetTitle">·</strong>
+      <button id="sheetClose" class="chip">CLOSE</button>
+    </div>
+    <div id="sheetBody"></div>
+  </div>
+</div>
+
+<script src="fireline.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -5,9 +5,11 @@ import com.rhecyee.firelinemap.location.TrackDetectionSettings
 import com.rhecyee.firelinemap.location.TrackDetector
 import com.rhecyee.firelinemap.location.TrackEvent
 import com.rhecyee.firelinemap.location.TrackLine
+import com.rhecyee.firelinemap.location.TrackRecord
 import com.rhecyee.firelinemap.location.TrackOverlap
 import com.rhecyee.firelinemap.map.MapCoverage
 import com.rhecyee.firelinemap.map.TileMath
+import com.rhecyee.firelinemap.share.ExactDuplicates
 import com.rhecyee.firelinemap.share.SharePackage
 import com.rhecyee.firelinemap.share.SharePin
 import com.rhecyee.firelinemap.share.SharePoint
@@ -128,6 +130,45 @@ object Api {
     /** Decodes a reassembled body into the page's own JSON shape. */
     fun decodeParts(body: String): String? =
         TextCodec.decode(body)?.let { PackageJson.write(it) }
+
+    /**
+     * What of [incomingJson] is not already in [existingJson].
+     *
+     * The same rule the phone applies, run by the same code: a record that
+     * encodes to exactly the bytes of one already held is the same thing
+     * arriving twice. Two pins near each other are not, and are never merged --
+     * that is a judgement for a person on a radio.
+     *
+     * Exposed rather than reimplemented in the page, because a second version
+     * of this would eventually disagree with the first about which pin to
+     * throw away.
+     */
+    fun withoutDuplicates(incomingJson: String, existingJson: String): String {
+        val result = ExactDuplicates.filter(
+            PackageJson.read(incomingJson),
+            PackageJson.read(existingJson)
+        )
+        return PackageJson.writeFiltered(result)
+    }
+
+    /**
+     * What a track's points show, and what they only imply.
+     *
+     * The browser is where this matters. iOS suspends a web app the moment it
+     * is backgrounded or the screen locks, so a shift routinely comes back as
+     * recorded pieces with unobserved stretches between them. Those stretches
+     * are real travel and worth keeping -- but a line drawn across one looks
+     * exactly like a line that was followed, so the page needs to know which
+     * is which in order to draw it differently and label it honestly.
+     *
+     * Returns the gaps as well as the figures, so the page can dash them.
+     */
+    fun provenanceOf(pointsJson: String): String {
+        val points = PackageJson.readTracks(pointsJson)
+            .firstOrNull()?.points.orEmpty()
+            .map { Fix(it.latitude, it.longitude, it.timeMillis ?: 0L) }
+        return PackageJson.writeProvenance(TrackRecord.of(points))
+    }
 
     // ---------------------------------------------------------------- merging
 
