@@ -1,5 +1,7 @@
 package com.rhecyee.firelinemap.terrain
 
+import com.rhecyee.firelinemap.map.radiansToDegrees
+import com.rhecyee.firelinemap.map.degreesToRadians
 import kotlin.math.PI
 import kotlin.math.atan
 import kotlin.math.exp
@@ -69,10 +71,10 @@ class ElevationGrid(
     companion object {
         fun mercatorY(latitude: Double): Double {
             val clamped = latitude.coerceIn(-85.05112878, 85.05112878)
-            return ln(tan(PI / 4.0 + Math.toRadians(clamped) / 2.0))
+            return ln(tan(PI / 4.0 + degreesToRadians(clamped) / 2.0))
         }
 
         fun inverseMercatorY(y: Double): Double =
-            Math.toDegrees(2.0 * atan(exp(y)) - PI / 2.0)
+            radiansToDegrees(2.0 * atan(exp(y)) - PI / 2.0)
     }
 }

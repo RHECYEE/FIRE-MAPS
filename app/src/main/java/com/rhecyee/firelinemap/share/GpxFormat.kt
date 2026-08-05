@@ -299,6 +299,7 @@ object GpxFormat {
         // Ampersand last, or "&amp;lt;" turns into "<".
         .replace("&amp;", "&")
 
-    private val POINT = Regex("""<trkpt\b([^>]*)>(.*?)</trkpt>|<trkpt\b([^>]*)/>""",
-        RegexOption.DOT_MATCHES_ALL)
+    // "[\s\S]" rather than "." with DOT_MATCHES_ALL: that option is only on
+    // the JVM, and this reader has to run in a browser too.
+    private val POINT = Regex("""<trkpt\b([^>]*)>([\s\S]*?)</trkpt>|<trkpt\b([^>]*)/>""")
 }

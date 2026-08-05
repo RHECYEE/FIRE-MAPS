@@ -8,3 +8,7 @@
 /captures/
 /local.properties
 app/build/
+
+# Kotlin/JS build output and the Node modules it pulls in.
+web/build/
+kotlin-js-store/build/

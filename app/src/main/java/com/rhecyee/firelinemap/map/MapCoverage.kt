@@ -1,5 +1,7 @@
 package com.rhecyee.firelinemap.map
 
+import com.rhecyee.firelinemap.map.degreesToRadians
+import com.rhecyee.firelinemap.map.radiansToDegrees
 import kotlin.math.abs
 import kotlin.math.asin
 import kotlin.math.atan2
@@ -128,10 +130,10 @@ object MapCoverage {
         toLatitude: Double,
         toLongitude: Double
     ): Double {
-        val lat1 = Math.toRadians(fromLatitude)
-        val lat2 = Math.toRadians(toLatitude)
-        val deltaLat = Math.toRadians(toLatitude - fromLatitude)
-        val deltaLon = Math.toRadians(toLongitude - fromLongitude)
+        val lat1 = degreesToRadians(fromLatitude)
+        val lat2 = degreesToRadians(toLatitude)
+        val deltaLat = degreesToRadians(toLatitude - fromLatitude)
+        val deltaLon = degreesToRadians(toLongitude - fromLongitude)
         val a = sin(deltaLat / 2) * sin(deltaLat / 2) +
             cos(lat1) * cos(lat2) * sin(deltaLon / 2) * sin(deltaLon / 2)
         return 2 * EARTH_RADIUS_METERS * asin(min(1.0, sqrt(a)))
@@ -144,12 +146,12 @@ object MapCoverage {
         toLatitude: Double,
         toLongitude: Double
     ): Double {
-        val lat1 = Math.toRadians(fromLatitude)
-        val lat2 = Math.toRadians(toLatitude)
-        val deltaLon = Math.toRadians(toLongitude - fromLongitude)
+        val lat1 = degreesToRadians(fromLatitude)
+        val lat2 = degreesToRadians(toLatitude)
+        val deltaLon = degreesToRadians(toLongitude - fromLongitude)
         val y = sin(deltaLon) * cos(lat2)
         val x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(deltaLon)
         if (abs(y) < 1e-12 && abs(x) < 1e-12) return 0.0
-        return (Math.toDegrees(atan2(y, x)) + 360.0) % 360.0
+        return (radiansToDegrees(atan2(y, x)) + 360.0) % 360.0
     }
 }

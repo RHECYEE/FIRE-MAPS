@@ -1,5 +1,7 @@
 package com.rhecyee.firelinemap.terrain
 
+import kotlin.math.atan2
+import com.rhecyee.firelinemap.map.radiansToDegrees
 import kotlin.math.abs
 import kotlin.math.atan
 import kotlin.math.hypot
@@ -46,13 +48,13 @@ data class TerrainReading(
     val elevationFeet: Double get() = elevationMeters * 3.280839895
 
     val slopeDegrees: Double?
-        get() = slopePercent?.let { Math.toDegrees(atan(it / 100.0)) }
+        get() = slopePercent?.let { radiansToDegrees(atan(it / 100.0)) }
 
     val aspect: Aspect get() = Aspect.fromDegrees(aspectDegrees)
 
     /** "6,842 ft · 31% · SW". */
     fun summary(): String = buildString {
-        append("%,d ft".format(elevationFeet.roundToInt()))
+        append(grouped(elevationFeet.roundToInt())).append(" ft")
         slopePercent?.let { append(" · ${it.roundToInt()}%") }
         if (aspect != Aspect.FLAT) append(" · ${aspect.abbreviation}")
     }
@@ -114,7 +116,7 @@ object TerrainMath {
 
         // Downhill is the negative of the gradient; north is zero and the
         // compass runs clockwise, which is the other way round from maths.
-        var degrees = Math.toDegrees(Math.atan2(dzdy, -dzdx))
+        var degrees = radiansToDegrees(atan2(dzdy, -dzdx))
         degrees = 90.0 - degrees
         return ((degrees % 360.0) + 360.0) % 360.0
     }
@@ -170,4 +172,22 @@ object TerrainMath {
         }
         return gain to loss
     }
+}
+
+/**
+ * "6,842" -- thousands separated, without the platform's formatter.
+ *
+ * String.format is on the JVM only, and this reading is drawn on the phone and
+ * in the browser both. An elevation that reads "6842" on one and "6,842" on
+ * the other is a small thing that makes two screens look like two apps.
+ */
+internal fun grouped(value: Int): String {
+    val negative = value < 0
+    val digits = (if (negative) -value else value).toString()
+    val out = StringBuilder(digits.length + digits.length / 3)
+    digits.forEachIndexed { index, character ->
+        if (index > 0 && (digits.length - index) % 3 == 0) out.append(',')
+        out.append(character)
+    }
+    return if (negative) "-$out" else out.toString()
 }

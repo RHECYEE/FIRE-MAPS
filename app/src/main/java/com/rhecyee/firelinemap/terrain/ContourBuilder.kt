@@ -1,5 +1,7 @@
 package com.rhecyee.firelinemap.terrain
 
+import kotlin.math.atan2
+import com.rhecyee.firelinemap.map.radiansToDegrees
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.floor
@@ -37,7 +39,7 @@ data class ContourLine(
         val before = points[(middle - 1).coerceAtLeast(0)]
         val after = points[(middle + 1).coerceAtMost(points.lastIndex)]
         val (latitude, longitude) = points[middle]
-        val bearing = Math.toDegrees(
+        val bearing = radiansToDegrees(
             kotlin.math.atan2(after.second - before.second, after.first - before.first)
         )
         return Triple(latitude, longitude, bearing)

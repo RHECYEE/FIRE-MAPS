@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "FirelineMap"
 include(":app")
+include(":web")

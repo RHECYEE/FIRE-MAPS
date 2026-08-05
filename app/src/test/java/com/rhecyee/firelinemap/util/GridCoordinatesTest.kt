@@ -144,6 +144,24 @@ class GridCoordinatesTest {
         }
     }
 
+    /**
+     * The exact reference for a known position.
+     *
+     * Derived by hand from the standard rather than read off this code: zone
+     * 11 puts the easting in the second set of column letters, and 449,975
+     * falls in the fourth hundred-kilometre band of that set, which is M. Zone
+     * 11 is odd, so the row letters start at A, and 5,006,004 is ten bands up
+     * the two-million-metre cycle, which is L. Anything else and a grid read
+     * off this phone is not the grid a dispatcher reads off theirs.
+     */
+    @Test
+    fun aKnownPositionHasExactlyOneCorrectReference() {
+        assertEquals(
+            "11TML4997406004",
+            GridCoordinates.toMgrs(45.20575, -117.63700, 5)
+        )
+    }
+
     @Test
     fun aFullReferenceReadsAsTheZoneBandAndSquareItShould() {
         // Burnt Creek. Zone and band come from the position; the square letters
@@ -157,9 +175,9 @@ class GridCoordinatesTest {
 
     @Test
     fun spacesInAReferenceAreIgnoredBecauseThatIsHowItIsWritten() {
-        val tight = GridCoordinates.fromMgrs("11TNL4997506004")
-        val spaced = GridCoordinates.fromMgrs("11T NL 49975 06004")
-        val lower = GridCoordinates.fromMgrs("11t nl 49975 06004")
+        val tight = GridCoordinates.fromMgrs("11TML4997406004")
+        val spaced = GridCoordinates.fromMgrs("11T ML 49974 06004")
+        val lower = GridCoordinates.fromMgrs("11t ml 49974 06004")
         assertNotNull(tight)
         assertEquals(tight!!.first, spaced!!.first, 1e-9)
         assertEquals(tight.second, spaced.second, 1e-9)

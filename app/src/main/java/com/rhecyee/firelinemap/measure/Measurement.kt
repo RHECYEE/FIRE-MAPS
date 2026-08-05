@@ -2,6 +2,8 @@ package com.rhecyee.firelinemap.measure
 
 import com.rhecyee.firelinemap.map.Earth
 import com.rhecyee.firelinemap.map.MapCoverage
+import com.rhecyee.firelinemap.map.degreesToRadians
+import com.rhecyee.firelinemap.map.radiansToDegrees
 import kotlin.math.abs
 import kotlin.math.atan
 import kotlin.math.sin
@@ -64,7 +66,7 @@ data class MeasureSegment(
         get() {
             val rise = riseMeters ?: return null
             if (distanceMeters <= 0.0) return null
-            return Math.toDegrees(atan(rise / distanceMeters))
+            return radiansToDegrees(atan(rise / distanceMeters))
         }
 }
 
@@ -189,8 +191,8 @@ class MeasureSession(
         for (i in points.indices) {
             val current = points[i]
             val next = points[(i + 1) % points.size]
-            total += Math.toRadians(next.longitude - current.longitude) *
-                (2.0 + sin(Math.toRadians(current.latitude)) + sin(Math.toRadians(next.latitude)))
+            total += degreesToRadians(next.longitude - current.longitude) *
+                (2.0 + sin(degreesToRadians(current.latitude)) + sin(degreesToRadians(next.latitude)))
         }
         return abs(total * Earth.RADIUS_METERS * Earth.RADIUS_METERS / 2.0)
     }

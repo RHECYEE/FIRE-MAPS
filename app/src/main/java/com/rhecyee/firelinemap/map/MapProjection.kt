@@ -1,6 +1,8 @@
 package com.rhecyee.firelinemap.map
 
 import com.rhecyee.firelinemap.geopdf.MapFrame
+import com.rhecyee.firelinemap.map.degreesToRadians
+import com.rhecyee.firelinemap.map.radiansToDegrees
 import kotlin.math.PI
 import kotlin.math.atan
 import kotlin.math.cos
@@ -161,7 +163,7 @@ class GroundProjection(
      * a square here be a square on the ground.
      */
     private val half: Double = run {
-        val scale = EQUATORIAL_CIRCUMFERENCE * cos(Math.toRadians(centreLatitude))
+        val scale = EQUATORIAL_CIRCUMFERENCE * cos(degreesToRadians(centreLatitude))
         if (scale <= 0.0) 0.0 else (spanMeters / 2.0) / scale
     }
 
@@ -235,8 +237,8 @@ const val EQUATORIAL_CIRCUMFERENCE = 40_075_016.686
 
 internal fun mercatorY(latitude: Double): Double {
     val clamped = latitude.coerceIn(-85.05112878, 85.05112878)
-    return ln(tan(PI / 4.0 + Math.toRadians(clamped) / 2.0))
+    return ln(tan(PI / 4.0 + degreesToRadians(clamped) / 2.0))
 }
 
 internal fun inverseMercatorY(y: Double): Double =
-    Math.toDegrees(2.0 * atan(exp(y)) - PI / 2.0)
+    radiansToDegrees(2.0 * atan(exp(y)) - PI / 2.0)

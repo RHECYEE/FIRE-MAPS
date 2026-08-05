@@ -1,5 +1,7 @@
 package com.rhecyee.firelinemap.util
 
+import com.rhecyee.firelinemap.map.radiansToDegrees
+import com.rhecyee.firelinemap.map.degreesToRadians
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.floor
@@ -79,9 +81,9 @@ object GridCoordinates {
         if (latitude < -80.0 || latitude > 84.0) return null
 
         val zone = zoneFor(latitude, longitude)
-        val centralMeridian = Math.toRadians((zone - 1) * 6.0 - 180.0 + 3.0)
-        val phi = Math.toRadians(latitude)
-        val lambda = Math.toRadians(longitude)
+        val centralMeridian = degreesToRadians((zone - 1) * 6.0 - 180.0 + 3.0)
+        val phi = degreesToRadians(latitude)
+        val lambda = degreesToRadians(longitude)
 
         val sinPhi = sin(phi)
         val cosPhi = cos(phi)
@@ -138,7 +140,7 @@ object GridCoordinates {
 
         val x = easting - 500_000.0
         val y = if (northernHemisphere) northing else northing - 10_000_000.0
-        val centralMeridian = Math.toRadians((zone - 1) * 6.0 - 180.0 + 3.0)
+        val centralMeridian = degreesToRadians((zone - 1) * 6.0 - 180.0 + 3.0)
 
         val e1 = (1 - sqrt(1 - E2)) / (1 + sqrt(1 - E2))
         val m = y / K0
@@ -172,8 +174,8 @@ object GridCoordinates {
                 (5 - 2 * c1 + 28 * t1 - 3 * c1 * c1 + 8 * EP2 + 24 * t1 * t1) * d.pow(5) / 120
             ) / cosPhi1
 
-        val degreesLatitude = Math.toDegrees(latitude)
-        val degreesLongitude = Math.toDegrees(longitude)
+        val degreesLatitude = radiansToDegrees(latitude)
+        val degreesLongitude = radiansToDegrees(longitude)
         if (!degreesLatitude.isFinite() || !degreesLongitude.isFinite()) return null
         return degreesLatitude to degreesLongitude
     }

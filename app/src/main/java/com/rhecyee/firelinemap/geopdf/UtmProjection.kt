@@ -1,5 +1,7 @@
 package com.rhecyee.firelinemap.geopdf
 
+import com.rhecyee.firelinemap.map.degreesToRadians
+import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
@@ -35,9 +37,9 @@ data class UtmProjection(
     fun forward(latitude: Double, longitude: Double): Pair<Double, Double> {
         val e2 = eccentricitySquared
         val ep2 = e2 / (1.0 - e2)
-        val latRad = Math.toRadians(latitude)
-        val lonRad = Math.toRadians(longitude)
-        val lon0 = Math.toRadians(centralMeridian)
+        val latRad = degreesToRadians(latitude)
+        val lonRad = degreesToRadians(longitude)
+        val lon0 = degreesToRadians(centralMeridian)
 
         val sinLat = sin(latRad)
         val cosLat = cos(latRad)
@@ -48,7 +50,7 @@ data class UtmProjection(
         val c = ep2 * cosLat * cosLat
         val a = cosLat * wrapRadians(lonRad - lon0)
         val m = meridionalArc(latRad, e2)
-        val m0 = meridionalArc(Math.toRadians(latitudeOfOrigin), e2)
+        val m0 = meridionalArc(degreesToRadians(latitudeOfOrigin), e2)
 
         val a2 = a * a
         val a3 = a2 * a
@@ -86,8 +88,8 @@ data class UtmProjection(
 
     private fun wrapRadians(value: Double): Double {
         var result = value
-        while (result > Math.PI) result -= 2.0 * Math.PI
-        while (result <= -Math.PI) result += 2.0 * Math.PI
+        while (result > PI) result -= 2.0 * PI
+        while (result <= -PI) result += 2.0 * PI
         return result
     }
 

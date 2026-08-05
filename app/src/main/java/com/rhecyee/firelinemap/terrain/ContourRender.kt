@@ -1,5 +1,6 @@
 package com.rhecyee.firelinemap.terrain
 
+import com.rhecyee.firelinemap.map.radiansToDegrees
 import com.rhecyee.firelinemap.map.MapProjection
 import kotlin.math.atan2
 
@@ -107,7 +108,7 @@ object ContourProjector {
                 val after = (middle + 1).coerceAtMost(kept - 1)
                 // Screen space, so the angle is the one the reader sees rather
                 // than the one the ground makes.
-                var degrees = Math.toDegrees(
+                var degrees = radiansToDegrees(
                     atan2(
                         (ys[after] - ys[before]).toDouble(),
                         (xs[after] - xs[before]).toDouble()

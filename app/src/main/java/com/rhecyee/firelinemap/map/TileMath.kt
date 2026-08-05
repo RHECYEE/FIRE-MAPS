@@ -1,5 +1,6 @@
 package com.rhecyee.firelinemap.map
 
+import com.rhecyee.firelinemap.map.degreesToRadians
 import kotlin.math.PI
 import kotlin.math.asinh
 import kotlin.math.cos
@@ -31,7 +32,7 @@ object TileMath {
     fun tileY(latitude: Double, zoom: Int): Int {
         val scale = 1 shl zoom
         val clamped = latitude.coerceIn(-MAX_LATITUDE, MAX_LATITUDE)
-        val radians = Math.toRadians(clamped)
+        val radians = degreesToRadians(clamped)
         val normalized = (1.0 - asinh(tan(radians)) / PI) / 2.0
         return floor(normalized * scale).toInt().coerceIn(0, scale - 1)
     }
@@ -71,7 +72,7 @@ object TileMath {
         // equator so the buffer is at least the requested distance everywhere.
         val widestLatitude = maxOf(kotlin.math.abs(bounds.south), kotlin.math.abs(bounds.north))
         val metersPerDegreeLongitude =
-            METERS_PER_DEGREE_LATITUDE * cos(Math.toRadians(widestLatitude))
+            METERS_PER_DEGREE_LATITUDE * cos(degreesToRadians(widestLatitude))
         val longitudeDelta = if (metersPerDegreeLongitude > 1.0) {
             meters / metersPerDegreeLongitude
         } else {
