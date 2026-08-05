@@ -235,6 +235,23 @@ class ContourLayer(context: Context) {
         _status.value = ContourStatus.IDLE
     }
 
+    /**
+     * Drops the drawn lines but keeps the elevation behind them.
+     *
+     * For changing incident. The lines on screen were cut and projected for the
+     * sheet that is being put away, so they have to go; the elevation they were
+     * cut from is ground, and the next incident is very often the next drainage
+     * over. Wiping the cache here would make an operator re-download a district
+     * they already have, over whatever signal is left at the end of a road.
+     */
+    fun reset() {
+        job?.cancel()
+        lastRequest = null
+        _failure.value = null
+        _contours.value = ContourRender.NONE
+        _status.value = ContourStatus.IDLE
+    }
+
     companion object {
         /**
          * Below this, one contour line every couple of hundred metres of

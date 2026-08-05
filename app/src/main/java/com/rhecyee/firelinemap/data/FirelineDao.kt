@@ -30,6 +30,52 @@ interface FirelineDao {
         markIncidentActive(incidentId)
     }
 
+    @Query("SELECT * FROM incidents WHERE id = :incidentId")
+    suspend fun getIncident(incidentId: String): IncidentEntity?
+
+    @Query("SELECT * FROM incidents ORDER BY isActive DESC, createdAt DESC")
+    suspend fun allIncidents(): List<IncidentEntity>
+
+    @Query("UPDATE incidents SET name = :name, year = :year WHERE id = :incidentId")
+    suspend fun renameIncident(incidentId: String, name: String, year: Int)
+
+    @Query("DELETE FROM incidents WHERE id = :incidentId")
+    suspend fun deleteIncident(incidentId: String)
+
+    /**
+     * Deletes an incident and leaves a different one active.
+     *
+     * The promotion is the point. Every marker, track and report is written
+     * against the active incident, so an app with none silently drops
+     * everything the operator does next -- and the case this happens in is
+     * deleting the one that is open, which is the normal way to clean up.
+     */
+    @Transaction
+    suspend fun deleteIncidentAndPromote(incidentId: String): IncidentEntity? {
+        deleteIncident(incidentId)
+        val remaining = allIncidents()
+        if (remaining.isEmpty()) return null
+        val next = remaining.firstOrNull { it.isActive } ?: remaining.first()
+        setActiveIncident(next.id)
+        return next.copy(isActive = true)
+    }
+
+    /** Adds an incident and switches to it in one step. */
+    @Transaction
+    suspend fun startIncident(incident: IncidentEntity) {
+        upsertIncident(incident.copy(isActive = false))
+        setActiveIncident(incident.id)
+    }
+
+    @Query("SELECT COUNT(*) FROM markers WHERE incidentId = :incidentId")
+    suspend fun markerCount(incidentId: String): Int
+
+    @Query("SELECT COUNT(*) FROM tracks WHERE incidentId = :incidentId")
+    suspend fun trackCount(incidentId: String): Int
+
+    @Query("SELECT COUNT(*) FROM medical_reports WHERE incidentId = :incidentId")
+    suspend fun medicalReportCount(incidentId: String): Int
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertTrack(track: TrackEntity)
 

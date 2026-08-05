@@ -76,6 +76,7 @@ import com.rhecyee.firelinemap.data.IncidentEntity
 import com.rhecyee.firelinemap.data.MarkerEntity
 import com.rhecyee.firelinemap.resources.ResourceRepository
 import com.rhecyee.firelinemap.resources.ResourceSymbol
+import com.rhecyee.firelinemap.incident.IncidentNaming
 import com.rhecyee.firelinemap.geopdf.DropPoint
 import com.rhecyee.firelinemap.geopdf.DropPointDetector
 import com.rhecyee.firelinemap.geopdf.DropPointSettings
@@ -134,6 +135,10 @@ fun FirelineApp() {
     val scope = rememberCoroutineScope()
     val incidents by app.database.dao().observeIncidents().collectAsState(initial = emptyList())
     val activeIncident = incidents.firstOrNull { it.isActive }
+    // Everything the operator records -- pins, tracks, medical reports and
+    // imported sheets -- is filed against this one id. Switching it is the
+    // whole of changing incident.
+    val incidentId = activeIncident?.id
 
     var coordinateFormat by remember { mutableStateOf(CoordinateFormat.DDM) }
 
@@ -208,6 +213,11 @@ fun FirelineApp() {
     var terrainDiagnostics by remember { mutableStateOf("") }
     var viewReport by remember { mutableStateOf<String?>(null) }
     var importedMaps by remember { mutableStateOf<List<com.rhecyee.firelinemap.geopdf.ImportedMap>>(emptyList()) }
+    var showIncidents by remember { mutableStateOf(false) }
+    var incidentTallies by remember { mutableStateOf<Map<String, IncidentTally>>(emptyMap()) }
+    // Set when the app made an incident by itself, so it can ask for the real
+    // name once rather than leaving a placeholder on every medical report.
+    var namingIncident by remember { mutableStateOf(false) }
     var keypadOpen by remember { mutableStateOf(true) }
     val landOwnership = remember { LandOwnershipService() }
     var landStatus by remember { mutableStateOf(LandStatus()) }
@@ -334,6 +344,14 @@ fun FirelineApp() {
         ActivityResultContracts.OpenMultipleDocuments()
     ) { uris: List<Uri> ->
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        // Sheets are filed against the incident that is open. Without an
+        // incident there is nowhere to file them, and silently dropping the
+        // import is worse than saying so.
+        val importInto = activeIncident?.id
+        if (importInto == null) {
+            statusMessage = "Start an incident before importing sheets."
+            return@rememberLauncherForActivityResult
+        }
         scope.launch {
             importing = uris.size
             var lastGood: com.rhecyee.firelinemap.geopdf.ImportedMap? = null
@@ -342,13 +360,13 @@ fun FirelineApp() {
                 // One at a time. Each holds a copy of the file and its parsed
                 // structure; several at once is how the memory ran out.
                 val imported = withContext(Dispatchers.IO) {
-                    runCatching { repository.importFrom(uri) }.getOrNull()
+                    runCatching { repository.importFrom(uri, importInto) }.getOrNull()
                 }
                 if (imported != null) lastGood = imported else failed++
                 importing--
             }
             importing = 0
-            importedMaps = withContext(Dispatchers.IO) { repository.imported() }
+            importedMaps = withContext(Dispatchers.IO) { repository.imported(importInto) }
             if (lastGood != null) activeMap = lastGood
             statusMessage = when {
                 failed == 0 -> null
@@ -370,18 +388,35 @@ fun FirelineApp() {
         } else {
             locationRepository.start()
         }
-        if (incidents.isEmpty()) {
-            app.database.dao().upsertIncident(
-                IncidentEntity(
-                    id = UUID.randomUUID().toString(),
-                    name = "Burnt Creek 2026",
-                    year = 2026,
-                    createdAt = System.currentTimeMillis(),
-                    isActive = true
-                )
+        // An incident has to exist before anything can be recorded against it,
+        // so one is made rather than the app refusing to work until a form is
+        // filled in. It is named for today and the operator is asked once for
+        // the real name -- which is the name dispatch uses, and the one that
+        // goes on a medical report.
+        val existing = app.database.dao().allIncidents()
+        val incidentId = if (existing.isEmpty()) {
+            val now = System.currentTimeMillis()
+            val fresh = IncidentEntity(
+                id = UUID.randomUUID().toString(),
+                name = IncidentNaming.placeholder(now),
+                year = IncidentNaming.yearOf("", now),
+                createdAt = now,
+                isActive = true
             )
+            app.database.dao().startIncident(fresh)
+            namingIncident = true
+            fresh.id
+        } else {
+            (existing.firstOrNull { it.isActive } ?: existing.first()).also {
+                if (!it.isActive) app.database.dao().setActiveIncident(it.id)
+            }.id
         }
-        importedMaps = repository.imported()
+
+        // Sheets imported before they were held per incident live loose in the
+        // maps folder. Moving them into whatever is open now means an operator
+        // who updates mid-season still finds their maps.
+        withContext(Dispatchers.IO) { repository.adoptLooseSheets(incidentId) }
+        importedMaps = withContext(Dispatchers.IO) { repository.imported(incidentId) }
         if (activeMap == null) activeMap = importedMaps.firstOrNull()
     }
 
@@ -398,8 +433,28 @@ fun FirelineApp() {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    LaunchedEffect(activeMap?.id) {
-        importedMaps = withContext(Dispatchers.IO) { repository.imported() }
+    LaunchedEffect(activeMap?.id, activeIncident?.id) {
+        val incidentId = activeIncident?.id
+        importedMaps = if (incidentId == null) emptyList()
+        else withContext(Dispatchers.IO) { repository.imported(incidentId) }
+    }
+
+    // Counts for the incident list, read when the sheet opens rather than kept
+    // in step by hand -- so a row that says "3 pins" is saying what is actually
+    // in the database, and a stale count never talks somebody into deleting the
+    // wrong incident.
+    LaunchedEffect(showIncidents, incidents.size) {
+        if (!showIncidents) return@LaunchedEffect
+        incidentTallies = withContext(Dispatchers.IO) {
+            incidents.associate { incident ->
+                incident.id to IncidentTally(
+                    markers = app.database.dao().markerCount(incident.id),
+                    tracks = app.database.dao().trackCount(incident.id),
+                    medical = app.database.dao().medicalReportCount(incident.id),
+                    sheets = repository.sheetCount(incident.id)
+                )
+            }
+        }
     }
 
     LaunchedEffect(activeMap?.id) {
@@ -544,14 +599,22 @@ fun FirelineApp() {
         val lon = displayLongitude
         val id = UUID.randomUUID().toString()
         scope.launch {
-            val incident = activeIncident ?: IncidentEntity(
-                id = UUID.randomUUID().toString(),
-                name = "Incident ${java.text.SimpleDateFormat("MMM d", java.util.Locale.US)
-                    .format(System.currentTimeMillis())}",
-                year = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR),
-                createdAt = System.currentTimeMillis(),
-                isActive = true
-            ).also { app.database.dao().upsertIncident(it) }
+            val incident = activeIncident ?: run {
+                val now = System.currentTimeMillis()
+                IncidentEntity(
+                    id = UUID.randomUUID().toString(),
+                    name = IncidentNaming.placeholder(now),
+                    year = IncidentNaming.yearOf("", now),
+                    createdAt = now,
+                    isActive = true
+                ).also {
+                    app.database.dao().startIncident(it)
+                    // The name goes straight onto the report and into the radio
+                    // readout, so it gets asked for -- but after the pin is
+                    // down, never before.
+                    namingIncident = true
+                }
+            }
 
             val report = MedicalReport(
                 id = id,
@@ -1056,7 +1119,7 @@ fun FirelineApp() {
         )
     }
 
-    if (showUrlDialog) {
+    if (showUrlDialog && incidentId != null) {
         UrlImportDialog(
             busy = urlBusy,
             error = urlError,
@@ -1068,7 +1131,7 @@ fun FirelineApp() {
                     when (val result = withContext(Dispatchers.IO) { urlImporter.probe(address) }) {
                         is UrlProbe.Downloaded -> {
                             val imported = withContext(Dispatchers.IO) {
-                                repository.importFromFile(result.file, result.name)
+                                repository.importFromFile(result.file, result.name, incidentId)
                             }
                             urlBusy = false
                             if (imported != null) {
@@ -1094,7 +1157,7 @@ fun FirelineApp() {
         )
     }
 
-    if (listing.isNotEmpty()) {
+    if (listing.isNotEmpty() && incidentId != null) {
         RemoteListingDialog(
             entries = listing,
             busy = urlBusy,
@@ -1111,7 +1174,7 @@ fun FirelineApp() {
                         val result = withContext(Dispatchers.IO) { urlImporter.download(entry) }
                         if (result is UrlProbe.Downloaded) {
                             val map = withContext(Dispatchers.IO) {
-                                repository.importFromFile(result.file, result.name)
+                                repository.importFromFile(result.file, result.name, incidentId)
                             }
                             if (map != null) {
                                 imported++
@@ -1140,7 +1203,7 @@ fun FirelineApp() {
                     val result = withContext(Dispatchers.IO) { urlImporter.download(entry) }
                     if (result is UrlProbe.Downloaded) {
                         val imported = withContext(Dispatchers.IO) {
-                            repository.importFromFile(result.file, result.name)
+                            repository.importFromFile(result.file, result.name, incidentId)
                         }
                         urlBusy = false
                         if (imported != null) {
@@ -1159,13 +1222,179 @@ fun FirelineApp() {
         )
     }
 
+    /**
+     * Everything on screen that belonged to the incident being left.
+     *
+     * Database-backed things -- pins, tracks, reports -- clear themselves,
+     * because they are queried by incident id and the id has changed. What does
+     * not clear itself is everything held in memory for the view: the sheet
+     * being drawn, the lines cut over it, a half-finished measurement, an armed
+     * tool. Left alone, the first pin dropped on the new fire lands on the old
+     * fire's sheet.
+     *
+     * Terrain and the basemap are deliberately untouched. They are ground, not
+     * incident, and re-downloading a district at the end of a road is how a
+     * phone becomes useless exactly when it is needed.
+     */
+    fun clearForNewIncident() {
+        activeMap = null
+        bitmap = null
+        pageWidth = 0
+        pageHeight = 0
+        dropPoints = emptyList()
+        importedMaps = emptyList()
+
+        boundaryLayer.clear()
+        contourLayer.reset()
+
+        measuring = false
+        measurePoints = emptyList()
+        measureSession.clear()
+        elevationPending = false
+
+        placingResources = false
+        selectedSymbol = null
+        pendingPlacement = null
+        inspecting = null
+        inspectingReports = 0
+
+        medicalReport = null
+        showReadout = false
+
+        searchQuery = ""
+        showSearch = false
+        centreRequest = null
+        view = null
+
+        simulated = null
+        simMode = false
+        landStatus = LandStatus()
+        landLookupAt = null
+        statusMessage = null
+    }
+
+    suspend fun switchTo(incident: IncidentEntity) {
+        clearForNewIncident()
+        app.database.dao().setActiveIncident(incident.id)
+        importedMaps = withContext(Dispatchers.IO) { repository.imported(incident.id) }
+        activeMap = importedMaps.firstOrNull()
+    }
+
+    // A track being recorded is written against the incident that was open when
+    // it started. Switching under it would leave the rest of the line filed to
+    // a fire it was not walked on, so the switch is refused rather than
+    // silently producing a wrong track.
+    val switchBlocked = if (liveTrack.recording) {
+        "Stop the recording track before changing incident — it is being saved " +
+            "to ${activeIncident?.name ?: "this incident"}."
+    } else {
+        null
+    }
+
+    if (showIncidents) {
+        IncidentSheet(
+            incidents = incidents,
+            activeId = incidentId,
+            tallies = incidentTallies,
+            blockedReason = switchBlocked,
+            onStart = { name ->
+                scope.launch {
+                    val now = System.currentTimeMillis()
+                    val fresh = IncidentEntity(
+                        id = UUID.randomUUID().toString(),
+                        name = name,
+                        year = IncidentNaming.yearOf(name, now),
+                        createdAt = now,
+                        isActive = true
+                    )
+                    clearForNewIncident()
+                    app.database.dao().startIncident(fresh)
+                    showIncidents = false
+                    statusMessage = "Now on ${fresh.name}."
+                }
+            },
+            onSwitch = { incident ->
+                scope.launch {
+                    switchTo(incident)
+                    showIncidents = false
+                    statusMessage = "Now on ${incident.name}."
+                }
+            },
+            onRename = { incident, name ->
+                scope.launch {
+                    app.database.dao().renameIncident(
+                        incident.id, name, IncidentNaming.yearOf(name, incident.createdAt)
+                    )
+                }
+            },
+            onDelete = { incident ->
+                scope.launch {
+                    val wasActive = incident.id == incidentId
+                    // The sheets go with it. Room's cascade takes the pins,
+                    // tracks and reports; the PDFs are files and have to be
+                    // deleted here or they outlive the incident on disk.
+                    withContext(Dispatchers.IO) { repository.forget(incident.id) }
+                    val promoted = app.database.dao().deleteIncidentAndPromote(incident.id)
+                    if (wasActive) {
+                        clearForNewIncident()
+                        if (promoted != null) {
+                            importedMaps = withContext(Dispatchers.IO) {
+                                repository.imported(promoted.id)
+                            }
+                            activeMap = importedMaps.firstOrNull()
+                            statusMessage = "Deleted. Now on ${promoted.name}."
+                        } else {
+                            // The last one is gone, so there is nowhere to
+                            // record anything. Make a fresh one rather than
+                            // leaving the app quietly dropping every pin.
+                            val now = System.currentTimeMillis()
+                            val fresh = IncidentEntity(
+                                id = UUID.randomUUID().toString(),
+                                name = IncidentNaming.placeholder(now),
+                                year = IncidentNaming.yearOf("", now),
+                                createdAt = now,
+                                isActive = true
+                            )
+                            app.database.dao().startIncident(fresh)
+                            namingIncident = true
+                        }
+                    }
+                }
+            },
+            onDismiss = { showIncidents = false }
+        )
+    }
+
+    if (namingIncident && activeIncident != null) {
+        val current = activeIncident
+        NameThisIncidentDialog(
+            placeholder = current.name,
+            onDismiss = { namingIncident = false },
+            onConfirm = { name ->
+                scope.launch {
+                    app.database.dao().renameIncident(
+                        current.id, name, IncidentNaming.yearOf(name, current.createdAt)
+                    )
+                }
+                namingIncident = false
+            }
+        )
+    }
+
     Scaffold(
         topBar = {
             if (chromeVisible) TopAppBar(
                 title = {
-                    Column {
+                    // The incident name is the way in. Nothing else in the bar
+                    // is a plausible place to look for "which fire is this",
+                    // and it is already the thing being read.
+                    Column(Modifier.clickable { showIncidents = true }) {
                         Text(activeIncident?.name ?: "Fireline Map", fontWeight = FontWeight.Bold)
-                        Text("OFFLINE INCIDENT MAP", style = MaterialTheme.typography.labelSmall)
+                        Text(
+                            if (activeIncident != null) "TAP TO CHANGE INCIDENT"
+                            else "OFFLINE INCIDENT MAP",
+                            style = MaterialTheme.typography.labelSmall
+                        )
                     }
                 },
                 actions = {
