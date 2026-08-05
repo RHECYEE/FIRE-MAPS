@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.Draw
 import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.Timeline
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Search
@@ -208,6 +209,7 @@ fun FirelineApp() {
     var typing by remember { mutableStateOf<DictationField?>(null) }
 
     var showLayers by remember { mutableStateOf(false) }
+    var showList by remember { mutableStateOf(false) }
     var showLegend by remember { mutableStateOf(true) }
     val settings = remember { AppSettings(context) }
     var topographyOn by remember { mutableStateOf(settings.topographyEnabled) }
@@ -1122,6 +1124,41 @@ fun FirelineApp() {
         }
     }
 
+    if (showList) {
+        ListSheet(
+            incidentName = activeIncident?.name ?: "Fireline Map",
+            markers = markers,
+            tracks = savedTracks,
+            // Worked out here rather than in the row, so the sheet is not
+            // recomputing provenance for every track on every recomposition.
+            trackRecords = remember(savedTracks) {
+                savedTracks.associate { track ->
+                    track.id to com.rhecyee.firelinemap.location.TrackRecord.of(
+                        track.points.map { (lat, lon) ->
+                            com.rhecyee.firelinemap.location.Fix(lat, lon, 0L)
+                        }
+                    )
+                }
+            },
+            onShowMarker = { marker ->
+                showList = false
+                centreRequest = marker.latitude to marker.longitude
+                inspecting = marker
+                scope.launch { inspectingReports = resources.reportCount(marker.id) }
+            },
+            onDeleteMarker = { marker -> scope.launch { resources.delete(marker.id) } },
+            onShowTrack = { track ->
+                showList = false
+                track.points.firstOrNull()?.let { centreRequest = it }
+                inspectingTrack = track
+            },
+            onDeleteTrack = { track ->
+                scope.launch { app.database.dao().deleteTrack(track.id) }
+            },
+            onDismiss = { showList = false }
+        )
+    }
+
     if (showLayers) {
         LayersSheet(
             importedMaps = importedMaps,
@@ -1667,6 +1704,12 @@ fun FirelineApp() {
                     IconButton(onClick = { showSearch = !showSearch }) {
                         Icon(Icons.Default.Search, contentDescription = "Go to coordinate")
                     }
+                    // The map answers "what is near me"; this answers "what
+                    // have we got", which is the question asked when writing a
+                    // shift ticket or checking a called-in drop point landed.
+                    IconButton(onClick = { showList = true }) {
+                        Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Pins and tracks")
+                    }
                     IconButton(onClick = { showTrackSettings = true }) {
                         Icon(Icons.Default.Settings, contentDescription = "Settings")
                     }
@@ -1743,7 +1786,7 @@ fun FirelineApp() {
             }
 
             if (chromeVisible && !showSearch && (watching || liveTrack.recording)) {
-                TravelPanel(live = liveTrack, armed = watching, unit = distanceUnit)
+                TravelPanel(live = liveTrack, armed = watching)
             }
 
             if (chromeVisible && !showSearch && placingResources) {

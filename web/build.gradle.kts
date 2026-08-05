@@ -46,6 +46,7 @@ kotlin {
                 "com/rhecyee/firelinemap/geopdf/UtmProjection.kt",
                 "com/rhecyee/firelinemap/location/TrackColours.kt",
                 "com/rhecyee/firelinemap/location/TrackDetector.kt",
+                "com/rhecyee/firelinemap/location/TravelReadout.kt",
                 "com/rhecyee/firelinemap/location/TrackMerge.kt",
                 "com/rhecyee/firelinemap/location/TrackProvenance.kt",
                 "com/rhecyee/firelinemap/location/TrackGeometry.kt",

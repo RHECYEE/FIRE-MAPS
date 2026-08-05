@@ -16,7 +16,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.rhecyee.firelinemap.location.LiveTrack
-import com.rhecyee.firelinemap.measure.DistanceUnit
+import com.rhecyee.firelinemap.location.TravelReadout
 
 /**
  * Live travel readout.
@@ -24,18 +24,39 @@ import com.rhecyee.firelinemap.measure.DistanceUnit
  * Present whenever recording is armed, including before a track opens, so
  * "armed but not yet moving" is visibly different from "not working". That
  * distinction is the whole reason automatic recording needs a readout at all.
+ *
+ * Every figure and every sentence comes from [TravelReadout], which the
+ * browser also calls. The panel decides where things sit; it does not decide
+ * what they say, because the two apps saying different things about the same
+ * shift is worse than either saying nothing.
  */
 @Composable
 fun TravelPanel(
     live: LiveTrack,
     armed: Boolean,
-    unit: DistanceUnit,
     modifier: Modifier = Modifier
 ) {
-    val accent = when {
-        live.paused -> Color(0xFFFFA000)
-        live.recording -> Color(0xFFE91E63)
-        else -> Color(0xFF90A4AE)
+    val figures = TravelReadout.of(
+        recording = live.recording,
+        paused = live.paused,
+        armed = armed,
+        elapsedMillis = live.elapsedMillis,
+        distanceMeters = live.distanceMeters,
+        movingMillis = live.movingMillis,
+        pausedMillis = live.pausedMillis,
+        pointCount = live.points.size,
+        fixCount = live.fixCount,
+        rejectedCount = live.rejectedCount,
+        lastAccuracyMeters = live.lastAccuracyMeters.toDouble(),
+        lastSpeedMetersPerSecond = live.lastSpeedMetersPerSecond,
+        movingNow = live.movingNow,
+        movingHeldMillis = live.movingHeldMillis
+    )
+
+    val accent = when (figures.accent) {
+        TravelReadout.Accent.PAUSED -> Color(0xFFFFA000)
+        TravelReadout.Accent.RECORDING -> Color(0xFFE91E63)
+        TravelReadout.Accent.IDLE -> Color(0xFF90A4AE)
     }
 
     Column(
@@ -46,51 +67,27 @@ fun TravelPanel(
         verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {
         Text(
-            when {
-                live.paused -> "TRAVEL PAUSED"
-                live.recording -> "TRAVEL RECORDING"
-                armed -> "WATCHING FOR TRAVEL — start moving"
-                else -> "NOT RECORDING"
-            },
+            figures.state,
             color = accent,
             fontWeight = FontWeight.Black,
             style = MaterialTheme.typography.labelLarge
         )
 
-        if (!live.recording) {
-            if (!armed) {
+        if (!figures.recording) {
+            figures.waiting?.let {
                 Text(
-                    "Press auto record to arm.",
-                    color = Color.White.copy(alpha = 0.7f),
+                    it,
+                    color = Color.White.copy(alpha = 0.85f),
                     style = MaterialTheme.typography.bodySmall
                 )
-                return@Column
             }
-
-            // Say what the service is actually seeing. "No fixes at all" and
-            // "moving, nearly confirmed" are different problems and were
-            // previously the same sentence.
-            Text(
-                when {
-                    live.fixCount == 0 -> "No position fixes received yet."
-                    live.movingNow ->
-                        "Moving at %.0f mph — confirming (%d of 30 s)".format(
-                            live.lastSpeedMetersPerSecond * 2.236936,
-                            (live.movingHeldMillis / 1000).coerceAtMost(30)
-                        )
-                    else -> "Stationary — a track opens after 30 s of movement."
-                },
-                color = Color.White.copy(alpha = 0.85f),
-                style = MaterialTheme.typography.bodySmall
-            )
-            Text(
-                "${live.fixCount} fixes · ±%.0f m · %.0f mph".format(
-                    live.lastAccuracyMeters,
-                    live.lastSpeedMetersPerSecond * 2.236936
-                ) + if (live.rejectedCount > 0) " · ${live.rejectedCount} too inaccurate" else "",
-                color = Color.White.copy(alpha = 0.55f),
-                style = MaterialTheme.typography.labelSmall
-            )
+            figures.diagnostics?.let {
+                Text(
+                    it,
+                    color = Color.White.copy(alpha = 0.55f),
+                    style = MaterialTheme.typography.labelSmall
+                )
+            }
             return@Column
         }
 
@@ -99,24 +96,28 @@ fun TravelPanel(
             horizontalArrangement = Arrangement.spacedBy(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Stat("ELAPSED", clock(live.elapsedMillis))
-            Stat("DISTANCE", "%.2f %s".format(unit.from(live.distanceMeters), unit.label))
-            Stat("POINTS", live.points.size.toString())
+            Stat("ELAPSED", figures.elapsed)
+            Stat("DISTANCE", figures.distance)
+            Stat("POINTS", figures.points.toString())
         }
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Stat("MOVING", clock(live.movingMillis))
-            Stat("AVG", speed(live.averageSpeedMetersPerSecond))
-            Stat("MOVING AVG", speed(live.movingSpeedMetersPerSecond))
+            // Moving time beside elapsed, and an average for each. On a
+            // division with gates and traffic these are different questions,
+            // and quoting one without saying which is how a road gets reported
+            // as half the speed it drives.
+            Stat("MOVING", figures.moving)
+            Stat("AVG", figures.averageSpeed)
+            Stat("MOVING AVG", figures.movingSpeed)
         }
-        if (live.pausedMillis > 0) {
-            Text(
-                "Paused ${clock(live.pausedMillis)} of this track",
-                color = Color.White.copy(alpha = 0.7f),
-                style = MaterialTheme.typography.bodySmall
-            )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Stat("CHAINS", figures.chains)
+            figures.paused?.let { Stat("STOPPED", it) }
         }
     }
 }
@@ -132,12 +133,3 @@ private fun Stat(label: String, value: String) {
         Text(value, color = Color.White, fontWeight = FontWeight.Bold)
     }
 }
-
-private fun clock(millis: Long): String {
-    val total = millis / 1000
-    return "%02d:%02d:%02d".format(total / 3600, (total % 3600) / 60, total % 60)
-}
-
-/** Miles per hour, which is what a vehicle speedometer reads. */
-private fun speed(metersPerSecond: Double): String =
-    "%.1f mph".format(metersPerSecond * 2.236936)

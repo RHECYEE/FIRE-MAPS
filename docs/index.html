@@ -15,35 +15,73 @@
 </head>
 <body>
 
-<canvas id="map"></canvas>
+<!--
+  The same column the phone lays out: chrome above the map, the map taking
+  whatever is left, the tool row underneath. It used to be a full-bleed canvas
+  with panels floating over it, which meant the two apps put the same controls
+  in different places and a figure readable on one was under a thumb on the
+  other.
+-->
+<div id="shell">
 
-<!-- Always on screen. Coordinates are what goes over a radio. -->
-<div id="readout" class="panel">
-  <div class="row">
-    <strong id="coords">Waiting for GPS…</strong>
-    <button id="format" class="chip" title="Change format">DDM</button>
+  <!-- The incident name is the way in. Nothing else in the bar is a plausible
+       place to look for "which fire is this", and it is already being read. -->
+  <div id="topbar">
+    <div id="incidentBox">
+      <strong id="incidentName">Fireline Map</strong>
+      <span id="incidentSub">OFFLINE INCIDENT MAP</span>
+    </div>
+    <div id="actions">
+      <button id="shareTool" class="act" title="Send tracks and pins">⇪</button>
+      <button id="searchTool" class="act" title="Go to coordinate">⌕</button>
+      <button id="listTool" class="act" title="Pins and tracks">☰</button>
+      <button id="settingsTool" class="act" title="Settings">⚙</button>
+      <button id="importTool" class="act" title="Import a map">⇩</button>
+    </div>
   </div>
-  <div class="sub"><span id="accuracy">—</span> · <span id="held">tiles 0</span></div>
-</div>
 
-<div id="banner" class="banner hidden"></div>
+  <div id="chrome">
+    <!-- Coordinates are what goes over a radio, so they are never more than a
+         glance away and never behind a tap. -->
+    <div id="readout" class="card">
+      <div class="row">
+        <strong id="coords">Waiting for GPS…</strong>
+        <button id="format" class="chip" title="Change format">DDM</button>
+        <button id="copyCoords" class="chip" title="Copy">COPY</button>
+      </div>
+      <div class="sub"><span id="accuracy">—</span> · <span id="held">tiles 0</span></div>
+    </div>
 
-<!-- Always reachable, like the phone. The one control that must never be
-     behind another tap. -->
-<button id="medicalTool" class="medical">206</button>
+    <div id="status" class="card hidden"></div>
+    <div id="banner" class="banner hidden"></div>
+    <div id="travel" class="card travel hidden"></div>
+    <div id="palette" class="card hidden"></div>
+    <div id="measurePanel" class="card measure hidden"></div>
+  </div>
 
-<div id="controls">
-  <button id="follow" class="round" title="Centre on me">◎</button>
-  <button id="zoomIn" class="round">+</button>
-  <button id="zoomOut" class="round">−</button>
-</div>
+  <div id="mapHolder">
+    <canvas id="map"></canvas>
 
-<div id="toolbar">
-  <button id="pinTool" class="tool">Pin</button>
-  <button id="measureTool" class="tool">Measure</button>
-  <button id="recordTool" class="tool">Record</button>
-  <button id="shareTool" class="tool">Share</button>
-  <button id="listTool" class="tool">List</button>
+    <!-- Always on screen, including under every sheet. The one control that
+         must never be behind another tap. -->
+    <button id="medicalTool" class="medical">206</button>
+
+    <div id="controls">
+      <button id="follow" class="round" title="Centre on me">◎</button>
+      <button id="zoomIn" class="round">+</button>
+      <button id="zoomOut" class="round">−</button>
+    </div>
+  </div>
+
+  <!-- The phone's four: Measure, Resources, Auto Record, Layers. -->
+  <div id="toolbar">
+    <button id="measureTool" class="tool"><i>⟷</i>Measure</button>
+    <button id="pinTool" class="tool"><i>◆</i>Resources</button>
+    <button id="recordTool" class="tool"><i>◉</i>Auto Record</button>
+    <button id="layersTool" class="tool"><i>▤</i>Layers</button>
+  </div>
+
+  <div id="recordNote" class="hidden"></div>
 </div>
 
 <!-- Sheets ------------------------------------------------------------- -->

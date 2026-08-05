@@ -6,6 +6,7 @@ import com.rhecyee.firelinemap.location.TrackDetector
 import com.rhecyee.firelinemap.location.TrackEvent
 import com.rhecyee.firelinemap.location.TrackLine
 import com.rhecyee.firelinemap.location.TrackRecord
+import com.rhecyee.firelinemap.location.TravelReadout
 import com.rhecyee.firelinemap.location.TrackOverlap
 import com.rhecyee.firelinemap.map.MapCoverage
 import com.rhecyee.firelinemap.map.TileMath
@@ -19,6 +20,7 @@ import com.rhecyee.firelinemap.share.TextCodec
 import com.rhecyee.firelinemap.util.CoordinateParseResult
 import com.rhecyee.firelinemap.util.CoordinateParser
 import com.rhecyee.firelinemap.util.GridCoordinates
+import kotlin.js.json
 
 /**
  * What the browser is allowed to call.
@@ -232,6 +234,14 @@ class Recorder internal constructor(private val detector: TrackDetector) {
     var distanceMeters: Double = 0.0
         private set
 
+    // Kept here rather than in the detector: they are about what the browser's
+    // receiver is reporting, which is a different question from what the
+    // detector makes of it, and the panel has to be able to tell the two apart.
+    private var fixCount: Int = 0
+    private var rejectedCount: Int = 0
+    private var lastAccuracyMeters: Double = 0.0
+    private var lastSpeedMetersPerSecond: Double = 0.0
+
     /** Feeds a fix. Returns the name of what happened, for the page to act on. */
     fun onFix(
         latitude: Double,
@@ -240,6 +250,11 @@ class Recorder internal constructor(private val detector: TrackDetector) {
         accuracyMeters: Double,
         speedMetersPerSecond: Double
     ): String {
+        fixCount++
+        lastAccuracyMeters = accuracyMeters
+        if (speedMetersPerSecond >= 0) lastSpeedMetersPerSecond = speedMetersPerSecond
+        if (accuracyMeters > detector.settings.maxUsableAccuracyMeters) rejectedCount++
+
         val event = detector.onFix(
             Fix(
                 latitude = latitude,
@@ -261,6 +276,50 @@ class Recorder internal constructor(private val detector: TrackDetector) {
             is TrackEvent.Ended -> if (event.kept) "ended" else "discarded"
             TrackEvent.None -> "none"
         }
+    }
+
+    /**
+     * The live readout, worded by the shared code.
+     *
+     * The browser asks the same question the phone's panel asks and gets the
+     * same sentences back, including the split between elapsed and moving
+     * time. Two apps describing one shift differently is worse than either
+     * describing it at all.
+     */
+    fun stats(nowMillis: Double): String {
+        val now = nowMillis.toLong()
+        val figures = TravelReadout.of(
+            recording = detector.isRecording,
+            paused = detector.isPaused,
+            armed = true,
+            elapsedMillis = detector.currentElapsedMillis(now),
+            distanceMeters = detector.currentDistanceMeters,
+            movingMillis = detector.currentMovingMillis,
+            pausedMillis = detector.currentPausedMillis,
+            pointCount = detector.currentPointCount,
+            fixCount = fixCount,
+            rejectedCount = rejectedCount,
+            lastAccuracyMeters = lastAccuracyMeters,
+            lastSpeedMetersPerSecond = lastSpeedMetersPerSecond,
+            movingNow = detector.lastFixWasMoving,
+            movingHeldMillis = detector.movingHeldMillis(now),
+            startSustainedMillis = detector.settings.startSustainedMillis
+        )
+        return json(
+            "state" to figures.state,
+            "accent" to figures.accent.name,
+            "recording" to figures.recording,
+            "elapsed" to figures.elapsed,
+            "moving" to figures.moving,
+            "paused" to figures.paused,
+            "distance" to figures.distance,
+            "chains" to figures.chains,
+            "averageSpeed" to figures.averageSpeed,
+            "movingSpeed" to figures.movingSpeed,
+            "points" to figures.points,
+            "waiting" to figures.waiting,
+            "diagnostics" to figures.diagnostics
+        ).let { JSON.stringify(it) }
     }
 
     /** The line so far, as flat latitude and longitude pairs. */

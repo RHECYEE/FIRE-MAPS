@@ -63,18 +63,55 @@ const Store = {
     }
 };
 
-let incident = Store.read('incident', 'Incident');
-let pins = Store.read('pins', []);
-let tracks = Store.read('tracks', []);
+/**
+ * Incidents, each with its own pins and tracks.
+ *
+ * The phone keeps them apart and so does this: switching to a new fire clears
+ * the map rather than stacking last week's drop points on top of this week's.
+ * They are not deleted -- switching back brings them all straight back -- but
+ * nothing from one incident is ever drawn on another, because a drop point
+ * from the wrong fire is worse than no drop point at all.
+ */
+let incidents = Store.read('incidents', null);
+let activeIncidentId = Store.read('activeIncident', null);
 
-const savePins = () => Store.write('pins', pins);
-const saveTracks = () => Store.write('tracks', tracks);
+// Anything stored before incidents existed belongs to the first one.
+if (!incidents) {
+    const first = {
+        id: 'i' + Date.now(),
+        name: Store.read('incident', 'Incident'),
+        startedAt: Date.now()
+    };
+    incidents = [first];
+    activeIncidentId = first.id;
+    Store.write('incidents', incidents);
+    Store.write('activeIncident', activeIncidentId);
+    const heldPins = Store.read('pins', []);
+    const heldTracks = Store.read('tracks', []);
+    if (heldPins.length) Store.write('pins.' + first.id, heldPins);
+    if (heldTracks.length) Store.write('tracks.' + first.id, heldTracks);
+}
+
+function activeIncident() {
+    return incidents.find(i => i.id === activeIncidentId) || incidents[0];
+}
+
+let incident = activeIncident().name;
+let pins = Store.read('pins.' + activeIncidentId, []);
+let tracks = Store.read('tracks.' + activeIncidentId, []);
+
+const savePins = () => Store.write('pins.' + activeIncidentId, pins);
+const saveTracks = () => Store.write('tracks.' + activeIncidentId, tracks);
+const saveIncidents = () => {
+    Store.write('incidents', incidents);
+    Store.write('activeIncident', activeIncidentId);
+};
 
 // ------------------------------------------------------------------- map
 
 const TILE = 256;
-const TILE_URL =
-    'https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile';
+const TILE_HOST = 'https://basemap.nationalmap.gov/arcgis/rest/services';
+const HYDRO_SERVICE = 'USGSHydroCached';
 
 const canvas = document.getElementById('map');
 const ctx = canvas.getContext('2d');
@@ -139,28 +176,50 @@ const tileFailed = new Set();
  * no signal. Nothing is prefetched beyond what has been on screen -- the USGS
  * serves this map for use, not for bulk copying.
  */
-function tile(z, x, y) {
-    const key = z + '/' + x + '/' + y;
+function tile(z, x, y, service) {
+    const from = service || basemap;
+    const key = from + '/' + z + '/' + x + '/' + y;
     if (tileCache.has(key)) return tileCache.get(key);
     if (tileFailed.has(key)) return null;
 
     const image = new Image();
     image.crossOrigin = 'anonymous';
-    image.onload = () => { heldTiles = tileCache.size; draw(); };
+    image.onload = () => {
+        heldTiles = tileCache.size;
+        refreshStatus();
+        draw();
+    };
     image.onerror = () => { tileCache.delete(key); tileFailed.add(key); };
-    image.src = `${TILE_URL}/${z}/${y}/${x}`;
+    image.src = `${TILE_HOST}/${from}/MapServer/tile/${z}/${y}/${x}`;
     tileCache.set(key, image);
     return image;
 }
 
+/**
+ * The map is a panel in a column now, not the whole window.
+ *
+ * So its size comes from the box it sits in, and a touch has to be converted
+ * from the page into that box before it means anything. Getting this wrong
+ * puts a pin somewhere the finger was not, which is the one mistake this app
+ * cannot make.
+ */
 function resize() {
     const ratio = dpr();
-    canvas.width = window.innerWidth * ratio;
-    canvas.height = window.innerHeight * ratio;
-    canvas.style.width = window.innerWidth + 'px';
-    canvas.style.height = window.innerHeight + 'px';
+    const box = canvas.parentElement.getBoundingClientRect();
+    const width = Math.max(1, Math.round(box.width));
+    const height = Math.max(1, Math.round(box.height));
+    canvas.width = width * ratio;
+    canvas.height = height * ratio;
+    canvas.style.width = width + 'px';
+    canvas.style.height = height + 'px';
     ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
     draw();
+}
+
+/** A page coordinate as a map coordinate. */
+function local(clientX, clientY) {
+    const box = canvas.getBoundingClientRect();
+    return { x: clientX - box.left, y: clientY - box.top };
 }
 
 function draw() {
@@ -187,15 +246,22 @@ function draw() {
         for (let y = firstY; y <= lastY; y++) {
             if (y < 0 || y >= count) continue;
             const wrapped = ((x % count) + count) % count;
-            const image = tile(level, wrapped, y);
-            if (!image || !image.complete || !image.naturalWidth) continue;
-            ctx.drawImage(
-                image,
+            const at = [
                 Math.round(x * size - originX),
                 Math.round(y * size - originY),
                 Math.ceil(size),
                 Math.ceil(size)
-            );
+            ];
+            const image = tile(level, wrapped, y);
+            if (image && image.complete && image.naturalWidth) {
+                ctx.drawImage(image, at[0], at[1], at[2], at[3]);
+            }
+            if (hydroOn) {
+                const water = tile(level, wrapped, y, HYDRO_SERVICE);
+                if (water && water.complete && water.naturalWidth) {
+                    ctx.drawImage(water, at[0], at[1], at[2], at[3]);
+                }
+            }
         }
     }
 
@@ -412,7 +478,8 @@ canvas.addEventListener('pointerdown', event => {
     if (pointers.size === 2) { pinchFrom = spread(); draggingPin = null; return; }
     // Only when nothing else wants the tap: measuring and placing both use it.
     if (!measure.on && !pinArmed && movingPin === null) {
-        draggingPin = pinAt(event.clientX, event.clientY);
+        const at = local(event.clientX, event.clientY);
+        draggingPin = pinAt(at.x, at.y);
     }
 });
 
@@ -442,7 +509,8 @@ canvas.addEventListener('pointermove', event => {
         // stops a slightly unsteady tap from nudging a pin somebody meant
         // only to open.
         if (draggingPin !== null && movedSincePress > 8) {
-            const where = toGeo(event.clientX, event.clientY);
+            const at = local(event.clientX, event.clientY);
+            const where = toGeo(at.x, at.y);
             pins[draggingPin].latitude = where.latitude;
             pins[draggingPin].longitude = where.longitude;
             draw();
@@ -468,7 +536,10 @@ function endPointer(event) {
         draggingPin = null;
         // A tap, not a drag. The threshold is generous because a gloved
         // finger never lands perfectly still.
-        if (had === 1 && movedSincePress < 12) onTap(event.clientX, event.clientY);
+        if (had === 1 && movedSincePress < 12) {
+            const at = local(event.clientX, event.clientY);
+            onTap(at.x, at.y);
+        }
     }
 }
 
@@ -545,6 +616,13 @@ document.getElementById('format').onclick = () => {
     formatIndex = (formatIndex + 1) % FORMATS.length;
     document.getElementById('format').textContent = FORMATS[formatIndex];
     showCoordinates();
+};
+
+document.getElementById('copyCoords').onclick = async () => {
+    if (!position) { banner('No position to copy yet.', 'warn'); return; }
+    const text = formatted(position.latitude, position.longitude);
+    try { await navigator.clipboard.writeText(text); banner('Copied.', 'good'); }
+    catch (e) { banner('Could not reach the clipboard.', 'bad'); }
 };
 
 document.getElementById('follow').onclick = () => {
@@ -641,13 +719,18 @@ function releaseScreen() {
 
 function startRecording() {
     if (!K) { banner('The map engine did not load.', 'bad'); return; }
-    live.recorder = K.recorder(300);
+    live.recorder = K.recorder(stopSeconds);
     live.points = [];
     live.startedAt = Date.now();
     saveLive();
     holdScreenAwake();
     document.getElementById('recordTool').classList.add('rec');
-    document.getElementById('recordTool').textContent = 'Stop';
+    document.getElementById('recordTool').innerHTML = '<i>\u25c9</i>Recording';
+    const note = document.getElementById('recordNote');
+    note.textContent = 'Recording on movement · pauses after ' +
+        (STOP_CHOICES.find(c => c[0] === stopSeconds) || [0, ''])[1] + ' stopped';
+    note.classList.remove('hidden');
+    showTravel();
     banner('Recording. Keep this page open and the screen on.', 'good');
 }
 
@@ -668,7 +751,9 @@ function stopRecording() {
     live.recorder = null;
     releaseScreen();
     document.getElementById('recordTool').classList.remove('rec');
-    document.getElementById('recordTool').textContent = 'Record';
+    document.getElementById('recordTool').innerHTML = '<i>\u25c9</i>Auto Record';
+    document.getElementById('recordNote').classList.add('hidden');
+    document.getElementById('travel').classList.add('hidden');
 
     const finished = recorder && recorder.finish();
     live.points = [];
@@ -729,17 +814,14 @@ document.addEventListener('visibilitychange', () => {
  */
 const measure = { on: false, area: false, points: [] };
 
-function measuring() { return measure.on; }
-
 document.getElementById('measureTool').onclick = () => {
     measure.on = !measure.on;
     if (!measure.on) measure.points = [];
-    if (measure.on) { pinArmed = false; document.getElementById('pinTool').classList.remove('on'); }
+    if (measure.on) disarmResources();
     document.getElementById('measureTool').classList.toggle('on', measure.on);
-    banner(measure.on ? 'Tap the map to measure. Tap MEASURE again to stop.' : '',
-        measure.on ? 'good' : null);
+    document.getElementById('measurePanel').classList.toggle('hidden', !measure.on);
     draw();
-    if (measure.on) showMeasure();
+    showMeasure();
 };
 
 function addMeasurePoint(latitude, longitude) {
@@ -748,35 +830,47 @@ function addMeasurePoint(latitude, longitude) {
     showMeasure();
 }
 
+/**
+ * The measuring readout, as a panel above the map rather than a sheet.
+ *
+ * A sheet covers the ground being measured, which is the one thing that has to
+ * stay visible while points are being tapped onto it. The phone puts this in a
+ * strip at the top for exactly that reason, so this does too.
+ */
 function showMeasure() {
+    const holder = document.getElementById('measurePanel');
+    if (!measure.on) { holder.innerHTML = ''; return; }
     if (!T) { banner('The measuring tool did not load.', 'bad'); return; }
+
     const flat = [];
     measure.points.forEach(p => { flat.push(p[0]); flat.push(p[1]); });
     const out = JSON.parse(T.measure(JSON.stringify(flat), measure.area));
+    const last = (out.legs || [])[(out.legs || []).length - 1];
 
-    const legs = (out.legs || []).map((leg, i) => `
-        <div class="item">
-          <div class="top"><strong>Leg ${i + 1}</strong><b>${leg.distance}</b></div>
-          <div class="meta">${leg.chains} · bearing ${leg.bearing}</div>
-        </div>`).join('');
-
-    openSheet(measure.area ? 'Area' : 'Distance', `
+    holder.innerHTML = `
+        <div class="row">
+          <button class="mode${measure.area ? '' : ' on'}" id="modeLine">LINE</button>
+          <button class="mode${measure.area ? ' on' : ''}" id="modeArea">POLYGON</button>
+          <span class="spacer"></span>
+          <button class="flat" id="measureUndo">UNDO</button>
+          <button class="flat" id="measureClear">CLEAR</button>
+        </div>
         ${out.ready ? `
-          <div class="figure"><span>Total</span><b>${out.distance}</b></div>
-          <div class="figure"><span>In chains</span><b>${out.chains}</b></div>
-          ${out.area ? `<div class="figure"><span>Area</span><b>${out.area}</b></div>` : ''}
-          <p class="note">${out.points} points</p>`
-        : `<p class="note">${out.needs}</p>`}
-        <button class="wide quiet" id="measureMode">${
-            measure.area ? 'MEASURE DISTANCE INSTEAD' : 'CLOSE IT AND MEASURE AREA'}</button>
-        <button class="wide quiet" id="measureUndo">UNDO LAST POINT</button>
-        <button class="wide quiet" id="measureClear">START AGAIN</button>
-        <p class="note">The sheet can be closed and the measurement keeps going.
-            Tap MEASURE in the toolbar to finish.</p>
-    `);
+          <div class="total">${measure.area ? 'Perimeter' : 'Total'} ${out.distance}
+            &nbsp;·&nbsp; ${out.chains} &nbsp;·&nbsp; ${out.points} points</div>
+          ${out.area ? `<div class="area">Area ${out.area}</div>` : ''}
+          ${last ? `<div class="leg">Last leg ${last.distance} ${last.chains}
+            &nbsp;bearing ${last.bearing}</div>` : ''}`
+        : `<div class="leg">${measure.area
+            ? 'POLYGON — tap three or more points to enclose an area.'
+            : 'LINE — tap two points, or keep tapping to follow a road.'}</div>`}
+    `;
 
-    document.getElementById('measureMode').onclick = () => {
-        measure.area = !measure.area; showMeasure(); draw();
+    document.getElementById('modeLine').onclick = () => {
+        measure.area = false; showMeasure(); draw();
+    };
+    document.getElementById('modeArea').onclick = () => {
+        measure.area = true; showMeasure(); draw();
     };
     document.getElementById('measureUndo').onclick = () => {
         measure.points.pop(); draw(); showMeasure();
@@ -814,26 +908,66 @@ function drawMeasure() {
 
 let pinArmed = false;
 
+/**
+ * The symbol is chosen before the tap, not after it.
+ *
+ * The phone shows a palette the moment Resources is armed, so the sequence is
+ * pick-then-place: one decision made standing still, then a tap on the ground.
+ * Asking for the symbol afterwards means holding a half-made pin through a
+ * dialog while somebody is talking on the radio.
+ */
+let selectedSymbol = Store.read('symbol', 'drop_point');
+
+function disarmResources() {
+    pinArmed = false;
+    document.getElementById('pinTool').classList.remove('on');
+    document.getElementById('palette').classList.add('hidden');
+}
+
 document.getElementById('pinTool').onclick = () => {
     pinArmed = !pinArmed;
+    if (pinArmed) {
+        measure.on = false;
+        document.getElementById('measureTool').classList.remove('on');
+        document.getElementById('measurePanel').classList.add('hidden');
+        draw();
+    }
     document.getElementById('pinTool').classList.toggle('on', pinArmed);
-    banner(pinArmed ? 'Tap the map to drop a pin.' : '', pinArmed ? 'good' : null);
+    document.getElementById('palette').classList.toggle('hidden', !pinArmed);
+    if (pinArmed) showPalette();
 };
 
+function showPalette() {
+    const holder = document.getElementById('palette');
+    holder.innerHTML = '';
+    SYMBOLS.forEach(([id, label, glyph]) => {
+        const button = document.createElement('button');
+        button.textContent = glyph + ' ' + label;
+        button.dataset.symbol = id;
+        if (id === selectedSymbol) button.classList.add('on');
+        button.onclick = () => {
+            selectedSymbol = id;
+            Store.write('symbol', id);
+            showPalette();
+        };
+        holder.appendChild(button);
+    });
+}
+
 /** The pin under a finger, if any. Generous, because gloves are not precise. */
-function pinAt(clientX, clientY) {
+function pinAt(mapX, mapY) {
     let best = null;
     let bestDistance = 34;
     pins.forEach((pin, index) => {
         const at = toScreen(pin.latitude, pin.longitude);
-        const away = Math.hypot(at.x - clientX, at.y - clientY);
+        const away = Math.hypot(at.x - mapX, at.y - mapY);
         if (away < bestDistance) { bestDistance = away; best = index; }
     });
     return best;
 }
 
-function onTap(clientX, clientY) {
-    const where = toGeo(clientX, clientY);
+function onTap(mapX, mapY) {
+    const where = toGeo(mapX, mapY);
 
     if (placingLandingZone) {
         // The one tap the 206 is waiting on, so it comes before every tool.
@@ -863,15 +997,16 @@ function onTap(clientX, clientY) {
     }
 
     if (pinArmed) {
-        pinArmed = false;
-        document.getElementById('pinTool').classList.remove('on');
+        // The palette stays armed. On a phone the next thing after dropping a
+        // drop point is usually another drop point, and re-arming between each
+        // one is a tap per pin for nothing.
         placePin(where.latitude, where.longitude);
         return;
     }
 
     // A pin under the finger is the more specific question than the ground
     // beneath it, so it is asked first.
-    const hit = pinAt(clientX, clientY);
+    const hit = pinAt(mapX, mapY);
     if (hit !== null) { showPin(hit); return; }
 
     const report = K && K.tracksAt(
@@ -961,42 +1096,44 @@ function showPin(index) {
     };
 }
 
+/**
+ * Names the pin that was just dropped.
+ *
+ * The symbol was already chosen on the palette, so this asks one question. The
+ * suggested name counts up from what is already on the map -- "DP 3" after two
+ * drop points -- because the numbering is the thing people actually want and
+ * typing it every time is how it gets skipped.
+ */
 function placePin(latitude, longitude) {
-    openSheet('Drop a pin', `
+    const symbol = SYMBOLS.find(s => s[0] === selectedSymbol) || SYMBOLS[0];
+    const already = pins.filter(p => p.symbolId === selectedSymbol).length;
+    const suggested = symbol[2] + ' ' + (already + 1);
+
+    openSheet(symbol[1], `
         <p class="note">${formatted(latitude, longitude)}</p>
-        <input id="pinName" placeholder="Name (DP 12, Helispot 3…)" autocomplete="off">
-        <h4>Symbol</h4>
-        <div id="symbols"></div>
+        <input id="pinName" value="${escapeHtml(suggested)}" autocomplete="off">
+        <h4>Note</h4>
+        <input id="pinNote" placeholder="Turnaround for tenders…" autocomplete="off">
         <button class="wide" id="pinSave">DROP IT</button>
+        <button class="wide quiet" id="pinCancel">NOT HERE</button>
     `);
-    let chosen = 'drop_point';
-    const holder = document.getElementById('symbols');
-    SYMBOLS.forEach(([id, label]) => {
-        const button = document.createElement('button');
-        button.className = 'chip';
-        button.style.margin = '3px';
-        button.textContent = label;
-        button.onclick = () => {
-            chosen = id;
-            [...holder.children].forEach(c => c.style.background = '#25404F');
-            button.style.background = '#1565C0';
-        };
-        if (id === chosen) button.style.background = '#1565C0';
-        holder.appendChild(button);
-    });
+
     document.getElementById('pinSave').onclick = () => {
         const name = document.getElementById('pinName').value.trim();
+        const note = document.getElementById('pinNote').value.trim();
         pins.push({
             id: 'w' + Date.now(),
-            title: name || 'Point',
+            title: name || suggested,
             latitude, longitude,
-            symbolId: chosen,
+            symbolId: selectedSymbol,
+            note: note || null,
             createdAt: Date.now()
         });
         savePins();
         closeSheet();
         draw();
     };
+    document.getElementById('pinCancel').onclick = closeSheet;
 }
 
 // -------------------------------------------------------------- overlap
@@ -1073,9 +1210,6 @@ function showShare() {
         }</p>
         <div id="applyHolder"></div>
 
-        <h4>This incident</h4>
-        <input id="incidentName" value="${escapeHtml(incident)}" placeholder="Incident name">
-        <button class="wide quiet" id="saveIncident">SAVE NAME</button>
     `);
 
     let next = 0;
@@ -1117,12 +1251,6 @@ function showShare() {
         assembly.total = part.total;
         document.getElementById('pasteBox').value = '';
         showShare();
-    };
-
-    document.getElementById('saveIncident').onclick = () => {
-        incident = document.getElementById('incidentName').value.trim() || 'Incident';
-        Store.write('incident', incident);
-        banner('Saved.', 'good');
     };
 
     if (assembly.total && missing.length === 0) {
@@ -1463,6 +1591,457 @@ document.getElementById('listTool').onclick = () => {
     });
 };
 
+// ------------------------------------------------------------- incidents
+
+/**
+ * What is under the map, in a line.
+ *
+ * The phone's status row says which sheet is in use and whether anything is
+ * wrong with it. There is no sheet here, so it says which basemap is drawn and
+ * how much of it is held for going offline -- the same question, which is
+ * "what will still be here when the signal goes".
+ */
+function refreshStatus() {
+    const row = document.getElementById('status');
+    const chosen = BASEMAPS.find(b => b[0] === basemap);
+    row.className = 'card ok';
+    row.textContent = (chosen ? chosen[1] : basemap) +
+        (hydroOn ? ' + water' : '') +
+        ' · ' + heldTiles + ' tile' + (heldTiles === 1 ? '' : 's') + ' held';
+    row.classList.remove('hidden');
+}
+
+function refreshTopBar() {
+    document.getElementById('incidentName').textContent = incident;
+    document.getElementById('incidentSub').textContent =
+        incidents.length > 1 ? 'TAP TO CHANGE INCIDENT'
+        : 'TAP TO NAME OR ADD AN INCIDENT';
+}
+
+document.getElementById('incidentBox').onclick = showIncidents;
+
+function switchIncident(id) {
+    if (id === activeIncidentId) { closeSheet(); return; }
+    // Nothing is thrown away -- the other incident's pins stay under its own
+    // key -- but nothing of it is drawn here either.
+    activeIncidentId = id;
+    saveIncidents();
+    incident = activeIncident().name;
+    pins = Store.read('pins.' + id, []);
+    tracks = Store.read('tracks.' + id, []);
+    // The 206 belongs to the incident it was raised on.
+    plan = null;
+    Store.write('medical', null);
+    assembly = { parts: {}, checksum: null, total: 0 };
+    refreshTopBar();
+    closeSheet();
+    draw();
+    banner('Now on ' + incident + '.', 'good');
+}
+
+function showIncidents() {
+    const rows = incidents.map(entry => {
+        const held = Store.read('pins.' + entry.id, []).length;
+        const ran = Store.read('tracks.' + entry.id, []).length;
+        return `
+        <div class="item">
+          <div class="top">
+            <strong>${escapeHtml(entry.name)}</strong>
+            ${entry.id === activeIncidentId
+                ? '<b class="good">OPEN</b>'
+                : `<button class="chip" data-open="${entry.id}">OPEN</button>`}
+          </div>
+          <div class="meta">${held} pin${held === 1 ? '' : 's'} ·
+            ${ran} track${ran === 1 ? '' : 's'} ·
+            started ${new Date(entry.startedAt).toLocaleDateString()}</div>
+          <div class="top" style="margin-top:6px">
+            <button class="chip" data-rename="${entry.id}">RENAME</button>
+            ${incidents.length > 1
+                ? `<button class="chip" data-drop="${entry.id}">DELETE</button>` : ''}
+          </div>
+        </div>`;
+    }).join('');
+
+    openSheet('Incidents', `
+        <p class="note">Each incident keeps its own pins and tracks. Opening a
+          different one clears the map — nothing is lost, and switching back
+          brings it all straight back.</p>
+        ${rows}
+        <h4>Start another</h4>
+        <input id="newIncident" placeholder="Burnt Creek 2026" autocomplete="off">
+        <button class="wide" id="addIncident">START THIS INCIDENT</button>
+    `);
+
+    document.querySelectorAll('[data-open]').forEach(button => {
+        button.onclick = () => switchIncident(button.dataset.open);
+    });
+
+    document.querySelectorAll('[data-rename]').forEach(button => {
+        button.onclick = () => {
+            const entry = incidents.find(i => i.id === button.dataset.rename);
+            openSheet('Rename', `
+                <input id="renameTo" value="${escapeHtml(entry.name)}">
+                <button class="wide" id="renameSave">SAVE</button>`);
+            document.getElementById('renameSave').onclick = () => {
+                const to = document.getElementById('renameTo').value.trim();
+                if (to) {
+                    entry.name = to.slice(0, 60);
+                    saveIncidents();
+                    if (entry.id === activeIncidentId) {
+                        incident = entry.name;
+                        refreshTopBar();
+                    }
+                }
+                showIncidents();
+            };
+        };
+    });
+
+    document.querySelectorAll('[data-drop]').forEach(button => {
+        button.onclick = () => {
+            const entry = incidents.find(i => i.id === button.dataset.drop);
+            const held = Store.read('pins.' + entry.id, []).length +
+                Store.read('tracks.' + entry.id, []).length;
+            // Confirmed, unlike a pin: this throws away a whole incident's
+            // work, and it cannot be tapped back.
+            openSheet('Delete ' + entry.name + '?', `
+                <p class="note bad">${held} pin${held === 1 ? '' : 's'} and track${
+                    held === 1 ? '' : 's'} go with it. This cannot be undone.</p>
+                <button class="wide danger" id="dropYes">DELETE IT</button>
+                <button class="wide quiet" id="dropNo">KEEP IT</button>`);
+            document.getElementById('dropNo').onclick = showIncidents;
+            document.getElementById('dropYes').onclick = () => {
+                Store.write('pins.' + entry.id, null);
+                Store.write('tracks.' + entry.id, null);
+                incidents = incidents.filter(i => i.id !== entry.id);
+                if (entry.id === activeIncidentId) {
+                    activeIncidentId = incidents[0].id;
+                    saveIncidents();
+                    switchIncident(incidents[0].id);
+                    // switchIncident short-circuits when the id matches, so
+                    // load it here regardless.
+                    incident = activeIncident().name;
+                    pins = Store.read('pins.' + activeIncidentId, []);
+                    tracks = Store.read('tracks.' + activeIncidentId, []);
+                    refreshTopBar();
+                    draw();
+                } else {
+                    saveIncidents();
+                }
+                showIncidents();
+            };
+        };
+    });
+
+    document.getElementById('addIncident').onclick = () => {
+        const name = document.getElementById('newIncident').value.trim();
+        if (!name) { banner('Give it a name first.', 'warn'); return; }
+        const entry = { id: 'i' + Date.now(), name: name.slice(0, 60), startedAt: Date.now() };
+        incidents.push(entry);
+        saveIncidents();
+        switchIncident(entry.id);
+    };
+}
+
+// ---------------------------------------------------------------- layers
+
+/**
+ * What is drawn under everything else.
+ *
+ * All of these are National Map cached services, which are public domain and
+ * served for use. Nothing is prefetched beyond what has been on screen: the
+ * service worker keeps what was actually looked at, which is what makes the
+ * map work at the end of a road, and bulk-copying somebody's tile server is
+ * both rude and against the terms it is served under.
+ */
+const BASEMAPS = [
+    ['USGSTopo', 'Topographic', 'Contours, roads and names. The default sheet.'],
+    ['USGSImageryTopo', 'Imagery with topo', 'Aerial photography with the topo drawn over it.'],
+    ['USGSImageryOnly', 'Imagery', 'Aerial photography alone — fuel and canopy.'],
+    ['USGSShadedReliefOnly', 'Shaded relief', 'Landform only. Clearest read of the ground.']
+];
+
+let basemap = Store.read('basemap', 'USGSTopo');
+let hydroOn = Store.read('hydro', false);
+
+document.getElementById('layersTool').onclick = showLayers;
+
+function showLayers() {
+    const rows = BASEMAPS.map(([id, label, why]) => `
+        <button class="toggle" data-base="${id}">
+          <span class="label">${label}<small>${why}</small></span>
+          <span class="state${basemap === id ? ' on' : ''}">${
+            basemap === id ? 'ON' : '—'}</span>
+        </button>`).join('');
+
+    openSheet('Layers', `
+        <h4>Basemap</h4>
+        ${rows}
+        <h4>Overlay</h4>
+        <button class="toggle" id="hydroToggle">
+          <span class="label">Water<small>Streams and bodies, drawn over the
+            basemap. Useful on imagery, where drainages are hard to read.</small></span>
+          <span class="state${hydroOn ? ' on' : ''}">${hydroOn ? 'ON' : 'OFF'}</span>
+        </button>
+
+        <h4>Held offline</h4>
+        <p class="note">${heldTiles} tile${heldTiles === 1 ? '' : 's'} in memory this
+          session. Everything already looked at stays available with no signal —
+          pan over the ground you will be working before you lose service.</p>
+        <button class="wide quiet" id="forgetTiles">FORGET CACHED TILES</button>
+
+        ${qualityLegend()}
+        <h4>Map symbols</h4>
+        <p class="note">${SYMBOLS.map(s => s[2] + ' ' + s[1]).join(' · ')}</p>
+    `);
+
+    document.querySelectorAll('[data-base]').forEach(button => {
+        button.onclick = () => {
+            basemap = button.dataset.base;
+            Store.write('basemap', basemap);
+            forgetTiles();
+            showLayers();
+        };
+    });
+
+    document.getElementById('hydroToggle').onclick = () => {
+        hydroOn = !hydroOn;
+        Store.write('hydro', hydroOn);
+        draw();
+        showLayers();
+    };
+
+    document.getElementById('forgetTiles').onclick = () => {
+        forgetTiles();
+        if (window.caches) caches.delete('fireline-tiles-v1').catch(() => {});
+        banner('Cached tiles dropped.', 'warn');
+        showLayers();
+    };
+}
+
+function forgetTiles() {
+    tileCache.clear();
+    tileFailed.clear();
+    heldTiles = 0;
+    refreshStatus();
+    draw();
+}
+
+// --------------------------------------------------------------- settings
+
+const STOP_CHOICES = [[60, '1 min'], [300, '5 min'], [900, '15 min'], [1800, '30 min']];
+
+let stopSeconds = Store.read('stopSeconds', 300);
+
+document.getElementById('settingsTool').onclick = showSettings;
+
+function showSettings() {
+    const author = Store.read('author', '');
+    const qualification = Store.read('qualification', '');
+    const chips = STOP_CHOICES.map(([value, label]) =>
+        `<button class="chip" data-stop="${value}" style="margin:3px;background:${
+            stopSeconds === value ? '#1565C0' : '#25404F'}">${label}</button>`).join('');
+
+    openSheet('Settings', `
+        <h4>Who is reporting</h4>
+        <p class="note">Filled into the 206 and attached to anything sent, so the
+          person receiving it knows whose track they are looking at.</p>
+        <input id="setAuthor" value="${escapeHtml(author)}" placeholder="Name">
+        <input id="setQual" value="${escapeHtml(qualification)}"
+               placeholder="Qualification — EMT, Paramedic, REMS">
+
+        <h4>End a track after</h4>
+        <p class="note">Stationary this long and the track closes. Short splits one
+          shift into fragments at every gate; long merges genuinely separate trips.</p>
+        <div>${chips}</div>
+
+        <h4>Own terrain</h4>
+        <p class="note">This browser draws on the USGS National Map and its own
+          contours — there is no product sheet to import here. Change what is
+          underneath in Layers.</p>
+
+        <h4>Recording in a browser</h4>
+        <p class="note">This is the one place the page is genuinely worse than the
+          phone, and it is worth saying plainly: iOS suspends a web app the moment
+          it is backgrounded or the screen locks. The screen is held awake while
+          recording, but if the page is suspended anyway the unobserved stretch is
+          drawn as a dotted gap rather than a line across ground nobody walked.</p>
+
+        <h4>Install it</h4>
+        <p class="note">Add to Home Screen from the browser's share menu. It then
+          opens full screen and keeps working with no signal.</p>
+
+        <button class="wide" id="saveSettings">SAVE</button>
+    `);
+
+    // Anything typed is kept before the sheet redraws. Tapping a threshold
+    // used to rebuild the form and quietly empty the name box above it, so a
+    // reporter who filled it in first lost it by touching anything else.
+    const captureSettings = () => {
+        const name = document.getElementById('setAuthor');
+        const qualification = document.getElementById('setQual');
+        if (name) Store.write('author', name.value.trim());
+        if (qualification) Store.write('qualification', qualification.value.trim());
+    };
+
+    document.querySelectorAll('[data-stop]').forEach(button => {
+        button.onclick = () => {
+            captureSettings();
+            stopSeconds = +button.dataset.stop;
+            Store.write('stopSeconds', stopSeconds);
+            showSettings();
+        };
+    });
+
+    document.getElementById('saveSettings').onclick = () => {
+        captureSettings();
+        closeSheet();
+        banner('Saved.', 'good');
+    };
+}
+
+// ----------------------------------------------------------------- search
+
+/**
+ * Going to a coordinate somebody read out.
+ *
+ * The parsing is the phone's, so a grid that works on one works on the other.
+ * The keypad carries every mark a position can arrive with, because a phone
+ * keyboard buries the degree sign three taps deep and the alternative is
+ * somebody typing a position wrong while a radio waits.
+ */
+document.getElementById('searchTool').onclick = showSearch;
+
+const KEYS = [
+    '1', '2', '3', '°', 'N', 'S',
+    '4', '5', '6', '′', 'E', 'W',
+    '7', '8', '9', '″', '−', '+',
+    '.', '0', ',', ' ', '⌫', 'GO'
+];
+
+function showSearch() {
+    openSheet('Go to a coordinate', `
+        <p class="note">Degrees and minutes, decimal degrees, UTM or MGRS. Colons,
+          slashes, semicolons and brackets are all read as separators, so paste it
+          however it arrived.</p>
+        <input id="searchText" placeholder="N 45 12.345 W 117 38.220" autocomplete="off">
+        <p class="note" id="searchState">—</p>
+        <div id="keys"></div>
+    `);
+
+    const field = document.getElementById('searchText');
+    const state = document.getElementById('searchState');
+
+    const check = () => {
+        const parsed = K && K.parseCoordinate(field.value);
+        if (!parsed) {
+            state.textContent = field.value.trim()
+                ? 'Not a position yet — keep typing.' : '—';
+            state.className = 'note';
+            return null;
+        }
+        state.textContent = parsed.format + ' · ' +
+            K.formatDdm(parsed.latitude, parsed.longitude) +
+            (parsed.exact ? '' : ' · approximate — digits missing');
+        state.className = 'note good';
+        return parsed;
+    };
+
+    const go = () => {
+        const parsed = check();
+        if (!parsed) { banner('That is not a position yet.', 'warn'); return; }
+        view.following = false;
+        document.getElementById('follow').classList.remove('on');
+        view.latitude = parsed.latitude;
+        view.longitude = parsed.longitude;
+        view.zoom = parsed.exact ? 15 : 12;
+        closeSheet();
+        draw();
+        banner('Centred on ' + K.formatDdm(parsed.latitude, parsed.longitude), 'good');
+    };
+
+    field.oninput = check;
+    field.onkeydown = event => { if (event.key === 'Enter') go(); };
+
+    const holder = document.getElementById('keys');
+    KEYS.forEach(key => {
+        const button = document.createElement('button');
+        button.textContent = key;
+        if (key === '⌫' || key === 'GO') button.className = 'dim';
+        if (key === ' ') button.textContent = 'SPC';
+        button.onclick = () => {
+            if (key === '⌫') field.value = field.value.slice(0, -1);
+            else if (key === 'GO') { go(); return; }
+            else field.value += key;
+            check();
+        };
+        holder.appendChild(button);
+    });
+}
+
+// ----------------------------------------------------------------- import
+
+document.getElementById('importTool').onclick = () => {
+    openSheet('Import', `
+        <h4>A map somebody sent</h4>
+        <p class="note">Fireline parts paste into Share → Receive. That carries every
+          pin and every track, and is the way to get somebody else's map onto this
+          one.</p>
+        <button class="wide" id="toShare">OPEN SHARE</button>
+
+        <h4>Product sheets</h4>
+        <p class="note">Importing a georeferenced PDF is the phone's job — it needs
+          to read the geospatial dictionary out of the file, which this page has no
+          way to do. The browser draws on the USGS National Map instead, which
+          covers the same ground and needs nothing imported.</p>
+    `);
+    document.getElementById('toShare').onclick = showShare;
+};
+
+// ----------------------------------------------------------- travel panel
+
+/**
+ * The live recording readout, worded by the shared code.
+ *
+ * Ticks on a timer rather than only on a fix, because the elapsed clock has to
+ * keep moving while the receiver is quiet -- a frozen clock reads as a frozen
+ * app, and the next thing somebody does is stop the recording to check.
+ */
+function showTravel() {
+    const holder = document.getElementById('travel');
+    if (!live.recorder) { holder.classList.add('hidden'); return; }
+    holder.classList.remove('hidden');
+
+    const figures = JSON.parse(live.recorder.stats(Date.now()));
+    const accent = figures.accent === 'RECORDING' ? 'rec'
+        : figures.accent === 'PAUSED' ? 'pause' : 'idle';
+    const stat = (label, value) =>
+        `<div class="stat"><span>${label}</span><b>${value}</b></div>`;
+
+    holder.innerHTML = `
+        <div class="state ${accent}">${escapeHtml(figures.state)}</div>
+        ${figures.recording ? `
+          <div class="stats">
+            ${stat('ELAPSED', figures.elapsed)}
+            ${stat('DISTANCE', figures.distance)}
+            ${stat('POINTS', figures.points)}
+          </div>
+          <div class="stats">
+            ${stat('MOVING', figures.moving)}
+            ${stat('AVG', figures.averageSpeed)}
+            ${stat('MOVING AVG', figures.movingSpeed)}
+          </div>
+          <div class="stats">
+            ${stat('CHAINS', figures.chains)}
+            ${figures.paused ? stat('STOPPED', figures.paused) : ''}
+          </div>`
+        : `${figures.waiting ? `<div class="said">${escapeHtml(figures.waiting)}</div>` : ''}
+           ${figures.diagnostics ? `<div class="diag">${escapeHtml(figures.diagnostics)}</div>` : ''}`}
+    `;
+}
+
+setInterval(() => { if (live.recorder) showTravel(); }, 1000);
+
 // ----------------------------------------------------------------- chrome
 
 function openSheet(title, html) {
@@ -1502,7 +2081,28 @@ function escapeHtml(text) {
 recoverLive();
 
 window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', () => setTimeout(resize, 120));
+
+/*
+ * The map has to give ground when a panel opens above it.
+ *
+ * Measuring, the travel readout and the symbol palette all appear in the
+ * column, and each one makes the map shorter. Resizing only on a window resize
+ * left the canvas at its old height, overflowing the column and sitting on top
+ * of the tool row -- so the first tap after arming a tool went to the map
+ * instead of the button under the finger.
+ */
+if (window.ResizeObserver) {
+    new ResizeObserver(() => resize()).observe(document.getElementById('mapHolder'));
+}
+refreshTopBar();
+refreshStatus();
+showPalette();
 resize();
+// The safe-area insets land a frame late on iOS, so the map is measured again
+// once the column has actually settled. Skipping this leaves the canvas a few
+// pixels tall on the first paint.
+requestAnimationFrame(resize);
 showCoordinates();
 startLocating();
 document.getElementById('follow').classList.add('on');

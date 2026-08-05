@@ -4,6 +4,11 @@
  * Dark throughout: a white screen at night in a truck ruins the night vision
  * of everybody in it, and there is no light setting worth the tap. Targets are
  * large because the alternative is taking a glove off.
+ *
+ * The layout follows the Android app column for column -- title bar, readout,
+ * panels, map, tool row -- so a figure that sits under the left thumb on one
+ * sits under the left thumb on the other. Two apps that put the same control
+ * in two places are two apps to learn.
  */
 
 :root {
@@ -36,48 +41,84 @@ html, body {
     -webkit-user-select: none;
 }
 
-#map {
+#shell {
     position: fixed;
     inset: 0;
-    width: 100%;
-    height: 100%;
-    display: block;
-    background: #2b3a44;
+    display: flex;
+    flex-direction: column;
+    padding: env(safe-area-inset-top, 0px) 10px env(safe-area-inset-bottom, 0px);
+    gap: 6px;
 }
 
-.panel {
-    position: fixed;
-    background: var(--panel);
-    border-radius: 10px;
-    padding: 8px 12px;
-    backdrop-filter: blur(6px);
-}
+/* Title bar ------------------------------------------------------------- */
 
-/* Clear of the notch and the home indicator on a phone. */
-#readout {
-    top: calc(env(safe-area-inset-top, 0px) + 8px);
-    left: 8px;
-    right: 8px;
-}
-
-#readout .row {
+#topbar {
     display: flex;
     align-items: center;
     gap: 8px;
+    padding: 8px 2px 2px;
+    min-height: 50px;
 }
+
+#incidentBox {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    line-height: 1.15;
+}
+
+#incidentName {
+    font-size: 17px;
+    font-weight: 800;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#incidentSub { font-size: 10px; letter-spacing: 0.5px; color: var(--dim); }
+
+#actions { display: flex; gap: 2px; }
+
+.act {
+    width: 40px;
+    height: 40px;
+    border: 0;
+    border-radius: 20px;
+    background: transparent;
+    color: var(--ink);
+    font-size: 20px;
+    line-height: 1;
+}
+
+.act:active { background: #25404F; }
+
+/* Stacked panels -------------------------------------------------------- */
+
+#chrome { display: flex; flex-direction: column; gap: 6px; }
+
+.card {
+    background: var(--panel);
+    border-radius: 10px;
+    padding: 8px 12px;
+}
+
+#readout .row { display: flex; align-items: center; gap: 8px; }
 
 #coords {
     flex: 1;
+    min-width: 0;
     font-size: 19px;
     font-variant-numeric: tabular-nums;
     letter-spacing: 0.2px;
 }
 
-#readout .sub {
-    color: var(--dim);
-    font-size: 12px;
-    margin-top: 2px;
-}
+#readout .sub { color: var(--dim); font-size: 12px; margin-top: 2px; }
+
+#status { font-size: 12px; font-weight: 700; }
+#status.ok { background: #1B5E20; }
+#status.warnMap { background: #8A6D00; }
+#status.err { background: #B3261E; }
 
 .chip {
     background: #25404F;
@@ -91,52 +132,145 @@ html, body {
 }
 
 .banner {
-    position: fixed;
-    top: calc(env(safe-area-inset-top, 0px) + 70px);
-    left: 8px;
-    right: 8px;
     background: #5D2A00;
     color: #FFD9B0;
     font-weight: 700;
     font-size: 13px;
     padding: 9px 12px;
     border-radius: 9px;
-    z-index: 5;
 }
 
 .banner.good { background: #10432B; color: var(--good); }
 .banner.bad { background: #5B1A16; color: var(--bad); }
 
+/* The live travel readout, matching the phone's panel. */
+.travel { background: #1A1E24; }
+.travel .state { font-weight: 900; font-size: 13px; letter-spacing: 0.4px; }
+.travel .state.rec { color: #E91E63; }
+.travel .state.pause { color: #FFA000; }
+.travel .state.idle { color: #90A4AE; }
+.travel .stats { display: flex; gap: 16px; margin-top: 4px; flex-wrap: wrap; }
+.travel .stat { min-width: 62px; }
+.travel .stat span {
+    display: block;
+    font-size: 10px;
+    letter-spacing: 0.4px;
+    color: rgba(255, 255, 255, 0.55);
+}
+.travel .stat b { font-variant-numeric: tabular-nums; }
+.travel .said { font-size: 12px; color: rgba(255, 255, 255, 0.85); margin-top: 3px; }
+.travel .diag { font-size: 11px; color: rgba(255, 255, 255, 0.55); margin-top: 2px; }
+
+/* The measuring panel, which is a panel and not a sheet -- the map has to
+   stay visible while points are being tapped onto it. */
+.measure { background: #3A2F00; }
+.measure .row { display: flex; align-items: center; gap: 6px; }
+.measure .row .spacer { flex: 1; }
+.measure .total { font-weight: 800; margin-top: 4px; }
+.measure .area { color: #FFC400; font-weight: 900; font-size: 17px; margin-top: 2px; }
+.measure .leg { font-size: 12px; color: rgba(255, 255, 255, 0.9); margin-top: 2px; }
+
+.mode {
+    border: 0;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.12);
+    color: #fff;
+    font-weight: 900;
+    font-size: 12px;
+    padding: 8px 14px;
+}
+
+.mode.on { background: #FFC400; color: #1A1400; }
+
+.flat {
+    border: 0;
+    background: transparent;
+    color: #fff;
+    font-weight: 800;
+    font-size: 12px;
+    padding: 8px;
+}
+
+/* The symbol palette, shown while Resources is armed. */
+#palette { display: flex; flex-wrap: wrap; gap: 4px; }
+
+#palette button {
+    border: 0;
+    border-radius: 7px;
+    background: #25404F;
+    color: var(--ink);
+    font-weight: 800;
+    font-size: 12px;
+    padding: 9px 10px;
+    min-height: 40px;
+}
+
+#palette button.on { background: #1565C0; }
+
+/* Map ------------------------------------------------------------------- */
+
+#mapHolder { position: relative; flex: 1; min-height: 0; }
+
+#map {
+    width: 100%;
+    height: 100%;
+    display: block;
+    border-radius: 10px;
+    background: #2b3a44;
+}
+
 #controls {
-    position: fixed;
+    position: absolute;
     right: 10px;
-    bottom: calc(env(safe-area-inset-bottom, 0px) + 96px);
+    bottom: 10px;
     display: flex;
     flex-direction: column;
     gap: 10px;
 }
 
 .round {
-    width: 56px;
-    height: 56px;
-    border-radius: 28px;
+    width: 52px;
+    height: 52px;
+    border-radius: 26px;
     border: 0;
     background: var(--panel);
     color: var(--ink);
-    font-size: 24px;
+    font-size: 23px;
     font-weight: 700;
 }
 
 .round.on { background: #1565C0; }
 
-#toolbar {
-    position: fixed;
-    left: 8px;
-    right: 8px;
-    bottom: calc(env(safe-area-inset-bottom, 0px) + 8px);
-    display: flex;
-    gap: 6px;
+/*
+ * The 206, always on screen.
+ *
+ * Red, bottom left of the map, clear of the tool row and the zoom controls.
+ * Held at a comfortable target size rather than shrunk to fit the label: it is
+ * the one control that has to be hit first time with gloves on and a patient
+ * on the ground.
+ */
+.medical {
+    position: absolute;
+    left: 10px;
+    bottom: 10px;
+    min-width: 74px;
+    min-height: 46px;
+    padding: 0 16px;
+    border: 0;
+    border-radius: 23px;
+    background: #D50000;
+    color: #fff;
+    font-size: 16px;
+    font-weight: 900;
+    letter-spacing: 0.5px;
+    z-index: 4;
 }
+
+.medical.on { background: #7F0000; }
+
+/* Tool row -------------------------------------------------------------- */
+
+#toolbar { display: flex; gap: 8px; padding-bottom: 2px; }
 
 .tool {
     flex: 1;
@@ -145,12 +279,28 @@ html, body {
     border-radius: 10px;
     background: var(--panel);
     color: var(--ink);
-    font-size: 14px;
+    font-size: 11px;
     font-weight: 700;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1px;
+    padding: 4px 2px;
 }
 
+.tool i { font-style: normal; font-size: 17px; line-height: 1; }
+
 .tool.on { background: #FFC400; color: #1A1400; }
-.tool.rec { background: #C62828; }
+.tool.rec { background: #C62828; color: #fff; }
+
+#recordNote {
+    text-align: center;
+    font-size: 11px;
+    font-weight: 800;
+    color: #FF8A80;
+    padding-bottom: 4px;
+}
 
 /* Sheets ---------------------------------------------------------------- */
 
@@ -248,33 +398,6 @@ textarea { min-height: 96px; resize: vertical; }
 .warn { color: var(--warn); }
 .bad { color: var(--bad); }
 
-/*
- * The 206, always on screen.
- *
- * Red, bottom left, clear of the toolbar and the zoom controls. Held at a
- * comfortable target size rather than shrunk to fit the label: it is the one
- * control that has to be hit first time with gloves on and a patient on the
- * ground.
- */
-.medical {
-    position: fixed;
-    left: 10px;
-    bottom: calc(env(safe-area-inset-bottom, 0px) + 96px);
-    min-width: 74px;
-    min-height: 46px;
-    padding: 0 16px;
-    border: 0;
-    border-radius: 23px;
-    background: #D50000;
-    color: #fff;
-    font-size: 16px;
-    font-weight: 900;
-    letter-spacing: 0.5px;
-    z-index: 4;
-}
-
-.medical.on { background: #7F0000; }
-
 .readout {
     background: var(--deep);
     border-radius: 9px;
@@ -284,3 +407,53 @@ textarea { min-height: 96px; resize: vertical; }
     font-size: 14px;
     line-height: 1.5;
 }
+
+/* A row that reads as a switch: label on the left, state on the right. */
+.toggle {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: #1B2E3B;
+    border-radius: 9px;
+    padding: 11px 12px;
+    margin-top: 6px;
+    width: 100%;
+    border: 0;
+    color: var(--ink);
+    text-align: left;
+    font-family: inherit;
+}
+
+.toggle .label { flex: 1; font-size: 14px; font-weight: 700; }
+.toggle .label small {
+    display: block;
+    font-weight: 400;
+    font-size: 11px;
+    color: var(--dim);
+    margin-top: 2px;
+}
+
+.toggle .state {
+    font-weight: 900;
+    font-size: 12px;
+    color: var(--dim);
+    letter-spacing: 0.5px;
+}
+
+.toggle .state.on { color: var(--good); }
+
+/* The coordinate keypad: every mark a position can carry, on one screen. */
+#keys { display: grid; grid-template-columns: repeat(6, 1fr); gap: 5px; margin-top: 8px; }
+
+#keys button {
+    min-height: 46px;
+    border: 0;
+    border-radius: 8px;
+    background: #25404F;
+    color: var(--ink);
+    font-size: 17px;
+    font-weight: 800;
+}
+
+#keys button.wide2 { grid-column: span 2; }
+#keys button.dim { background: #1B2E3B; color: var(--dim); font-size: 14px; }
