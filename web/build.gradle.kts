@@ -42,6 +42,7 @@ kotlin {
             kotlin.include(
                 // The web app's own entry point.
                 "com/rhecyee/firelinemap/web/**",
+                "com/rhecyee/firelinemap/geopdf/GeoPdfParse.kt",
                 "com/rhecyee/firelinemap/geopdf/MapFrame.kt",
                 "com/rhecyee/firelinemap/geopdf/UtmProjection.kt",
                 "com/rhecyee/firelinemap/location/TrackColours.kt",

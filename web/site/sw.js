@@ -24,6 +24,7 @@ const SHELL_FILES = [
     './app.css',
     './app.js',
     './fireline.js',
+    './sheets.js',
     './manifest.webmanifest',
     './icon-192.png',
     './icon-512.png',
@@ -60,8 +61,18 @@ self.addEventListener('fetch', event => {
 
     const url = new URL(request.url);
 
-    if (url.hostname === 'basemap.nationalmap.gov') {
+    if (url.hostname === 'basemap.nationalmap.gov' ||
+        url.hostname === 's3.amazonaws.com') {
         event.respondWith(tile(request));
+        return;
+    }
+
+    // The PDF renderer is cache-first once it has been fetched. It is over a
+    // megabyte and never changes within a release, so going to the network for
+    // it on every import would cost a slow second every time and fail outright
+    // at the end of a road -- which is exactly where a sheet gets opened.
+    if (url.origin === self.location.origin && url.pathname.includes('/pdfjs/')) {
+        event.respondWith(held(request));
         return;
     }
 
@@ -90,6 +101,16 @@ async function tile(request) {
         // No signal and never seen. The map draws the ground it does have.
         return new Response('', { status: 504 });
     }
+}
+
+/** Cache first, for large files that do not change within a release. */
+async function held(request) {
+    const cache = await caches.open(SHELL);
+    const hit = await cache.match(request);
+    if (hit) return hit;
+    const response = await fetch(request);
+    if (response && response.status === 200) cache.put(request, response.clone());
+    return response;
 }
 
 /**

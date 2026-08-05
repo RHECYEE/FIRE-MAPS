@@ -46,7 +46,53 @@ class RadioReadoutTest {
 
     @Test
     fun theSpokenReadoutOpensWithEmergencyTraffic() {
-        assertTrue(RadioReadout.spoken(report()).startsWith(RadioReadout.STANDBY))
+        val spoken = RadioReadout.spoken(report())
+        assertTrue(spoken, spoken.startsWith("Communications, Burnt Creek Medical, stand by"))
+        assertTrue(spoken, spoken.contains("emergency traffic"))
+    }
+
+    /**
+     * The identifier goes in two places and only two.
+     *
+     * On the call and on the handback -- whoever answers has to know who they
+     * are answering before writing anything down, and who to call back when
+     * the traffic ends. It was landing three times, once as a bare fragment
+     * dropped between the patient count and the position, which read as a
+     * stumble in the middle of the transmission.
+     */
+    @Test
+    fun theNameIsSaidOnTheCallAndOnTheHandbackAndNowhereElse() {
+        val spoken = RadioReadout.spoken(report())
+        assertEquals(spoken, 2, spoken.split("Burnt Creek Medical").size - 1)
+        assertTrue(spoken, spoken.startsWith("Communications, Burnt Creek Medical"))
+        assertTrue(spoken, spoken.endsWith("Burnt Creek Medical, how copy?"))
+
+        val script = RadioReadout.script(report())
+        assertEquals(script, 2, script.split("Burnt Creek Medical").size - 1)
+    }
+
+    /**
+     * The paragraph and the numbered line have to agree about the landing zone.
+     *
+     * They did not. Line 4 gave the position of an LZ dropped as a pin and the
+     * spoken version left it out, so an unnamed one came out as "ground to the
+     * landing zone" with nothing to fly to -- in the version that gets read
+     * aloud while walking.
+     */
+    @Test
+    fun theSpokenVersionGivesTheLandingZonePositionToo() {
+        val dropped = report().copy(
+            transport = TransportMode.AIR,
+            airPickupName = null,
+            airPickupLatitude = 45.21000,
+            airPickupLongitude = -117.64000
+        )
+        val spoken = RadioReadout.spoken(dropped)
+        assertTrue(spoken, spoken.contains("Ground to the landing zone at N 45"))
+
+        // And the two say the same words, because they come from one place.
+        val line4 = RadioReadout.lines(dropped).first { it.number == 4 }.body
+        assertTrue(spoken, spoken.contains(line4))
     }
 
     @Test
@@ -226,8 +272,8 @@ class RadioReadoutTest {
     fun theScriptIsReadableTopToBottom() {
         val script = RadioReadout.script(report())
         // Line 1 carries the standby call; the script does not print it twice.
-        assertTrue(script.startsWith("1. Contact Communications"))
-        assertEquals(1, script.split(RadioReadout.STANDBY).size - 1)
+        assertTrue(script, script.startsWith("1. Contact Communications"))
+        assertEquals(1, script.split("stand by for emergency traffic").size - 1)
 
         // Every heading that has something to say, in order.
         var cursor = 0

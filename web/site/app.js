@@ -171,8 +171,25 @@ function unproject(x, y, zoom) {
     return { latitude, longitude };
 }
 
+/**
+ * The sheet currently on screen, if any.
+ *
+ * When one is open the map stops being a tile map and becomes that page. This
+ * is the only place that decision is made: every pin, track, measurement and
+ * position converts through toScreen and toGeo, so putting the sheet's own
+ * transform behind them means every tool on the map works on a product sheet
+ * without knowing a sheet exists.
+ */
+let sheet = null;
+const sheetView = { x: 0.5, y: 0.5, scale: 1 };
+
 /** Screen pixel for a position, given the current view. */
 function toScreen(latitude, longitude) {
+    if (sheet) {
+        const pageX = sheet.frame.pageX(latitude, longitude);
+        const pageY = sheet.frame.pageY(latitude, longitude);
+        return sheetToScreen(pageX / sheet.pageWidth, 1 - pageY / sheet.pageHeight);
+    }
     const centre = project(view.latitude, view.longitude, view.zoom);
     const point = project(latitude, longitude, view.zoom);
     return {
@@ -182,12 +199,61 @@ function toScreen(latitude, longitude) {
 }
 
 function toGeo(screenX, screenY) {
+    if (sheet) {
+        const at = screenToSheet(screenX, screenY);
+        return {
+            latitude: sheet.frame.latitudeAt(at.x * sheet.pageWidth,
+                (1 - at.y) * sheet.pageHeight),
+            longitude: sheet.frame.longitudeAt(at.x * sheet.pageWidth,
+                (1 - at.y) * sheet.pageHeight)
+        };
+    }
     const centre = project(view.latitude, view.longitude, view.zoom);
     return unproject(
         centre.x + screenX - canvas.width / (2 * dpr()),
         centre.y + screenY - canvas.height / (2 * dpr()),
         view.zoom
     );
+}
+
+/** Puts a position in the middle of the sheet, when it is on the sheet at all. */
+function centreSheetOn(latitude, longitude) {
+    if (!sheet) return;
+    const pageX = sheet.frame.pageX(latitude, longitude);
+    const pageY = sheet.frame.pageY(latitude, longitude);
+    if (!isFinite(pageX) || !isFinite(pageY)) return;
+    sheetView.x = pageX / sheet.pageWidth;
+    sheetView.y = 1 - pageY / sheet.pageHeight;
+}
+
+/** Page fraction to screen pixel, at the current pan and zoom over the sheet. */
+function sheetToScreen(fx, fy) {
+    const width = canvas.width / dpr();
+    const height = canvas.height / dpr();
+    const size = sheetSize();
+    return {
+        x: (fx - sheetView.x) * size.width * sheetView.scale + width / 2,
+        y: (fy - sheetView.y) * size.height * sheetView.scale + height / 2
+    };
+}
+
+function screenToSheet(x, y) {
+    const width = canvas.width / dpr();
+    const height = canvas.height / dpr();
+    const size = sheetSize();
+    return {
+        x: (x - width / 2) / (size.width * sheetView.scale) + sheetView.x,
+        y: (y - height / 2) / (size.height * sheetView.scale) + sheetView.y
+    };
+}
+
+/** The sheet drawn to fit the view at scale 1, so zoom 1 shows the whole page. */
+function sheetSize() {
+    const width = canvas.width / dpr();
+    const height = canvas.height / dpr();
+    const ratio = sheet ? sheet.pageWidth / sheet.pageHeight : 1;
+    const fit = Math.min(width / ratio, height);
+    return { width: fit * ratio, height: fit };
 }
 
 function dpr() { return window.devicePixelRatio || 1; }
@@ -255,6 +321,23 @@ function draw() {
     ctx.clearRect(0, 0, width, height);
     ctx.fillStyle = '#2b3a44';
     ctx.fillRect(0, 0, width, height);
+
+    if (sheet) {
+        // The page itself, in place of the tile map. Everything after this
+        // draws exactly as it does on tiles, because toScreen already knows.
+        const size = sheetSize();
+        const at = sheetToScreen(0, 0);
+        ctx.drawImage(sheet.canvas, at.x, at.y,
+            size.width * sheetView.scale, size.height * sheetView.scale);
+        drawTracks();
+        drawMeasure();
+        drawSearchRegion();
+        drawPins();
+        drawLandingZone();
+        drawMe();
+        drawLegend();
+        return;
+    }
 
     const level = Math.max(0, Math.min(16, Math.round(view.zoom)));
     const scale = Math.pow(2, view.zoom - level);
@@ -483,7 +566,7 @@ function demTile(zoom, x, y) {
  * elevation model's own noise.
  */
 function refreshContours() {
-    if (!contoursOn || !C) { contourState.lines = []; return; }
+    if (sheet || !contoursOn || !C) { contourState.lines = []; return; }
 
     const level = Math.min(C.maxZoom, Math.max(6, Math.round(view.zoom)));
     const width = canvas.width / dpr();
@@ -746,8 +829,13 @@ canvas.addEventListener('pointermove', event => {
     if (pointers.size === 2 && pinchFrom) {
         const now = spread();
         if (now > 0 && pinchFrom > 0) {
-            const next = view.zoom + Math.log2(now / pinchFrom);
-            view.zoom = Math.max(3, Math.min(16, next));
+            if (sheet) {
+                sheetView.scale = Math.max(1, Math.min(12,
+                    sheetView.scale * (now / pinchFrom)));
+            } else {
+                const next = view.zoom + Math.log2(now / pinchFrom);
+                view.zoom = Math.max(3, Math.min(16, next));
+            }
             pinchFrom = now;
             movedSincePress += 20;
             draw();
@@ -811,6 +899,13 @@ function spread() {
 function panBy(dx, dy) {
     view.following = false;
     document.getElementById('follow').classList.remove('on');
+    if (sheet) {
+        const size = sheetSize();
+        sheetView.x += dx / (size.width * sheetView.scale);
+        sheetView.y += dy / (size.height * sheetView.scale);
+        draw();
+        return;
+    }
     const centre = project(view.latitude, view.longitude, view.zoom);
     const moved = unproject(centre.x + dx, centre.y + dy, view.zoom);
     view.latitude = moved.latitude;
@@ -837,6 +932,7 @@ function startLocating() {
         if (view.following) {
             view.latitude = position.latitude;
             view.longitude = position.longitude;
+            centreSheetOn(position.latitude, position.longitude);
         }
         onFix();
         showCoordinates();
@@ -899,14 +995,17 @@ document.getElementById('follow').onclick = () => {
     if (view.following && position) {
         view.latitude = position.latitude;
         view.longitude = position.longitude;
+        centreSheetOn(position.latitude, position.longitude);
     }
     draw();
 };
 
 document.getElementById('zoomIn').onclick = () => {
+    if (sheet) { sheetView.scale = Math.min(12, sheetView.scale * 1.5); draw(); return; }
     view.zoom = Math.min(16, view.zoom + 1); draw(); refreshContours();
 };
 document.getElementById('zoomOut').onclick = () => {
+    if (sheet) { sheetView.scale = Math.max(1, sheetView.scale / 1.5); draw(); return; }
     view.zoom = Math.max(3, view.zoom - 1); draw(); refreshContours();
 };
 
@@ -1993,6 +2092,16 @@ function refreshSimBanner() {
 
 function refreshStatus() {
     const row = document.getElementById('status');
+    if (sheet) {
+        row.className = 'card ok';
+        row.textContent = sheet.name +
+            (sheet.summary.insetCount
+                ? ' · ' + sheet.summary.insetCount + ' inset' +
+                  (sheet.summary.insetCount === 1 ? '' : 's') + ' ignored' : '') +
+            ' · georeferenced';
+        row.classList.remove('hidden');
+        return;
+    }
     const chosen = BASEMAPS.find(b => b[0] === basemap);
     row.className = 'card ok';
     row.textContent = (chosen ? chosen[1] : basemap) +
@@ -2025,6 +2134,11 @@ function switchIncident(id) {
     plan = null;
     Store.write('medical', null);
     assembly = { parts: {}, checksum: null, total: 0 };
+    // The sheet belongs to the incident too: another fire's operations map
+    // under this one's pins is worse than no map.
+    sheet = null;
+    activeSheetId = Store.read('sheet.' + id, null);
+    refreshSheets().then(() => { if (activeSheetId) openSheetMap(activeSheetId); });
     refreshTopBar();
     closeSheet();
     draw();
@@ -2167,6 +2281,22 @@ function showLayers() {
         </button>`).join('');
 
     openSheet('Layers', `
+        <h4>Product maps</h4>
+        ${sheets.length ? sheets.map(held => `
+          <button class="toggle" data-open-sheet="${held.id}">
+            <span class="label">${escapeHtml(held.name)}<small>${
+              held.georeferenced ? 'Georeferenced product sheet'
+              : 'No georeferencing — cannot hold a position'}</small></span>
+            <span class="state${held.id === activeSheetId ? ' on' : ''}">${
+              held.id === activeSheetId ? 'ON' : '—'}</span>
+          </button>`).join('')
+        : '<p class="note">None imported. Use the import button in the title bar.</p>'}
+        <button class="toggle" data-open-sheet="">
+          <span class="label">None — own terrain only<small>Terrain, contours and
+            every tool, with no sheet in the way</small></span>
+          <span class="state${sheet ? '' : ' on'}">${sheet ? '—' : 'ON'}</span>
+        </button>
+
         <h4>Basemap</h4>
         ${rows}
         <h4>Overlay</h4>
@@ -2203,6 +2333,13 @@ function showLayers() {
         <h4>Map symbols</h4>
         <p class="note">${SYMBOLS.map(s => s[2] + ' ' + s[1]).join(' · ')}</p>
     `);
+
+    document.querySelectorAll('[data-open-sheet]').forEach(button => {
+        button.onclick = async () => {
+            closeSheet();
+            await openSheetMap(button.dataset.openSheet || null);
+        };
+    });
 
     document.querySelectorAll('[data-base]').forEach(button => {
         button.onclick = () => {
@@ -2548,22 +2685,231 @@ function showSearch() {
 
 // ----------------------------------------------------------------- import
 
-document.getElementById('importTool').onclick = () => {
-    openSheet('Import', `
-        <h4>A map somebody sent</h4>
-        <p class="note">Fireline parts paste into Share → Receive. That carries every
-          pin and every track, and is the way to get somebody else's map onto this
-          one.</p>
-        <button class="wide" id="toShare">OPEN SHARE</button>
+document.getElementById('importTool').onclick = showImport;
 
+/** Sheets held for this incident, and the one on screen. */
+let sheets = [];
+let activeSheetId = Store.read('sheet.' + activeIncidentId, null);
+
+async function refreshSheets() {
+    // Not `window.SheetStore`: a top-level `const` in a classic script binds in
+    // the global lexical scope and never lands on `window`, so that test was
+    // always false and this returned before listing anything.
+    if (typeof SheetStore === 'undefined') return;
+    try {
+        sheets = await SheetStore.all(activeIncidentId);
+    } catch (e) {
+        sheets = [];
+    }
+}
+
+/**
+ * Puts a sheet on screen, or takes it off.
+ *
+ * Re-rendered from the stored bytes rather than from a stored picture: a
+ * rendered page is tens of megabytes and the bytes are two, and re-rendering
+ * costs a second on the rare occasion a sheet is opened.
+ */
+async function openSheetMap(id) {
+    if (!id) {
+        sheet = null;
+        activeSheetId = null;
+        Store.write('sheet.' + activeIncidentId, null);
+        refreshStatus();
+        draw();
+        return;
+    }
+    const held = await SheetStore.get(id);
+    if (!held) { banner('That sheet is no longer stored.', 'bad'); return; }
+    banner('Opening ' + held.name + '…', 'good');
+    try {
+        const read = await readSheet(new Uint8Array(held.bytes), held.name);
+        if (!read.frame) {
+            banner('That product carries no georeferencing, so it cannot hold a ' +
+                'position.', 'bad');
+            return;
+        }
+        sheet = read;
+        activeSheetId = id;
+        Store.write('sheet.' + activeIncidentId, id);
+        sheetView.scale = 1;
+        sheetView.x = 0.5;
+        sheetView.y = 0.5;
+        if (position) centreSheetOn(position.latitude, position.longitude);
+        refreshStatus();
+        draw();
+        banner(held.name + ' is on screen.', 'good');
+    } catch (e) {
+        banner('Could not open that sheet: ' + e.message, 'bad');
+    }
+}
+
+/** Reads bytes, checks them, and keeps them against this incident. */
+async function takeSheet(bytes, name) {
+    banner('Reading ' + name + '…', 'good');
+    let read;
+    try {
+        read = await readSheet(bytes, name);
+    } catch (e) {
+        banner('Could not read that PDF: ' + e.message, 'bad');
+        return;
+    }
+
+    const record = {
+        id: 's' + Date.now(),
+        incidentId: activeIncidentId,
+        name,
+        importedAt: Date.now(),
+        georeferenced: read.summary.georeferenced,
+        insetCount: read.summary.insetCount,
+        bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+    };
+    try {
+        await SheetStore.put(record);
+    } catch (e) {
+        banner('Read it, but could not store it — the browser refused the space.',
+            'bad');
+        return;
+    }
+    await refreshSheets();
+
+    if (!read.summary.georeferenced) {
+        // Kept, but never drawn as though a position on it meant something.
+        banner(read.summary.why, 'warn');
+        showImport();
+        return;
+    }
+    await openSheetMap(record.id);
+}
+
+function showImport() {
+    const rows = sheets.map(held => `
+        <div class="item">
+          <div class="top">
+            <strong>${escapeHtml(held.name)}</strong>
+            ${held.id === activeSheetId ? '<b class="good">ON SCREEN</b>'
+              : `<button class="chip" data-sheet="${held.id}">OPEN</button>`}
+          </div>
+          <div class="meta${held.georeferenced ? '' : ' warn'}">${
+            held.georeferenced
+              ? 'Georeferenced' + (held.insetCount
+                  ? ' · ' + held.insetCount + ' inset' +
+                    (held.insetCount === 1 ? '' : 's') + ' ignored' : '')
+              : 'No georeferencing — readable, but cannot hold a position'} ·
+            ${Math.round((held.bytes.byteLength || 0) / 1024)} KB</div>
+          <div class="top" style="margin-top:6px">
+            <button class="chip" data-forget="${held.id}">DELETE</button>
+          </div>
+        </div>`).join('');
+
+    openSheet('Import', `
         <h4>Product sheets</h4>
-        <p class="note">Importing a georeferenced PDF is the phone's job — it needs
-          to read the geospatial dictionary out of the file, which this page has no
-          way to do. The browser draws on the USGS National Map instead, which
-          covers the same ground and needs nothing imported.</p>
+        ${rows || '<p class="note">Nothing imported on this incident yet.</p>'}
+        ${sheet ? '<button class="wide quiet" id="closeSheetMap">BACK TO THE TERRAIN MAP</button>' : ''}
+
+        <h4>From a file</h4>
+        <p class="note">The operations or transportation PDF off the briefing.
+          Georeferenced products carry your position on them; plain ones are
+          readable but cannot.</p>
+        <input type="file" id="sheetFile" accept="application/pdf,.pdf">
+
+        <h4>From a URL</h4>
+        <p class="note">A link straight to a PDF on the incident's server, or a
+          folder to list. Browsers stopped speaking <b>ftp://</b> years ago and
+          a server that does not allow other sites to read from it will refuse
+          — in either case download the file and use the picker above, which
+          always works.</p>
+        <input id="sheetUrl" value="${escapeHtml(Store.read('sheetRoot', ''))}"
+               placeholder="https://example.org/incident/maps/" autocomplete="off">
+        <button class="wide" id="fetchSheet">FETCH THAT PDF</button>
+        <button class="wide quiet" id="listSheetsAt">LIST THE PDFs IN THAT FOLDER</button>
+        <div id="listing"></div>
+
+        <h4>A map somebody sent</h4>
+        <p class="note">Pins and tracks come through Share → Receive, not here.</p>
+        <button class="wide quiet" id="toShare">OPEN SHARE</button>
     `);
+
+    document.getElementById('sheetFile').onchange = async event => {
+        const file = event.target.files && event.target.files[0];
+        if (!file) return;
+        closeSheet();
+        await takeSheet(new Uint8Array(await file.arrayBuffer()), file.name);
+    };
+
+    document.getElementById('fetchSheet').onclick = async () => {
+        const url = document.getElementById('sheetUrl').value.trim();
+        if (!url) { banner('Give it an address first.', 'warn'); return; }
+        Store.write('sheetRoot', url);
+        closeSheet();
+        banner('Fetching…', 'good');
+        try {
+            const bytes = await fetchSheet(url);
+            await takeSheet(bytes, decodeURIComponent(url.split('/').pop()) || 'Sheet');
+        } catch (e) {
+            banner(e.message, 'bad');
+        }
+    };
+
+    document.getElementById('listSheetsAt').onclick = async () => {
+        const url = document.getElementById('sheetUrl').value.trim();
+        if (!url) { banner('Give it a folder address first.', 'warn'); return; }
+        Store.write('sheetRoot', url);
+        const holder = document.getElementById('listing');
+        holder.innerHTML = '<p class="note">Listing…</p>';
+        try {
+            const found = await listSheets(url);
+            holder.innerHTML = found.length
+                ? found.map(entry =>
+                    `<div class="item"><div class="top">
+                       <strong>${escapeHtml(entry.name)}</strong>
+                       <button class="chip" data-grab="${escapeHtml(entry.url)}">GET</button>
+                     </div></div>`).join('')
+                : '<p class="note warn">No PDFs listed there.</p>';
+            holder.querySelectorAll('[data-grab]').forEach(button => {
+                button.onclick = async () => {
+                    const address = button.dataset.grab;
+                    closeSheet();
+                    banner('Fetching…', 'good');
+                    try {
+                        await takeSheet(await fetchSheet(address),
+                            decodeURIComponent(address.split('/').pop()));
+                    } catch (e) {
+                        banner(e.message, 'bad');
+                    }
+                };
+            });
+        } catch (e) {
+            holder.innerHTML = `<p class="note bad">Could not list that folder. The
+                server has to allow other sites to read from it, and many do not.</p>`;
+        }
+    };
+
+    document.querySelectorAll('[data-sheet]').forEach(button => {
+        button.onclick = async () => {
+            closeSheet();
+            await openSheetMap(button.dataset.sheet);
+        };
+    });
+
+    document.querySelectorAll('[data-forget]').forEach(button => {
+        button.onclick = async () => {
+            const id = button.dataset.forget;
+            await SheetStore.remove(id);
+            if (id === activeSheetId) await openSheetMap(null);
+            await refreshSheets();
+            showImport();
+        };
+    });
+
+    document.getElementById('closeSheetMap') && (
+        document.getElementById('closeSheetMap').onclick = async () => {
+            closeSheet();
+            await openSheetMap(null);
+        });
+
     document.getElementById('toShare').onclick = showShare;
-};
+}
 
 // ----------------------------------------------------------- travel panel
 
@@ -2667,6 +3013,7 @@ refreshStatus();
 refreshSimBanner();
 showPalette();
 refreshContours();
+refreshSheets().then(() => { if (activeSheetId) openSheetMap(activeSheetId); });
 touched();
 resize();
 // The safe-area insets land a frame late on iOS, so the map is measured again

@@ -39,6 +39,21 @@ object RadioReadout {
 
     const val STANDBY = "Communications, stand by for emergency traffic."
 
+    /**
+     * The opening call, naming who is making it.
+     *
+     * Radio puts the identifier in two places and only two: on the call, and
+     * on the handback. Whoever answers has to know who they are answering
+     * before they write anything down, and has to know who to call back when
+     * the traffic ends.
+     *
+     * It used to sit in the middle instead -- a bare "<name> Medical." dropped
+     * between the patient count and the position -- which read as a stumble
+     * and left the opening call anonymous.
+     */
+    fun standbyCall(report: MedicalReport): String =
+        "Communications, ${report.radioName} Medical, stand by for emergency traffic."
+
     fun lines(report: MedicalReport): List<ReadoutLine> = when (report.format) {
         ReportFormat.EIGHT_LINE -> eightLine(report)
         ReportFormat.MIR -> medicalIncidentReport(report)
@@ -74,34 +89,27 @@ object RadioReadout {
      * This is the version that gets read while walking.
      */
     fun spoken(report: MedicalReport): String = buildString {
-        append(STANDBY)
+        append(standbyCall(report))
         append(" ")
         append(report.priority.spoken)
         append(", ")
         append(patients(report))
         report.natureOfInjury?.takeIf { it.isNotBlank() }?.let { append(", $it") }
         append(". ")
-        append("${report.radioName} Medical. ")
         report.incidentCommander?.takeIf { it.isNotBlank() }?.let { append("IC $it. ") }
         report.medicalProvider?.takeIf { it.isNotBlank() }?.let { append("Patient care $it. ") }
-        if (report.hasSeparateLandingZone) {
-            append("Patient at ${coordinates(report)}. ")
-            append("Ground to ${report.airPickupName?.takeIf { it.isNotBlank() }
-                ?: "the landing zone"} for air pickup. ")
-        } else {
-            append("Pickup at ${coordinates(report)}. ")
-        }
-        append("Request ${report.transport.spoken}")
+
+        // The same words line 4 uses, from the same place.
+        //
+        // This paragraph used to build its own version, and the two had
+        // already drifted: the numbered line gave the landing zone's position
+        // and this one did not, so an LZ dropped as a pin with no name came
+        // out as "ground to the landing zone" with no way to find it. That is
+        // the version read aloud while walking.
+        append(transportPlan(report))
+        append(" ")
         if (report.resources.isNotEmpty()) {
-            append(" with ${spokenList(report.resources.map { it.spoken })}")
-        }
-        append(". ")
-        // Only for air, and not capitalised: it follows a colon, where a
-        // capital reads oddly.
-        if (report.transport.needsAir) {
-            report.lzHazards?.takeIf { it.isNotBlank() }?.let {
-                append("LZ hazards: ${it.trim().trimEnd('.')}. ")
-            }
+            append("Also need ${spokenList(report.resources.map { it.spoken })}. ")
         }
         report.patientAssessment?.takeIf { it.isNotBlank() }?.let { append("${sentence(it)}. ") }
         append(signOff(report))
@@ -156,13 +164,13 @@ object RadioReadout {
     }
 
     private fun eightLine(report: MedicalReport): List<ReadoutLine> = listOf(
-        ReadoutLine(1, "Contact Communications", STANDBY),
+        ReadoutLine(1, "Contact Communications", standbyCall(report)),
         ReadoutLine(
             2, "Incident Status",
             buildString {
                 append(patients(report).replaceFirstChar { it.uppercase() })
                 report.natureOfInjury?.takeIf { it.isNotBlank() }?.let { append(", $it") }
-                append(". ${report.radioName} Medical.")
+                append(".")
                 report.incidentCommander?.takeIf { it.isNotBlank() }?.let { append(" IC $it.") }
                 report.medicalProvider?.takeIf { it.isNotBlank() }?.let {
                     append(" Medical provider $it.")
@@ -192,11 +200,10 @@ object RadioReadout {
     )
 
     private fun medicalIncidentReport(report: MedicalReport): List<ReadoutLine> = listOf(
-        ReadoutLine(1, "Contact Communications", STANDBY),
+        ReadoutLine(1, "Contact Communications", standbyCall(report)),
         ReadoutLine(
             2, "Incident Status",
             buildString {
-                append("${report.radioName} Medical. ")
                 append(patients(report).replaceFirstChar { it.uppercase() })
                 report.natureOfInjury?.takeIf { it.isNotBlank() }?.let { append(", $it") }
                 append(".")
