@@ -24,6 +24,13 @@ const K = (() => {
     return found ? found.Fireline : null;
 })();
 
+const T = (() => {
+    const module = (typeof web !== 'undefined' && web) || window.web || {};
+    const found = module.com && module.com.rhecyee &&
+        module.com.rhecyee.firelinemap.web;
+    return found ? found.FirelineTools : null;
+})();
+
 // ---------------------------------------------------------------- storage
 
 /**
@@ -193,6 +200,7 @@ function draw() {
     }
 
     drawTracks();
+    drawMeasure();
     drawPins();
     drawMe();
 }
@@ -344,12 +352,26 @@ let lastPan = null;
 let pinchFrom = null;
 let movedSincePress = 0;
 
+/**
+ * A pin being dragged.
+ *
+ * Held here rather than in the pin sheet because a drag starts on the map: the
+ * operator puts a finger on the pin and moves it, which is the obvious gesture
+ * and the one they will try first. The MOVE button in the pin sheet does the
+ * same job for anyone who taps rather than drags.
+ */
+let draggingPin = null;
+
 canvas.addEventListener('pointerdown', event => {
     canvas.setPointerCapture(event.pointerId);
     pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
     lastPan = { x: event.clientX, y: event.clientY };
     movedSincePress = 0;
-    if (pointers.size === 2) pinchFrom = spread();
+    if (pointers.size === 2) { pinchFrom = spread(); draggingPin = null; return; }
+    // Only when nothing else wants the tap: measuring and placing both use it.
+    if (!measure.on && !pinArmed && movingPin === null) {
+        draggingPin = pinAt(event.clientX, event.clientY);
+    }
 });
 
 canvas.addEventListener('pointermove', event => {
@@ -373,6 +395,17 @@ canvas.addEventListener('pointermove', event => {
         const dy = event.clientY - lastPan.y;
         movedSincePress += Math.abs(dx) + Math.abs(dy);
         lastPan = { x: event.clientX, y: event.clientY };
+
+        // A pin under the finger moves instead of the map. The threshold
+        // stops a slightly unsteady tap from nudging a pin somebody meant
+        // only to open.
+        if (draggingPin !== null && movedSincePress > 8) {
+            const where = toGeo(event.clientX, event.clientY);
+            pins[draggingPin].latitude = where.latitude;
+            pins[draggingPin].longitude = where.longitude;
+            draw();
+            return;
+        }
         panBy(-dx, -dy);
     }
 });
@@ -383,6 +416,14 @@ function endPointer(event) {
     if (pointers.size < 2) pinchFrom = null;
     if (pointers.size === 0) {
         lastPan = null;
+        if (draggingPin !== null && movedSincePress > 8) {
+            savePins();
+            banner(pins[draggingPin].title + ' moved.', 'good');
+            draggingPin = null;
+            draw();
+            return;
+        }
+        draggingPin = null;
         // A tap, not a drag. The threshold is generous because a gloved
         // finger never lands perfectly still.
         if (had === 1 && movedSincePress < 12) onTap(event.clientX, event.clientY);
@@ -634,6 +675,99 @@ document.addEventListener('visibilitychange', () => {
     }
 });
 
+// ------------------------------------------------------------- measuring
+
+/**
+ * Measuring, as a run of taps.
+ *
+ * Distance by default and area when closed, which are the two questions
+ * actually asked: how much line is left to cut, and how big is the black.
+ * Every figure comes back from the phone's own session -- the browser does not
+ * do the arithmetic, it only shows it.
+ */
+const measure = { on: false, area: false, points: [] };
+
+function measuring() { return measure.on; }
+
+document.getElementById('measureTool').onclick = () => {
+    measure.on = !measure.on;
+    if (!measure.on) measure.points = [];
+    if (measure.on) { pinArmed = false; document.getElementById('pinTool').classList.remove('on'); }
+    document.getElementById('measureTool').classList.toggle('on', measure.on);
+    banner(measure.on ? 'Tap the map to measure. Tap MEASURE again to stop.' : '',
+        measure.on ? 'good' : null);
+    draw();
+    if (measure.on) showMeasure();
+};
+
+function addMeasurePoint(latitude, longitude) {
+    measure.points.push([latitude, longitude]);
+    draw();
+    showMeasure();
+}
+
+function showMeasure() {
+    if (!T) { banner('The measuring tool did not load.', 'bad'); return; }
+    const flat = [];
+    measure.points.forEach(p => { flat.push(p[0]); flat.push(p[1]); });
+    const out = JSON.parse(T.measure(JSON.stringify(flat), measure.area));
+
+    const legs = (out.legs || []).map((leg, i) => `
+        <div class="item">
+          <div class="top"><strong>Leg ${i + 1}</strong><b>${leg.distance}</b></div>
+          <div class="meta">${leg.chains} · bearing ${leg.bearing}</div>
+        </div>`).join('');
+
+    openSheet(measure.area ? 'Area' : 'Distance', `
+        ${out.ready ? `
+          <div class="figure"><span>Total</span><b>${out.distance}</b></div>
+          <div class="figure"><span>In chains</span><b>${out.chains}</b></div>
+          ${out.area ? `<div class="figure"><span>Area</span><b>${out.area}</b></div>` : ''}
+          <p class="note">${out.points} points</p>`
+        : `<p class="note">${out.needs}</p>`}
+        <button class="wide quiet" id="measureMode">${
+            measure.area ? 'MEASURE DISTANCE INSTEAD' : 'CLOSE IT AND MEASURE AREA'}</button>
+        <button class="wide quiet" id="measureUndo">UNDO LAST POINT</button>
+        <button class="wide quiet" id="measureClear">START AGAIN</button>
+        <p class="note">The sheet can be closed and the measurement keeps going.
+            Tap MEASURE in the toolbar to finish.</p>
+    `);
+
+    document.getElementById('measureMode').onclick = () => {
+        measure.area = !measure.area; showMeasure(); draw();
+    };
+    document.getElementById('measureUndo').onclick = () => {
+        measure.points.pop(); draw(); showMeasure();
+    };
+    document.getElementById('measureClear').onclick = () => {
+        measure.points = []; draw(); showMeasure();
+    };
+}
+
+function drawMeasure() {
+    if (!measure.on || measure.points.length === 0) return;
+    ctx.strokeStyle = '#FFC400';
+    ctx.fillStyle = 'rgba(255,196,0,0.16)';
+    ctx.lineWidth = 3;
+    ctx.setLineDash([6, 5]);
+    ctx.beginPath();
+    measure.points.forEach((p, i) => {
+        const at = toScreen(p[0], p[1]);
+        if (i === 0) ctx.moveTo(at.x, at.y); else ctx.lineTo(at.x, at.y);
+    });
+    if (measure.area && measure.points.length >= 3) { ctx.closePath(); ctx.fill(); }
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    measure.points.forEach(p => {
+        const at = toScreen(p[0], p[1]);
+        ctx.fillStyle = '#FFC400';
+        ctx.beginPath();
+        ctx.arc(at.x, at.y, 5, 0, Math.PI * 2);
+        ctx.fill();
+    });
+}
+
 // ------------------------------------------------------------------ pins
 
 let pinArmed = false;
@@ -644,19 +778,133 @@ document.getElementById('pinTool').onclick = () => {
     banner(pinArmed ? 'Tap the map to drop a pin.' : '', pinArmed ? 'good' : null);
 };
 
+/** The pin under a finger, if any. Generous, because gloves are not precise. */
+function pinAt(clientX, clientY) {
+    let best = null;
+    let bestDistance = 34;
+    pins.forEach((pin, index) => {
+        const at = toScreen(pin.latitude, pin.longitude);
+        const away = Math.hypot(at.x - clientX, at.y - clientY);
+        if (away < bestDistance) { bestDistance = away; best = index; }
+    });
+    return best;
+}
+
 function onTap(clientX, clientY) {
     const where = toGeo(clientX, clientY);
+
+    if (measure.on) { addMeasurePoint(where.latitude, where.longitude); return; }
+
+    if (movingPin !== null) {
+        // A pin being relocated takes the next tap wherever it lands.
+        pins[movingPin].latitude = where.latitude;
+        pins[movingPin].longitude = where.longitude;
+        savePins();
+        const moved = movingPin;
+        movingPin = null;
+        banner('Moved.', 'good');
+        draw();
+        showPin(moved);
+        return;
+    }
+
     if (pinArmed) {
         pinArmed = false;
         document.getElementById('pinTool').classList.remove('on');
         placePin(where.latitude, where.longitude);
         return;
     }
+
+    // A pin under the finger is the more specific question than the ground
+    // beneath it, so it is asked first.
+    const hit = pinAt(clientX, clientY);
+    if (hit !== null) { showPin(hit); return; }
+
     const report = K && K.tracksAt(
         where.latitude, where.longitude, JSON.stringify({ tracks })
     );
     const parsed = report && JSON.parse(report);
     if (parsed && parsed.count > 0) showOverlap(parsed);
+}
+
+/** Set while a pin is waiting for a tap to say where it goes. */
+let movingPin = null;
+
+/**
+ * One pin, and everything that can be done to it.
+ *
+ * Its position in every format, because which one is wanted depends on who is
+ * asking: a crew wants degrees and minutes, aviation wants a grid.
+ */
+function showPin(index) {
+    const pin = pins[index];
+    if (!pin) return;
+    const grid = K ? K.formatMgrs(pin.latitude, pin.longitude, 5) : null;
+    const utm = K ? K.formatUtm(pin.latitude, pin.longitude) : null;
+
+    openSheet(pin.title, `
+        <div class="figure"><span>Degrees and minutes</span></div>
+        <p class="note" style="font-size:15px">${
+            K ? K.formatDdm(pin.latitude, pin.longitude) : ''}</p>
+        ${grid ? `<div class="figure"><span>Grid</span><b>${grid}</b></div>` : ''}
+        ${utm ? `<div class="figure"><span>UTM</span><b>${utm}</b></div>` : ''}
+        <h4>Name</h4>
+        <input id="pinTitle" value="${escapeHtml(pin.title)}">
+        <h4>Note</h4>
+        <input id="pinNote" value="${escapeHtml(pin.note || '')}"
+               placeholder="Turnaround for tenders…">
+        <h4>Symbol</h4>
+        <div id="symbols"></div>
+        <button class="wide" id="pinSave">SAVE</button>
+        <button class="wide quiet" id="pinMove">MOVE — then tap where it goes</button>
+        <button class="wide quiet" id="pinCopy">COPY THE POSITION</button>
+        <button class="wide danger" id="pinDelete">DELETE THIS PIN</button>
+    `);
+
+    let chosen = pin.symbolId || 'other';
+    const holder = document.getElementById('symbols');
+    SYMBOLS.forEach(([id, label]) => {
+        const button = document.createElement('button');
+        button.className = 'chip';
+        button.style.margin = '3px';
+        button.textContent = label;
+        button.onclick = () => {
+            chosen = id;
+            [...holder.children].forEach(c => c.style.background = '#25404F');
+            button.style.background = '#1565C0';
+        };
+        if (id === chosen) button.style.background = '#1565C0';
+        holder.appendChild(button);
+    });
+
+    document.getElementById('pinSave').onclick = () => {
+        pin.title = document.getElementById('pinTitle').value.trim() || pin.title;
+        pin.note = document.getElementById('pinNote').value.trim() || null;
+        pin.symbolId = chosen;
+        savePins();
+        closeSheet();
+        draw();
+    };
+    document.getElementById('pinMove').onclick = () => {
+        movingPin = index;
+        closeSheet();
+        banner('Tap where ' + pin.title + ' should go.', 'good');
+    };
+    document.getElementById('pinCopy').onclick = async () => {
+        const text = pin.title + '  ' + K.formatDdm(pin.latitude, pin.longitude) +
+            (grid ? '  ' + grid : '');
+        try { await navigator.clipboard.writeText(text); banner('Copied.', 'good'); }
+        catch (e) { banner('Could not reach the clipboard.', 'bad'); }
+    };
+    document.getElementById('pinDelete').onclick = () => {
+        // No confirmation: a pin is one tap to put back, and a dialog in
+        // gloves costs more than the mistake does.
+        pins.splice(index, 1);
+        savePins();
+        closeSheet();
+        draw();
+        banner('Deleted.', 'warn');
+    };
 }
 
 function placePin(latitude, longitude) {
