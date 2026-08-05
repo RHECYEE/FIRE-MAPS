@@ -219,11 +219,12 @@ class BasemapTileCache(context: Context) {
     /**
      * Every tile currently decoded, as level, column, row.
      *
-     * For the last-resort pass: when nothing at the wanted level or its
-     * ancestors is available, whatever is held gets drawn instead. Bounded by
-     * [TILES_HELD], so scanning it is nothing.
+     * Copied before it is walked. This map is written from the fetch threads,
+     * and iterating it directly while one arrives throws -- inside a draw,
+     * where the exception is caught and turned into an empty screen. A list of
+     * a couple of hundred short strings is nothing to copy.
      */
-    fun cached(): List<Triple<Int, Int, Int>> = tiles.keys.mapNotNull { key ->
+    fun cached(): List<Triple<Int, Int, Int>> = tiles.keys.toList().mapNotNull { key ->
         val parts = key.split('/')
         if (parts.size != 3) return@mapNotNull null
         val z = parts[0].toIntOrNull() ?: return@mapNotNull null
@@ -345,6 +346,10 @@ class BasemapTileCache(context: Context) {
     /** Tiles the last-resort pass had to fall back on, if any. */
     @Volatile
     var lastRescue: Int = 0
+
+    /** Whether the most recent draw put any terrain on screen at all. */
+    @Volatile
+    var lastDrewSomething: Boolean = true
 
     /**
      * Levels at or below this are never evicted.

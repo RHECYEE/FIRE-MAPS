@@ -140,6 +140,17 @@ fun MapCanvas(
      */
     var zoomAnchor by remember { mutableStateOf<Offset?>(null) }
 
+    /**
+     * Set by the draw when it could not put anything on screen.
+     *
+     * A safety net, and named as one. The right fix is for the view never to
+     * reach a state with no ground in it, and that is still being chased; in
+     * the meantime an operator should not have to know that a particular
+     * button is the way out. A map that recovers itself after a moment is
+     * usable. One that needs a specific press, discovered by trial, is not.
+     */
+    var terrainEmptySince by remember { mutableStateOf(0L) }
+
     // The tile level last drawn at, so it can be held across a pinch. A plain
     // holder rather than snapshot state on purpose: this is written during the
     // draw pass, and writing snapshot state there would invalidate the frame
@@ -413,6 +424,28 @@ fun MapCanvas(
             return true
         }
 
+        // Recovers the view if the map has had nothing on it for a moment.
+        //
+        // Does exactly what pressing centre-on-me does, which is the only
+        // thing found to fix it, and only after a full second so a normal
+        // gesture is never interrupted. Announced through the status message
+        // rather than done silently: a view that moves on its own without
+        // saying why is its own bug report.
+        androidx.compose.runtime.LaunchedEffect(terrainEmptySince) {
+            if (terrainEmptySince == 0L) return@LaunchedEffect
+            kotlinx.coroutines.delay(EMPTY_RECOVERY_MILLIS)
+            if (terrainEmptySince == 0L) return@LaunchedEffect
+            if (centreOnPosition()) {
+                terrainEmptySince = 0L
+            } else {
+                // No fix to centre on. Fit the whole thing instead, which is
+                // always somewhere with ground in it.
+                scale = 1f
+                offset = Offset.Zero
+                terrainEmptySince = 0L
+            }
+        }
+
         // While following, every fix re-centres. Keyed on the position so it
         // happens when the operator moves rather than on a timer.
         androidx.compose.runtime.LaunchedEffect(following, latitude, longitude, viewport) {
@@ -539,6 +572,7 @@ fun MapCanvas(
             // the sheet, the position and the tracks with it -- a blank
             // screen instead of a missing background.
             if (basemap != null) {
+                val had = basemap.lastDrewSomething
                 drawBasemap(
                     basemap = basemap,
                     projection = projection,
@@ -548,6 +582,12 @@ fun MapCanvas(
                     drawHeight = drawHeight,
                     held = tileZoom
                 )
+                // Read after the draw, so this reflects the frame just made.
+                if (basemap.lastDrewSomething) {
+                    if (terrainEmptySince != 0L) terrainEmptySince = 0L
+                } else if (terrainEmptySince == 0L || had) {
+                    terrainEmptySince = System.currentTimeMillis()
+                }
             }
 
             // Only the part of the sheet that is actually on screen.
@@ -778,6 +818,15 @@ private const val MAX_TILES_PER_FRAME = 220L
  */
 private const val BASE_LAYER_STEPS = 3
 
+/**
+ * How long the map may have nothing on it before the view is recovered.
+ *
+ * A second. Long enough that tiles arriving normally are never interrupted,
+ * short enough that nobody has to work out for themselves which button brings
+ * the map back.
+ */
+private const val EMPTY_RECOVERY_MILLIS = 1_000L
+
 
 
 /** How long the view has to hold still before contours are re-cut. */
@@ -919,13 +968,25 @@ private fun DrawScope.drawBasemap(
         0
     }
     basemap.lastRescue = underlay
+    basemap.lastDrewSomething = drawn > 0 || underlay > 0
     if (drawn > 0 || underlay > 0) return
 
     // Nothing anywhere. Say so on the map rather than leaving a grey rectangle
     // that is indistinguishable from the app having failed, and say enough
     // that the next report is a fact instead of a description.
-    drawEmptyTerrainNotice(basemap.diagnostics())
+    drawEmptyTerrainNotice(
+        basemap.diagnostics(),
+        buildString {
+            if (terrainReason.isNotEmpty()) append("$terrainReason · ")
+            append("view ${size.width.roundToInt()}x${size.height.roundToInt()}")
+            append(" · origin ${originX.roundToInt()},${originY.roundToInt()}")
+            append(" · content ${drawWidth.roundToInt()}x${drawHeight.roundToInt()}")
+        }
+    )
 }
+
+/** Why the terrain could not be worked out, when it could not. */
+private var terrainReason: String = ""
 
 /** Returns how many tiles were drawn. */
 private fun DrawScope.drawTerrain(
@@ -937,7 +998,7 @@ private fun DrawScope.drawTerrain(
     drawHeight: Float,
     held: TileZoomHolder
 ): Int {
-    if (drawWidth <= 0f || drawHeight <= 0f || size.width <= 0f) return 0
+    if (drawWidth <= 0f || drawHeight <= 0f || size.width <= 0f) { terrainReason = "no content size"; return 0 }
 
     fun screenToGeo(x: Float, y: Float): Pair<Double, Double>? =
         projection.toGeo((x - originX) / drawWidth, (y - originY) / drawHeight)
@@ -952,20 +1013,20 @@ private fun DrawScope.drawTerrain(
         screenToGeo(0f, size.height),
         screenToGeo(size.width, size.height)
     )
-    if (corners.size < 4) return 0
+    if (corners.size < 4) { terrainReason = "corners will not project"; return 0 }
 
     val north = corners.maxOf { it.first }
     val south = corners.minOf { it.first }
     val west = corners.minOf { it.second }
     val east = corners.maxOf { it.second }
-    if (north <= south || east <= west) return 0
-    if (!north.isFinite() || !south.isFinite() || !west.isFinite() || !east.isFinite()) return 0
+    if (north <= south || east <= west) { terrainReason = "empty view box"; return 0 }
+    if (!north.isFinite() || !south.isFinite() || !west.isFinite() || !east.isFinite()) { terrainReason = "view box not finite"; return 0 }
 
     val centreLatitude = (north + south) / 2.0
     val spanMeters = com.rhecyee.firelinemap.map.MapCoverage.distanceMeters(
         centreLatitude, west, centreLatitude, east
     )
-    if (spanMeters <= 0.0 || !spanMeters.isFinite()) return 0
+    if (spanMeters <= 0.0 || !spanMeters.isFinite()) { terrainReason = "no span"; return 0 }
 
     var zoom = BasemapTileCache.zoomForStable(
         latitude = centreLatitude,
@@ -980,6 +1041,8 @@ private fun DrawScope.drawTerrain(
     }
     held.value = zoom
     basemap.lastLevel = zoom
+    terrainReason = ""
+
     basemap.protectBelow(zoom - BASE_LAYER_STEPS)
 
     // A coarse layer underneath, always.
@@ -1056,7 +1119,7 @@ private fun DrawScope.drawHeldTiles(
 }
 
 /** Says why the terrain is empty, on the terrain. */
-private fun DrawScope.drawEmptyTerrainNotice(detail: String) {
+private fun DrawScope.drawEmptyTerrainNotice(detail: String, geometry: String) {
     drawContext.canvas.nativeCanvas.apply {
         val paint = android.graphics.Paint().apply {
             color = android.graphics.Color.argb(190, 255, 255, 255)
@@ -1070,6 +1133,8 @@ private fun DrawScope.drawEmptyTerrainNotice(detail: String) {
         paint.isFakeBoldText = false
         paint.color = android.graphics.Color.argb(150, 255, 255, 255)
         drawText(detail, size.width / 2f, size.height / 2f + 18f, paint)
+        paint.textSize = 17f
+        drawText(geometry, size.width / 2f, size.height / 2f + 44f, paint)
     }
 }
 
