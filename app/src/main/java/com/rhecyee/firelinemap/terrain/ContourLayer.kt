@@ -93,7 +93,8 @@ class ContourLayer(context: Context) {
         val west: Double,
         val east: Double,
         val zoom: Int,
-        val projection: MapProjection
+        val projection: MapProjection,
+        val detail: ContourDetail
     ) {
         /**
          * Whether a new view is close enough to this one to reuse.
@@ -104,6 +105,7 @@ class ContourLayer(context: Context) {
          */
         fun covers(other: Request): Boolean {
             if (other.zoom != zoom || other.projection !== projection) return false
+            if (other.detail != detail) return false
             val slackLatitude = (north - south) * 0.1
             val slackLongitude = (east - west) * 0.1
             return other.north <= north + slackLatitude &&
@@ -128,14 +130,15 @@ class ContourLayer(context: Context) {
         west: Double,
         east: Double,
         viewZoom: Int,
-        projection: MapProjection
+        projection: MapProjection,
+        detail: ContourDetail = ContourDetail.NORMAL
     ) {
         if (north <= south || east <= west) return
         val demZoom = viewZoom.coerceIn(MIN_DEM_ZOOM, MAX_DEM_ZOOM)
         // The projection is part of the key: the same ground drawn through a
         // sheet and through plain terrain lands in different places, so lines
         // cut for one are wrong for the other.
-        val request = Request(north, south, west, east, demZoom, projection)
+        val request = Request(north, south, west, east, demZoom, projection, detail)
         if (lastRequest?.covers(request) == true && _status.value == ContourStatus.READY) return
         lastRequest = request
 
@@ -176,7 +179,7 @@ class ContourLayer(context: Context) {
             // the DEM stops at fifteen but the operator can keep zooming, and
             // the lines should keep getting finer while there is data to
             // support it.
-            val interval = ContourIntervals.forView(viewZoom, reliefFeet)
+            val interval = ContourIntervals.forView(viewZoom, reliefFeet, detail)
             // Cancellation is checked inside both of these. A view that has
             // moved on has no use for the lines being cut for the old one, and
             // without a check the abandoned work runs to completion while the

@@ -36,6 +36,19 @@ interface MapProjection {
     /** How far in this projection is worth zooming. */
     val maxScale: Float
 
+    /**
+     * How far out, before the projection is re-cut around a wider area.
+     *
+     * A projection covers a fixed patch of ground, so its usable zoom range is
+     * bounded at both ends by arithmetic rather than by taste: the drawn
+     * content is the span times the scale, and pushed far enough either way it
+     * runs out of the precision a float has. The view re-bases instead --
+     * same ground on screen, a different span underneath it -- which is what
+     * lets the zoom run from a hundred metres to the whole country without
+     * the map beginning to jitter.
+     */
+    val minScale: Float
+
     /** Ground metres across the content, for choosing a tile level. */
     val contentSpanMeters: Double
 
@@ -59,6 +72,14 @@ class SheetProjection(
 ) : MapProjection {
 
     override val maxScale: Float get() = 12f
+
+    /**
+     * Below one the sheet no longer fills the view, which is allowed.
+     *
+     * Pulling back from a product map to see where it sits in the country is a
+     * normal thing to want, and the terrain behind it is drawn at any scale.
+     */
+    override val minScale: Float get() = 0.2f
 
     override val hasSheet: Boolean get() = true
 
@@ -111,12 +132,19 @@ class GroundProjection(
     override val contentHeight: Float get() = NOMINAL_PIXELS
 
     /**
-     * Further in than the sheet, because the content is a whole working area
-     * rather than one product. At the far end this is about a metre to the
-     * pixel, which is finer than the elevation behind it and as far in as
-     * looking closer can tell anyone anything.
+     * A narrow range on purpose.
+     *
+     * Zooming past either end re-cuts the projection around the same ground at
+     * a quarter or four times the span, so the drawn content never strays far
+     * from the viewport's own size and stays comfortably inside a float's
+     * precision. Without that, reaching country scale from street scale in one
+     * projection needs a content rectangle tens of millions of pixels across,
+     * where neighbouring positions stop being distinguishable and the map
+     * visibly shakes.
      */
-    override val maxScale: Float get() = 64f
+    override val maxScale: Float get() = 4f
+
+    override val minScale: Float get() = 1f
 
     override val hasSheet: Boolean get() = false
 
@@ -171,13 +199,34 @@ class GroundProjection(
          * less detail at the fitted view for no gain, since nobody navigates
          * at that scale; smaller and a camp-to-division move leaves the map.
          */
-        const val DEFAULT_SPAN_METERS = 64_000.0
+        const val DEFAULT_SPAN_METERS = 32_000.0
 
         /** Content size in nominal pixels. Square, matching the ground. */
         const val NOMINAL_PIXELS = 2048f
 
-        /** Beyond this from the anchor, the working area is re-cut around you. */
-        const val REANCHOR_METERS = 20_000.0
+        /** Beyond this fraction of the span from the anchor, re-cut around you. */
+        const val REANCHOR_FRACTION = 0.3
+
+        /**
+         * The spans the view steps through, in metres.
+         *
+         * Factors of four, from a couple of city blocks to rather more than
+         * the country. Each is four times the last, so a step preserves what
+         * is on screen exactly: the visible ground is the span over the scale,
+         * so quartering one and quartering the other leaves it unchanged.
+         */
+        val SPAN_LADDER = listOf(
+            2_000.0, 8_000.0, 32_000.0, 128_000.0,
+            512_000.0, 2_048_000.0, 8_192_000.0
+        )
+
+        const val SPAN_STEP = 4.0
+
+        /** The rung nearest a span, for stepping up and down it. */
+        fun rungFor(spanMeters: Double): Int =
+            SPAN_LADDER.indices.minByOrNull {
+                kotlin.math.abs(kotlin.math.ln(SPAN_LADDER[it] / spanMeters))
+            } ?: 2
     }
 }
 

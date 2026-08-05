@@ -80,68 +80,64 @@ class ViewClampTest {
             val focusOffset = -viewportWidth / 2f
             offsetX = offsetX * applied + focusOffset * (1f - applied)
             offsetX = clamp(offsetX, 0f, scale).first
-
-            val (width, _) = contentAt(scale)
-            assertTrue(
-                "the sheet left the screen at scale $scale, offset $offsetX",
-                ViewClamp.contentIsVisible(offsetX, width, viewportWidth)
-            )
+            assertTrue("the pan ran away at scale $scale", offsetX.isFinite())
         }
     }
 
     @Test
-    fun theLimitAlwaysKeepsSomethingOnScreen() {
-        // Across every zoom the sheet allows, a pan taken to its limit in any
-        // direction must still leave content in view. This is the property the
-        // limit exists for; if these two ever disagree the limit is wrong.
+    fun aPanIsAlwaysBoundedEvenThoughItIsNoLongerFenced() {
+        // The point of a bound now is only that the view cannot be lost. It
+        // has to stay finite and it has to stay within reach of a gesture.
         for (step in 0..24) {
             val scale = 1f + step * 0.5f
             val (width, height) = contentAt(scale)
             for (sign in listOf(-1f, 1f)) {
                 val (x, y) = clamp(sign * 1e7f, sign * 1e7f, scale)
-                assertTrue(
-                    "scale $scale, x $x",
-                    ViewClamp.contentIsVisible(x, width, viewportWidth)
-                )
-                assertTrue(
-                    "scale $scale, y $y",
-                    ViewClamp.contentIsVisible(y, height, viewportHeight)
-                )
+                assertTrue(x.isFinite() && y.isFinite())
+                assertTrue(kotlin.math.abs(x) <= ViewClamp.limit(width, viewportWidth) + 1f)
+                assertTrue(kotlin.math.abs(y) <= ViewClamp.limit(height, viewportHeight) + 1f)
             }
         }
     }
 
+    /**
+     * The fence is gone, deliberately.
+     *
+     * This used to hold a fifth of the sheet on screen at all times, which
+     * fenced the operator to the product: with a position off the neatline --
+     * ICP, the drive in, a spot across the road, which is most of a shift --
+     * the map would not go there. Terrain is drawn wherever the view is, so
+     * there is always ground out here and tools to work on it with.
+     */
     @Test
-    fun thereIsRoomToWorkOffTheSheet() {
-        // Off the neatline is normal -- ICP and the drive in usually sit
-        // outside it -- so the limit has to allow real travel out there, not
-        // merely a pixel of overlap. At the limit, four fifths of the screen
-        // is ground beyond the content, and that holds at every zoom.
+    fun theViewCanTravelWellClearOfTheSheet() {
         for (scale in listOf(1f, 2f, 6f, 12f)) {
             val (width, _) = contentAt(scale)
             val limit = ViewClamp.limit(width, viewportWidth)
-            val originX = (viewportWidth - width) / 2f + limit
-            assertEquals(
-                "scale $scale",
-                viewportWidth * (1f - ViewClamp.MIN_CONTENT_ON_SCREEN),
-                originX,
-                0.5f
-            )
+            // Measured from the content's edge, in screens.
+            val beyond = (limit - width / 2f) / viewportWidth
+            assertEquals("scale $scale", ViewClamp.OFF_CONTENT_SCREENS, beyond, 0.01f)
+            assertTrue("must be real travel, not a token", beyond >= 4f)
         }
     }
 
     @Test
-    fun theLimitGrowsWithTheContentSoZoomingInDoesNotPenTheView() {
+    fun everyCornerOfTheSheetIsReachableAtEveryZoom() {
         // At high zoom most of the sheet is off screen by definition, and the
-        // operator still has to reach its far corner.
-        val atOne = ViewClamp.limit(contentAt(1f).first, viewportWidth)
-        val atTwelve = ViewClamp.limit(contentAt(12f).first, viewportWidth)
-        assertTrue(atTwelve > atOne * 5f)
-
-        // Far enough to put the sheet's own corner under the middle of the
-        // screen, which is what centring on a position near the edge needs.
-        val (width, _) = contentAt(12f)
-        assertTrue(atTwelve >= width / 2f)
+        // operator still has to be able to put any part of it under the middle
+        // of the view -- which is what centring on a position near an edge
+        // does, and what panning to a division on the far side needs.
+        for (scale in listOf(1f, 2f, 6f, 12f)) {
+            val (width, height) = contentAt(scale)
+            assertTrue(
+                "scale $scale across",
+                ViewClamp.limit(width, viewportWidth) >= width / 2f
+            )
+            assertTrue(
+                "scale $scale down",
+                ViewClamp.limit(height, viewportHeight) >= height / 2f
+            )
+        }
     }
 
     @Test
@@ -172,11 +168,9 @@ class ViewClampTest {
             val (x, y) = clamp(bad, bad, scale = 2f)
             assertTrue("x was $x", x.isFinite())
             assertTrue("y was $y", y.isFinite())
-            // And it lands somewhere with ground in it, not merely somewhere
-            // representable.
-            val (width, height) = contentAt(2f)
-            assertTrue(ViewClamp.contentIsVisible(x, width, viewportWidth))
-            assertTrue(ViewClamp.contentIsVisible(y, height, viewportHeight))
+            // And it lands on the content, not merely somewhere representable.
+            assertEquals(0f, x, 0f)
+            assertEquals(0f, y, 0f)
         }
     }
 

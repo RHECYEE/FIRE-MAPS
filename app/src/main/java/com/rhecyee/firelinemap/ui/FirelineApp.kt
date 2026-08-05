@@ -197,6 +197,7 @@ fun FirelineApp() {
     val settings = remember { AppSettings(context) }
     var topographyOn by remember { mutableStateOf(settings.topographyEnabled) }
     var contoursOn by remember { mutableStateOf(settings.contoursEnabled) }
+    var contourDetail by remember { mutableStateOf(settings.contourDetail) }
     var landOwnershipOn by remember { mutableStateOf(settings.landOwnershipEnabled) }
     var autoRadius by remember { mutableIntStateOf(settings.autoDownloadRadiusMiles) }
     var wifiOnly by remember { mutableStateOf(settings.autoDownloadWifiOnly) }
@@ -591,6 +592,12 @@ fun FirelineApp() {
      * off it.
      */
     var groundAnchor by remember { mutableStateOf(settings.lastAnchor) }
+    // How much ground the view covers when there is no sheet. Stepped in
+    // factors of four as the operator zooms past either end, which is what
+    // lets the range run from a couple of blocks to the whole country without
+    // the drawn content growing to a size a float cannot place things in.
+    var groundSpan by remember { mutableStateOf(GroundProjection.DEFAULT_SPAN_METERS) }
+    var groundScale by remember { mutableStateOf(1f) }
     LaunchedEffect(displayLatitude, displayLongitude) {
         val lat = displayLatitude ?: return@LaunchedEffect
         val lon = displayLongitude ?: return@LaunchedEffect
@@ -600,14 +607,16 @@ fun FirelineApp() {
         // projection for the sake of a case that happens on the drive home.
         val far = current == null ||
             MapCoverage.distanceMeters(current.first, current.second, lat, lon) >
-            GroundProjection.REANCHOR_METERS
+            groundSpan * GroundProjection.REANCHOR_FRACTION
         if (far) {
             groundAnchor = lat to lon
             settings.lastAnchor = lat to lon
         }
     }
 
-    val projection = remember(activeMap?.id, pageWidth, pageHeight, bitmap, groundAnchor) {
+    val projection = remember(
+        activeMap?.id, pageWidth, pageHeight, bitmap, groundAnchor, groundSpan
+    ) {
         val frame = activeMap?.frame
         val sheet = bitmap
         if (frame != null && sheet != null && pageWidth > 0 && pageHeight > 0) {
@@ -619,7 +628,7 @@ fun FirelineApp() {
                 contentHeight = sheet.height.toFloat()
             )
         } else {
-            groundAnchor?.let { (lat, lon) -> GroundProjection(lat, lon) }
+            groundAnchor?.let { (lat, lon) -> GroundProjection(lat, lon, groundSpan) }
         }
     }
 
@@ -637,11 +646,13 @@ fun FirelineApp() {
         boundaryLayer.request(here.north, here.south, here.west, here.east, where)
     }
 
-    LaunchedEffect(view, contoursOn, projection) {
+    LaunchedEffect(view, contoursOn, projection, contourDetail) {
         val here = view
         val where = projection
         if (!contoursOn || here == null || where == null) return@LaunchedEffect
-        contourLayer.request(here.north, here.south, here.west, here.east, here.zoom, where)
+        contourLayer.request(
+            here.north, here.south, here.west, here.east, here.zoom, where, contourDetail
+        )
     }
 
     // Elevation for what is on screen, fetched ahead of anything else.
@@ -662,7 +673,9 @@ fun FirelineApp() {
             contourLayer.download(here.north, here.south, here.west, here.east, here.zoom)
         }
         if (fetched > 0) {
-            contourLayer.request(here.north, here.south, here.west, here.east, here.zoom, where)
+            contourLayer.request(
+                here.north, here.south, here.west, here.east, here.zoom, where, contourDetail
+            )
         }
     }
 
@@ -906,10 +919,18 @@ fun FirelineApp() {
             importedMaps = importedMaps,
             activeMapId = activeMap?.id,
             onSelectMap = { activeMap = it; showLayers = false },
+            onNoMap = {
+                // Not a failure state. A sheet is one layer among several, and
+                // there is a whole map underneath it.
+                activeMap = null
+                showLayers = false
+            },
             topographyOn = topographyOn,
             onToggleTopography = { settings.topographyEnabled = it; topographyOn = it },
             contoursOn = contoursOn,
             onToggleContours = { settings.contoursEnabled = it; contoursOn = it },
+            contourDetail = contourDetail,
+            onContourDetail = { settings.contourDetail = it; contourDetail = it },
             contourSummary = contourFailure
                 ?: contourDescription(contoursOn, contourStatus, contourSet),
             landOwnershipOn = landOwnershipOn,
@@ -1253,6 +1274,28 @@ fun FirelineApp() {
                 boundaries = boundaries.takeIf { landOwnershipOn },
                 onViewBounds = { north, south, west, east, zoom ->
                     view = MapView(north, south, west, east, zoom)
+                },
+                initialScale = groundScale,
+                onSpanChange = { factor, lat, lon ->
+                    val ladder = GroundProjection.SPAN_LADDER
+                    val wanted = groundSpan * factor
+                    val stepped = ladder.minByOrNull { kotlin.math.abs(it - wanted) }
+                    if (stepped != null && stepped != groundSpan &&
+                        wanted >= ladder.first() * 0.9 && wanted <= ladder.last() * 1.1
+                    ) {
+                        // Anchored on the middle of the view and the scale set
+                        // so the visible ground is unchanged: the span and the
+                        // scale move by the same factor, and what is on screen
+                        // is the span over the scale.
+                        groundAnchor = lat to lon
+                        settings.lastAnchor = lat to lon
+                        groundScale = if (factor > 1.0) {
+                            GroundProjection(lat, lon).maxScale
+                        } else {
+                            GroundProjection(lat, lon).minScale
+                        }
+                        groundSpan = stepped
+                    }
                 },
                 onWhereAmILooking = { report ->
                     val clipboard = context.getSystemService(ClipboardManager::class.java)

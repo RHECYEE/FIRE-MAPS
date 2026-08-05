@@ -87,6 +87,12 @@ class AppSettings(context: Context) {
         get() = preferences.getBoolean(KEY_CONTOURS, true)
         set(value) = preferences.edit().putBoolean(KEY_CONTOURS, value).apply()
 
+    /** How closely spaced the operator wants contour lines. */
+    var contourDetail: com.rhecyee.firelinemap.terrain.ContourDetail
+        get() = com.rhecyee.firelinemap.terrain.ContourDetail
+            .fromName(preferences.getString(KEY_CONTOUR_DETAIL, null))
+        set(value) = preferences.edit().putString(KEY_CONTOUR_DETAIL, value.name).apply()
+
     var landOwnershipEnabled: Boolean
         get() = preferences.getBoolean(KEY_OWNERSHIP, true)
         set(value) = preferences.edit().putBoolean(KEY_OWNERSHIP, value).apply()
@@ -196,6 +202,7 @@ class AppSettings(context: Context) {
         private const val KEY_ANCHOR_LATITUDE = "last_anchor_latitude"
         private const val KEY_ANCHOR_LONGITUDE = "last_anchor_longitude"
         private const val KEY_CONTOURS = "contours_enabled"
+        private const val KEY_CONTOUR_DETAIL = "contour_detail"
         private const val KEY_OWNERSHIP = "land_ownership_enabled"
         private const val KEY_CHROME_TIMEOUT = "chrome_timeout_seconds"
         private const val KEY_LOCATION_INTERVAL = "location_interval_seconds"

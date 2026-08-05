@@ -45,11 +45,14 @@ fun LayersSheet(
     importedMaps: List<com.rhecyee.firelinemap.geopdf.ImportedMap>,
     activeMapId: String?,
     onSelectMap: (com.rhecyee.firelinemap.geopdf.ImportedMap) -> Unit,
+    onNoMap: () -> Unit,
     topographyOn: Boolean,
     onToggleTopography: (Boolean) -> Unit,
     contoursOn: Boolean,
     onToggleContours: (Boolean) -> Unit,
     contourSummary: String,
+    contourDetail: com.rhecyee.firelinemap.terrain.ContourDetail,
+    onContourDetail: (com.rhecyee.firelinemap.terrain.ContourDetail) -> Unit,
     landOwnershipOn: Boolean,
     onToggleLandOwnership: (Boolean) -> Unit,
     onDismiss: () -> Unit
@@ -65,6 +68,33 @@ fun LayersSheet(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 SectionHeading("PRODUCT MAPS")
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onNoMap() }
+                        .padding(vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        if (activeMapId == null) "●" else "○",
+                        color = if (activeMapId == null) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = FontWeight.Black
+                    )
+                    Column(Modifier.padding(start = 10.dp)) {
+                        Text(
+                            "None — own terrain only",
+                            fontWeight = if (activeMapId == null) FontWeight.Bold
+                            else FontWeight.Normal,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Text(
+                            "Terrain, contours and every tool, with no sheet in the way",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
                 if (importedMaps.isEmpty()) {
                     Text(
                         "No maps imported yet.",
@@ -128,6 +158,33 @@ fun LayersSheet(
                     checked = contoursOn,
                     onCheckedChange = onToggleContours
                 )
+                if (contoursOn) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        com.rhecyee.firelinemap.terrain.ContourDetail.entries.forEach { option ->
+                            val chosen = option == contourDetail
+                            Text(
+                                option.label,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .background(
+                                        if (chosen) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.surfaceVariant,
+                                        RoundedCornerShape(6.dp)
+                                    )
+                                    .clickable { onContourDetail(option) }
+                                    .padding(vertical = 8.dp),
+                                color = if (chosen) Color.White
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontWeight = FontWeight.Bold,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                        }
+                    }
+                }
                 Text(
                     com.rhecyee.firelinemap.terrain.DemTileCache.ATTRIBUTION,
                     style = MaterialTheme.typography.labelSmall,

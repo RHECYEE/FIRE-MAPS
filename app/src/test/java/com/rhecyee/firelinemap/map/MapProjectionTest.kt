@@ -127,17 +127,63 @@ class MapProjectionTest {
         assertTrue(
             "a move this size must re-anchor",
             ground.metersFromCentre(ground.centreLatitude + 0.5, ground.centreLongitude) >
-                GroundProjection.REANCHOR_METERS
+                ground.spanMeters * GroundProjection.REANCHOR_FRACTION
         )
     }
 
     @Test
-    fun theGroundZoomsFurtherInThanASheetDoes() {
-        // The content is a whole working area rather than one product, so the
-        // fitted view starts much further out and has to come further in.
-        assertTrue(ground.maxScale > sheet.maxScale)
+    fun theGroundKnowsWhatItIsAndWhatItIsNot() {
         assertTrue(!ground.hasSheet)
         assertTrue(sheet.hasSheet)
+    }
+
+    /**
+     * The zoom range is narrow on purpose, and the ladder is what widens it.
+     *
+     * A projection covers a fixed patch of ground, so pushing its scale far in
+     * either direction grows the drawn content past the precision a float has
+     * to place things in -- which is a map that visibly shakes. Stepping the
+     * span instead keeps the content near the viewport's own size at every
+     * zoom, which is what lets the range run from a couple of blocks to the
+     * whole country.
+     */
+    @Test
+    fun theSpanLadderCoversBlockToCountryInStepsThatPreserveTheView() {
+        val ladder = GroundProjection.SPAN_LADDER
+        assertTrue("must reach street scale", ladder.first() <= 2_000.0)
+        assertTrue("must reach the country", ladder.last() >= 4_000_000.0)
+
+        // Every step is the same factor, which is what makes a step invisible:
+        // the visible ground is the span over the scale, so moving both by the
+        // same factor leaves it unchanged.
+        for (index in 1 until ladder.size) {
+            assertEquals(
+                "rung $index",
+                GroundProjection.SPAN_STEP,
+                ladder[index] / ladder[index - 1],
+                1e-9
+            )
+        }
+        // And the scale range is exactly one step, so the rungs meet without
+        // a gap the zoom could fall into.
+        assertEquals(
+            GroundProjection.SPAN_STEP,
+            (ground.maxScale / ground.minScale).toDouble(),
+            1e-6
+        )
+    }
+
+    @Test
+    fun everyRungIsFoundAgainFromItsOwnSpan() {
+        GroundProjection.SPAN_LADDER.forEachIndexed { index, span ->
+            assertEquals(index, GroundProjection.rungFor(span))
+        }
+        // And a span between rungs picks the nearer one rather than failing.
+        assertEquals(0, GroundProjection.rungFor(1.0))
+        assertEquals(
+            GroundProjection.SPAN_LADDER.lastIndex,
+            GroundProjection.rungFor(50_000_000.0)
+        )
     }
 
     @Test

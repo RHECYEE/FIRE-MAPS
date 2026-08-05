@@ -53,6 +53,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.rhecyee.firelinemap.map.BasemapTileCache
+import com.rhecyee.firelinemap.map.GroundProjection
 import com.rhecyee.firelinemap.map.MapProjection
 import com.rhecyee.firelinemap.map.ViewClamp
 import com.rhecyee.firelinemap.data.MarkerEntity
@@ -96,6 +97,15 @@ fun MapCanvas(
     onViewBounds: ((north: Double, south: Double, west: Double, east: Double, zoom: Int) -> Unit)? = null,
     onContourDrawFailed: ((Throwable) -> Unit)? = null,
     onWhereAmILooking: ((String) -> Unit)? = null,
+    /**
+     * Asked for when the zoom runs off the end of what this projection covers.
+     *
+     * [factor] is what to multiply the span by -- a quarter to go in, four to
+     * go out -- and the position is the middle of the view, which the new
+     * projection anchors on so the same ground stays on screen.
+     */
+    onSpanChange: ((factor: Double, latitude: Double, longitude: Double) -> Unit)? = null,
+    initialScale: Float = 1f,
     centreOn: Pair<Double, Double>? = null,
     onCentred: () -> Unit = {},
     onInteraction: () -> Unit = {},
@@ -112,7 +122,7 @@ fun MapCanvas(
     // content is a different size in different units and allows a different
     // zoom. Carrying a scale and a pan across that switch lands the view
     // nowhere, which reads as the map having jumped away on import.
-    var scale by remember(projection) { mutableFloatStateOf(1f) }
+    var scale by remember(projection) { mutableFloatStateOf(initialScale) }
     var offset by remember(projection) { mutableStateOf(Offset.Zero) }
     var viewport by remember { mutableStateOf(IntSize.Zero) }
     var draggingMarkerId by remember { mutableStateOf<String?>(null) }
@@ -502,6 +512,9 @@ fun MapCanvas(
 
                         var travelled = 0f
                         var pointers = 1
+                        // One re-base per gesture. Several would step through
+                        // the whole ladder on a single pinch.
+                        var spanRequested = false
                         val canvasCentre = Offset(size.width / 2f, size.height / 2f)
                         try {
                             do {
@@ -541,7 +554,33 @@ fun MapCanvas(
                                     // Moving the map by hand is a statement
                                     // about where to look, so it ends follow.
                                     following = false
-                                    val next = (scale * zoomChange).coerceIn(1f, projection.maxScale)
+                                    val wanted = scale * zoomChange
+                                    val next = wanted.coerceIn(
+                                        projection.minScale, projection.maxScale
+                                    )
+                                    // Off the end of what this projection
+                                    // covers: ask for a wider or narrower one
+                                    // around the same ground rather than
+                                    // stopping. That is what lets the zoom run
+                                    // from a hundred metres to the country.
+                                    if (onSpanChange != null && next == scale &&
+                                        !spanRequested
+                                    ) {
+                                        val out = wanted < projection.minScale - 1e-4f
+                                        val inward = wanted > projection.maxScale + 1e-4f
+                                        if (out || inward) {
+                                            val middle = screenToGeoPoint(canvasCentre)
+                                            if (middle != null) {
+                                                spanRequested = true
+                                                onSpanChange(
+                                                    if (out) GroundProjection.SPAN_STEP
+                                                    else 1.0 / GroundProjection.SPAN_STEP,
+                                                    middle.first,
+                                                    middle.second
+                                                )
+                                            }
+                                        }
+                                    }
                                     // The ratio actually applied, which is not the
                                     // one asked for once the limits are reached.
                                     // Using the requested ratio there slides the
