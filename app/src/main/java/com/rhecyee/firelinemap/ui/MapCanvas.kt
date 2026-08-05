@@ -1755,17 +1755,25 @@ fun CompactStatusStrip(
  */
 @androidx.compose.runtime.Composable
 fun MedicalButton(active: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    // Says what it opens. "MED" was ambiguous next to the medical pin symbol
+    // and the medical layer; the 8 line is the form itself, and it is what
+    // anybody on the radio asks for by name.
+    //
+    // Smaller than it was, but not small. It is still the one control that has
+    // to be hit first time with gloves on and a patient on the ground, so the
+    // padding holds it at roughly the minimum comfortable target rather than
+    // shrinking to fit the label.
     Text(
-        if (active) "MED ●" else "MED",
+        if (active) "8 LINE ●" else "8 LINE",
         modifier = modifier
             .background(
                 if (active) Color(0xFF7F0000) else Color(0xFFD50000),
-                RoundedCornerShape(28.dp)
+                RoundedCornerShape(24.dp)
             )
             .clickable { onClick() }
-            .padding(horizontal = 22.dp, vertical = 15.dp),
+            .padding(horizontal = 15.dp, vertical = 13.dp),
         color = Color.White,
         fontWeight = FontWeight.Black,
-        fontSize = androidx.compose.ui.unit.TextUnit(17f, androidx.compose.ui.unit.TextUnitType.Sp)
+        fontSize = androidx.compose.ui.unit.TextUnit(14f, androidx.compose.ui.unit.TextUnitType.Sp)
     )
 }

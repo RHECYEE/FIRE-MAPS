@@ -20,14 +20,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddLocationAlt
 import androidx.compose.material.icons.filled.Draw
 import androidx.compose.material.icons.filled.FileOpen
+import androidx.compose.material.icons.filled.FiberManualRecord
+import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Link
-import androidx.compose.material.icons.filled.MedicalServices
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.People
@@ -37,7 +37,6 @@ import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -1078,6 +1077,8 @@ fun FirelineApp() {
                 segmentAtDropPoints = it
             },
             dropPointsFound = dropPoints.size,
+            mapSheetStatus = activeMap?.let { "${it.displayName} · ${it.kindLabel}" }
+                ?: "None — own terrain only",
             autoDownloadRadius = autoRadius,
             onAutoDownloadRadius = {
                 settings.autoDownloadRadiusMiles = it
@@ -1731,14 +1732,24 @@ fun FirelineApp() {
                         selectedSymbol = null
                     }
                 }
+                // The 8 line moved out to the floating button, which is always
+                // on screen including full screen. This slot goes to auto
+                // record, which used to be a full-width button of its own
+                // below -- one control, one place, and a strip of map back.
                 ToolButton(
-                    "MED",
-                    Icons.Default.MedicalServices,
+                    if (watching) "Recording" else "Auto Record",
+                    if (watching) Icons.Default.FiberManualRecord else Icons.Default.Timeline,
                     Modifier.weight(1f),
-                    active = medicalReport != null
+                    active = watching
                 ) {
+                    val intent = Intent(context, TrackRecordingService::class.java).apply {
+                        action = if (watching) TrackRecordingService.ACTION_STOP
+                        else TrackRecordingService.ACTION_START
+                        putExtra(TrackRecordingService.EXTRA_INCIDENT_ID, activeIncident?.id)
+                    }
                     touched()
-                    openMedicalReport()
+                    ContextCompat.startForegroundService(context, intent)
+                    watching = !watching
                 }
                 ToolButton(
                     "Layers",
@@ -1751,42 +1762,20 @@ fun FirelineApp() {
                 }
             }
 
-            if (chromeVisible && !showSearch) Button(
-                onClick = {
-                    val intent = Intent(context, TrackRecordingService::class.java).apply {
-                        action = if (watching) TrackRecordingService.ACTION_STOP
-                        else TrackRecordingService.ACTION_START
-                        putExtra(TrackRecordingService.EXTRA_INCIDENT_ID, activeIncident?.id)
-                    }
-                    touched()
-                    ContextCompat.startForegroundService(context, intent)
-                    watching = !watching
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(64.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (watching) MaterialTheme.colorScheme.error
-                    else MaterialTheme.colorScheme.primary
-                ),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        if (watching) "STOP AUTO RECORDING" else "\u25cf  AUTO RECORD TRAVEL",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Black
-                    )
-                    Text(
-                        if (watching) {
-                            "Records on movement \u00b7 pauses after " +
-                                TrackSettingsStore.describe(stopThreshold) + " stopped"
-                        } else {
-                            "Tracks start themselves when you move"
-                        },
-                        style = MaterialTheme.typography.labelSmall
-                    )
-                }
+            // What recording is doing, in a line rather than a button. The
+            // control is in the row above; this only has to say what state it
+            // is in, and it only says it while recording -- when it is off,
+            // the row's own label already does.
+            if (chromeVisible && !showSearch && watching) {
+                Text(
+                    "Recording on movement \u00b7 pauses after " +
+                        TrackSettingsStore.describe(stopThreshold) + " stopped",
+                    modifier = Modifier.fillMaxWidth(),
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
             }
             Spacer(Modifier.height(6.dp))
         }
@@ -1820,6 +1809,12 @@ private fun parseLineString(geoJson: String): List<Pair<Double, Double>> {
 
 @Composable
 private fun MapStatusRow(map: ImportedMap?, message: String?) {
+    // Running on the app's own terrain is the normal way to work, not a state
+    // to get out of, so it no longer takes a strip of the screen to say so.
+    // Which sheet is in use -- including none -- is in Settings, where it can
+    // be looked up on the rare occasion it matters.
+    if (message == null && map == null) return
+
     val text: String
     val colour: Color
     when {
@@ -1827,12 +1822,7 @@ private fun MapStatusRow(map: ImportedMap?, message: String?) {
             text = message
             colour = Color(0xFFB3261E)
         }
-        map == null -> {
-            // Not a warning any more. Running on the app's own terrain is a
-            // supported way to work, not a state to get out of.
-            text = "Own terrain · import a product map when you have one"
-            colour = Color(0xFF37474F)
-        }
+        map == null -> return
         map.kind == PdfKind.GEOREFERENCED -> {
             val insets = map.document.insetFrames.size
             val extra =

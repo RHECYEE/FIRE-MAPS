@@ -46,6 +46,8 @@ fun SettingsSheet(
     segmentAtDropPoints: Boolean,
     onToggleSegmenting: (Boolean) -> Unit,
     dropPointsFound: Int,
+    /** Which sheet is being drawn on, or that there is none. */
+    mapSheetStatus: String,
     autoDownloadRadius: Int,
     onAutoDownloadRadius: (Int) -> Unit,
     wifiOnly: Boolean,
@@ -168,6 +170,27 @@ fun SettingsSheet(
                 )
 
                 HorizontalDivider()
+                Heading("MAP SHEET")
+                // Used to be a strip across the map saying "own terrain" at all
+                // times. Working on the app's own terrain is the normal case,
+                // not a state to get out of, so it does not need announcing on
+                // every glance -- but it is still worth being able to look up.
+                Text(
+                    mapSheetStatus,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    "With no sheet imported the app draws its own terrain and " +
+                        "contours around you, and every tool works the same. A " +
+                        "georeferenced product map adds the incident's own " +
+                        "printing on top of it.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                HorizontalDivider()
+
                 Heading("OFFLINE TERRAIN")
                 Text(
                     "Keeps terrain around you while there is a connection, so it is " +
