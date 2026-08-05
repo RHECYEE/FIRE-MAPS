@@ -927,11 +927,38 @@ document.addEventListener('visibilitychange', () => {
  * Every figure comes back from the phone's own session -- the browser does not
  * do the arithmetic, it only shows it.
  */
-const measure = { on: false, area: false, points: [] };
+const measure = { on: false, area: false, points: [], elevations: [], pending: 0 };
+
+/**
+ * Ground elevation for a measured point.
+ *
+ * The same public-domain USGS service the phone uses, asked for through the
+ * shared code so both read a reply the same way -- including the sentinel the
+ * service returns where it has no coverage, which taken as a number is an
+ * elevation a thousand kilometres underground and would carry straight into a
+ * slope. Needs a connection; without one the figure stays absent and the panel
+ * says so rather than showing a grade nobody can stand on.
+ */
+async function lookUpElevation(index, latitude, longitude) {
+    if (!T) return;
+    measure.pending++;
+    showMeasure();
+    try {
+        const reply = await fetch(T.elevationUrl(latitude, longitude));
+        if (!reply.ok) return;
+        const value = T.elevationFrom(await reply.text());
+        if (value != null && measure.points[index]) measure.elevations[index] = value;
+    } catch (e) {
+        // Offline, or the service is down. Left absent on purpose.
+    } finally {
+        measure.pending--;
+        showMeasure();
+    }
+}
 
 document.getElementById('measureTool').onclick = () => {
     measure.on = !measure.on;
-    if (!measure.on) measure.points = [];
+    if (!measure.on) { measure.points = []; measure.elevations = []; }
     if (measure.on) disarmResources();
     document.getElementById('measureTool').classList.toggle('on', measure.on);
     document.getElementById('measurePanel').classList.toggle('hidden', !measure.on);
@@ -940,7 +967,10 @@ document.getElementById('measureTool').onclick = () => {
 };
 
 function addMeasurePoint(latitude, longitude) {
+    const index = measure.points.length;
     measure.points.push([latitude, longitude]);
+    measure.elevations[index] = null;
+    lookUpElevation(index, latitude, longitude);
     draw();
     showMeasure();
 }
@@ -959,7 +989,11 @@ function showMeasure() {
 
     const flat = [];
     measure.points.forEach(p => { flat.push(p[0]); flat.push(p[1]); });
-    const out = JSON.parse(T.measure(JSON.stringify(flat), measure.area));
+    const out = JSON.parse(T.measureWithElevations(
+        JSON.stringify(flat),
+        JSON.stringify(measure.elevations.slice(0, measure.points.length)),
+        measure.area
+    ));
     const last = (out.legs || [])[(out.legs || []).length - 1];
 
     holder.innerHTML = `
@@ -975,7 +1009,13 @@ function showMeasure() {
             &nbsp;·&nbsp; ${out.chains} &nbsp;·&nbsp; ${out.points} points</div>
           ${out.area ? `<div class="area">Area ${out.area}</div>` : ''}
           ${last ? `<div class="leg">Last leg ${last.distance} ${last.chains}
-            &nbsp;bearing ${last.bearing}</div>` : ''}`
+            &nbsp;bearing ${last.bearing}${
+              last.slope ? '&nbsp; slope ' + last.slope : ''}</div>` : ''}
+          <div class="leg">${
+            out.gain ? 'Gain ' + out.gain + ' &nbsp;·&nbsp; Loss ' + out.loss +
+              (out.slope ? ' &nbsp;·&nbsp; overall ' + out.slope : '')
+            : measure.pending ? 'Looking up ground elevation…'
+            : 'Slope unavailable — needs a connection for elevation'}</div>`
         : `<div class="leg">${measure.area
             ? 'POLYGON — tap three or more points to enclose an area.'
             : 'LINE — tap two points, or keep tapping to follow a road.'}</div>`}
@@ -988,10 +1028,16 @@ function showMeasure() {
         measure.area = true; showMeasure(); draw();
     };
     document.getElementById('measureUndo').onclick = () => {
-        measure.points.pop(); draw(); showMeasure();
+        measure.points.pop();
+        measure.elevations.pop();
+        draw();
+        showMeasure();
     };
     document.getElementById('measureClear').onclick = () => {
-        measure.points = []; draw(); showMeasure();
+        measure.points = [];
+        measure.elevations = [];
+        draw();
+        showMeasure();
     };
 }
 
@@ -1099,8 +1145,8 @@ function onTap(mapX, mapY) {
     if (simMode) {
         simulated = { latitude: where.latitude, longitude: where.longitude };
         showCoordinates();
+        refreshSimBanner();
         draw();
-        banner('Simulated position set — this is not a GPS fix.', 'warn');
         return;
     }
 
@@ -1771,6 +1817,23 @@ function touched() {
  * how much of it is held for going offline -- the same question, which is
  * "what will still be here when the signal goes".
  */
+/**
+ * Says, and keeps saying, that the dot is not a fix.
+ *
+ * The phone carries this as a banner rather than a line in the readout because
+ * a simulated position looks exactly like a real one on the map, and somebody
+ * who did not turn it on has no reason to doubt it.
+ */
+function refreshSimBanner() {
+    const bar = document.getElementById('simBanner');
+    if (!simMode) { bar.classList.add('hidden'); return; }
+    bar.textContent = simulated
+        ? 'SIMULATED POSITION — NOT A GPS FIX · turn sim off in Settings to return to GPS'
+        : 'SIM MODE — tap the map to set a test position';
+    bar.className = 'banner' + (simulated ? ' bad' : '');
+    bar.classList.remove('hidden');
+}
+
 function refreshStatus() {
     const row = document.getElementById('status');
     const chosen = BASEMAPS.find(b => b[0] === basemap);
@@ -2099,6 +2162,7 @@ function showSettings() {
             showCoordinates();
             draw();
         }
+        refreshSimBanner();
         showSettings();
     };
 
@@ -2331,6 +2395,7 @@ if (window.ResizeObserver) {
 }
 refreshTopBar();
 refreshStatus();
+refreshSimBanner();
 showPalette();
 touched();
 resize();

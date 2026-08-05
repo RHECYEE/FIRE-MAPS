@@ -58,6 +58,7 @@ kotlin {
                 "com/rhecyee/firelinemap/map/TileMath.kt",
                 "com/rhecyee/firelinemap/map/ViewClamp.kt",
                 "com/rhecyee/firelinemap/measure/Measurement.kt",
+                "com/rhecyee/firelinemap/measure/ElevationQuery.kt",
                 "com/rhecyee/firelinemap/medical/MedicalReport.kt",
                 "com/rhecyee/firelinemap/medical/RadioReadout.kt",
                 "com/rhecyee/firelinemap/resources/ResourceSymbol.kt",

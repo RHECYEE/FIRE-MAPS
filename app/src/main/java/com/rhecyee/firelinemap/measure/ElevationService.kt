@@ -23,7 +23,7 @@ class ElevationService {
         val key = "%.5f,%.5f".format(latitude, longitude)
         cache[key]?.let { return it }
 
-        val url = "$ENDPOINT?x=$longitude&y=$latitude&units=Meters&wkid=4326&includeDate=false"
+        val url = ElevationQuery.url(latitude, longitude)
         val connection = runCatching {
             (URL(url).openConnection() as HttpURLConnection).apply {
                 connectTimeout = 12_000
@@ -44,16 +44,9 @@ class ElevationService {
     }
 
     companion object {
-        const val ENDPOINT = "https://epqs.nationalmap.gov/v1/json"
+        const val ENDPOINT = ElevationQuery.ENDPOINT
 
-        /** The service has returned the value as both a number and a string. */
-        internal fun parseValue(body: String): Double? {
-            val match = Regex("""["']?value["']?\s*:\s*"?(-?[0-9]+(?:\.[0-9]+)?)"?""")
-                .find(body) ?: return null
-            val value = match.groupValues[1].toDoubleOrNull() ?: return null
-            // The service reports this sentinel where it has no coverage.
-            if (value <= -1_000_000) return null
-            return value
-        }
+        /** Delegated so the phone and the browser read a reply the same way. */
+        internal fun parseValue(body: String): Double? = ElevationQuery.parseValue(body)
     }
 }

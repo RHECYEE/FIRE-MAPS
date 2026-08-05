@@ -1,6 +1,7 @@
 package com.rhecyee.firelinemap.web
 
 import com.rhecyee.firelinemap.measure.AreaUnit
+import com.rhecyee.firelinemap.measure.ElevationQuery
 import com.rhecyee.firelinemap.measure.DistanceUnit
 import com.rhecyee.firelinemap.measure.MeasureMode
 import com.rhecyee.firelinemap.measure.MeasureSession
@@ -31,12 +32,30 @@ object Tools {
      * [pointsJson] is a flat array of latitude and longitude pairs, which is
      * what the page already holds while the operator is tapping.
      */
-    fun measure(pointsJson: String, area: Boolean): String {
+    fun measure(pointsJson: String, area: Boolean): String =
+        measureWithElevations(pointsJson, "[]", area)
+
+    /**
+     * Measures a run of points that have had their ground elevation looked up.
+     *
+     * [elevationsJson] is one entry per point, null where the lookup has not
+     * come back or had no answer. Slope is reported only where both ends of a
+     * leg have a figure -- an absent one is left absent rather than filled with
+     * a guess, because a grade is the kind of number a crew boss acts on.
+     */
+    fun measureWithElevations(
+        pointsJson: String,
+        elevationsJson: String,
+        area: Boolean
+    ): String {
         val flat = JSON.parse<Array<Double>>(pointsJson)
+        val heights = JSON.parse<Array<Double?>>(elevationsJson)
         val session = MeasureSession(if (area) MeasureMode.AREA else MeasureMode.DISTANCE)
         var index = 0
         while (index + 1 < flat.size) {
             session.add(flat[index], flat[index + 1])
+            val at = index / 2
+            heights.getOrNull(at)?.let { session.setElevation(at, it) }
             index += 2
         }
 
@@ -68,16 +87,33 @@ object Tools {
                 "area" to result.areaSquareMeters?.let {
                     round(AreaUnit.ACRES.from(it), 2) + " acres"
                 },
+                // Climb and drop over the whole run, and the overall grade.
+                // Absent until every point has an elevation, so a partial
+                // lookup cannot read as a shallower hill than it is.
+                "gain" to result.gainMeters?.let { DistanceUnit.readable(it) },
+                "loss" to result.lossMeters?.let { DistanceUnit.readable(it) },
+                "slope" to result.overallSlopePercent?.let { round(it, 1) + "%" },
                 "legs" to result.segments.map { segment ->
                     json(
                         "distance" to DistanceUnit.readable(segment.distanceMeters),
                         "chains" to DistanceUnit.inChains(segment.distanceMeters),
-                        "bearing" to round(segment.bearingDegrees, 0) + "°"
+                        "bearing" to round(segment.bearingDegrees, 0) + "°",
+                        "slope" to segment.slopePercent?.let { percent ->
+                            val degrees = segment.slopeDegrees
+                            round(percent, 1) + "%" +
+                                (degrees?.let { " (" + round(it, 0) + "°)" } ?: "")
+                        }
                     )
                 }.toTypedArray()
             )
         )
     }
+
+    /** Where to ask for a ground elevation, and how to read the reply. */
+    fun elevationUrl(latitude: Double, longitude: Double): String =
+        ElevationQuery.url(latitude, longitude)
+
+    fun elevationFrom(body: String): Double? = ElevationQuery.parseValue(body)
 
     private fun round(value: Double, places: Int): String {
         var scale = 1.0
