@@ -63,7 +63,7 @@ fun ShareSheet(
     onClearPasted: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    var receiving by remember { mutableStateOf(false) }
+    var receiving by remember { mutableStateOf(pkg.isEmpty) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -95,6 +95,11 @@ fun ShareSheet(
                         onPaste = onPaste,
                         onApply = onApplyPasted,
                         onClear = onClearPasted
+                    )
+                } else if (pkg.isEmpty) {
+                    Note(
+                        "Nothing on this incident yet. Drop a pin or record a track " +
+                            "and it can go to somebody — or take theirs under RECEIVE."
                     )
                 } else {
                     Send(

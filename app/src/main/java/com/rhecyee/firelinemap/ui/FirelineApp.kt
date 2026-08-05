@@ -604,12 +604,17 @@ fun FirelineApp() {
         createdAt = System.currentTimeMillis(),
         author = reporterName.ifBlank { null },
         tracks = trackEntities.filter { !it.isRecording }.mapNotNull { entity ->
-            val points = parseLineString(entity.geometryGeoJson)
-            if (points.size < 2) return@mapNotNull null
+            // Read with times, not positions only. Sending the shape alone was
+            // costing the receiver every elapsed time and every average speed
+            // -- the numbers that make a track worth having.
+            val fixes = TrackGeometry.read(entity.geometryGeoJson)
+            if (fixes.size < 2) return@mapNotNull null
             ShareTrack(
                 id = entity.id,
                 name = entity.name,
-                points = points.map { SharePoint(it.first, it.second) },
+                points = fixes.map {
+                    SharePoint(it.latitude, it.longitude, it.timeMillis.takeIf { t -> t > 0 })
+                },
                 startedAt = entity.startedAt,
                 endedAt = entity.endedAt,
                 distanceMeters = entity.distanceMeters,
@@ -1441,10 +1446,23 @@ fun FirelineApp() {
                                     fixes[index + 1].latitude, fixes[index + 1].longitude
                                 )
                             }
+                            // Elapsed has to be written, not inferred later:
+                            // it is what the readout and the average speed are
+                            // both built on, and a zero here reads as a track
+                            // that took no time at all.
+                            val elapsedSeconds = if (
+                                track.startedAt != null && track.endedAt != null
+                            ) {
+                                ((track.endedAt!! - track.startedAt!!) / 1000)
+                                    .coerceAtLeast(0)
+                            } else {
+                                0L
+                            }
                             app.database.dao().upsertTrack(
                                 com.rhecyee.firelinemap.data.TrackEntity(
                                     id = UUID.randomUUID().toString(),
                                     incidentId = target,
+                                    elapsedSeconds = elapsedSeconds,
                                     // Whose track it is matters as much as
                                     // where it went.
                                     name = incoming.author?.let { "${track.name} ($it)" }
@@ -1582,12 +1600,10 @@ fun FirelineApp() {
                     // too, with nothing of ours installed.
                     IconButton(onClick = {
                         touched()
-                        val pkg = sharePackage()
-                        if (pkg.isEmpty) {
-                            statusMessage = "Nothing to send yet — no tracks or pins."
-                        } else {
-                            sharing = pkg
-                        }
+                        // Always opens. Receiving is the half a fresh phone
+                        // needs, and gating the whole dialog on having
+                        // something to send put it behind dropping a pin.
+                        sharing = sharePackage()
                     }) {
                         Icon(Icons.Default.Share, contentDescription = "Send tracks and pins")
                     }

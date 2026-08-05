@@ -9,7 +9,7 @@ data class TrackLine(
     val points: List<Fix>
 )
 
-/** One track's pass through a spot. */
+/** One track's pass through a spot, and what that whole track came to. */
 data class TrackPass(
     val trackId: String,
     val trackName: String,
@@ -18,7 +18,13 @@ data class TrackPass(
     /** Speed through the neighbourhood, or null when the track carries no times. */
     val speedMetersPerSecond: Double?,
     /** How close this track came to the spot. */
-    val closestMeters: Double
+    val closestMeters: Double,
+    /** The whole track's length, not just the part near the spot. */
+    val trackDistanceMeters: Double = 0.0,
+    /** Start of travel to end of travel. */
+    val trackElapsedMillis: Long = 0,
+    /** The whole track's average, which is the number that plans a shift. */
+    val trackAverageSpeed: Double? = null
 ) {
     /** True where the track was effectively stopped here. */
     val stopped: Boolean
@@ -67,6 +73,33 @@ data class OverlapReport(
 
     val stoppedCount: Int get() = passes.count { it.stopped }
 
+    /**
+     * The average of the whole tracks, not just of this corner.
+     *
+     * What a division supervisor is actually asking when they ask how long a
+     * road takes: across every pass anybody has made on it, end to end.
+     */
+    val averageTrackSpeed: Double?
+        get() {
+            val speeds = passes.mapNotNull { it.trackAverageSpeed }
+            if (speeds.isEmpty()) return null
+            return speeds.sum() / speeds.size
+        }
+
+    /** Total ground covered by every pass through here. */
+    val totalDistanceMeters: Double get() = passes.sumOf { it.trackDistanceMeters }
+
+    /** Total time spent on those passes. */
+    val totalElapsedMillis: Long get() = passes.sumOf { it.trackElapsedMillis }
+
+    /** Mean elapsed time of a pass, which is the travel time to quote. */
+    val averageElapsedMillis: Long?
+        get() {
+            val times = passes.map { it.trackElapsedMillis }.filter { it > 0 }
+            if (times.isEmpty()) return null
+            return times.sum() / times.size
+        }
+
     /** "4 tracks · 12 mph average", for the readout at the top of the list. */
     fun describe(): String {
         if (passes.isEmpty()) return "No tracks here"
@@ -78,6 +111,24 @@ data class OverlapReport(
 
     companion object {
         private const val MPH_PER_METER_PER_SECOND = 2.2369362920544
+
+        /** "1:23:45", or "23:45" under an hour. */
+        fun formatElapsed(millis: Long): String {
+            val seconds = millis / 1000
+            val hours = seconds / 3600
+            val minutes = (seconds % 3600) / 60
+            val remainder = seconds % 60
+            fun pad(value: Long) = if (value < 10) "0$value" else "$value"
+            return if (hours > 0) "$hours:${pad(minutes)}:${pad(remainder)}"
+            else "${pad(minutes)}:${pad(remainder)}"
+        }
+
+        /** Miles, because that is what a road is quoted in here. */
+        fun formatDistance(meters: Double): String {
+            val miles = meters / 1609.344
+            return if (miles >= 0.1) "${kotlin.math.round(miles * 10) / 10.0} mi"
+            else "${kotlin.math.round(meters).toInt()} m"
+        }
 
         fun formatSpeed(metersPerSecond: Double): String {
             val mph = metersPerSecond * MPH_PER_METER_PER_SECOND
@@ -158,13 +209,44 @@ object TrackOverlap {
 
         if (first < 0 || closestIndex < 0) return null
 
+        val whole = wholeTrack(track.points)
         return TrackPass(
             trackId = track.id,
             trackName = track.name,
             atMillis = track.points[closestIndex].timeMillis.takeIf { it > 0 },
             speedMetersPerSecond = speedThrough(track.points, first, last),
-            closestMeters = closest
+            closestMeters = closest,
+            trackDistanceMeters = whole.first,
+            trackElapsedMillis = whole.second,
+            trackAverageSpeed = whole.third
         )
+    }
+
+    /**
+     * A whole track's distance, elapsed time and average.
+     *
+     * Reported alongside the speed through the spot because they answer
+     * different questions. How fast this corner runs is one thing; how long
+     * the road takes end to end is what plans a shift, and it is the number
+     * somebody writes down.
+     */
+    fun wholeTrack(points: List<Fix>): Triple<Double, Long, Double?> {
+        if (points.size < 2) return Triple(0.0, 0L, null)
+        var distance = 0.0
+        for (index in 0 until points.lastIndex) {
+            distance += MapCoverage.distanceMeters(
+                points[index].latitude, points[index].longitude,
+                points[index + 1].latitude, points[index + 1].longitude
+            )
+        }
+        val stamps = points.map { it.timeMillis }.filter { it > 0 }
+        val elapsed = if (stamps.size >= 2) {
+            (stamps.max() - stamps.min()).coerceAtLeast(0)
+        } else {
+            0L
+        }
+        val average = if (elapsed > 0) distance / (elapsed / 1000.0) else null
+        return Triple(distance, elapsed, average?.takeIf { it.isFinite() })
     }
 
     /**

@@ -56,21 +56,47 @@ fun TrackOverlapSheet(
                 ) {
                     Column(Modifier.padding(12.dp)) {
                         Text(
-                            report.describe(),
+                            "${report.passes.size} pass" +
+                                (if (report.passes.size == 1) "" else "es") + " through here",
                             fontWeight = FontWeight.Black,
                             style = MaterialTheme.typography.titleMedium
                         )
+                        // The totals, which is what the operator came for: how
+                        // long this road takes and how fast it runs, across
+                        // everybody who has been down it.
+                        report.averageTrackSpeed?.let {
+                            Figure("Average speed", OverlapReport.formatSpeed(it))
+                        }
+                        report.averageElapsedMillis?.let {
+                            Figure("Average time", OverlapReport.formatElapsed(it))
+                        }
+                        if (report.totalDistanceMeters > 0) {
+                            Figure(
+                                "Total distance",
+                                OverlapReport.formatDistance(report.totalDistanceMeters)
+                            )
+                        }
+                        if (report.totalElapsedMillis > 0) {
+                            Figure(
+                                "Total time",
+                                OverlapReport.formatElapsed(report.totalElapsedMillis)
+                            )
+                        }
+                        report.averageSpeedMetersPerSecond?.let {
+                            Figure("Speed at this spot", OverlapReport.formatSpeed(it))
+                        }
+
                         // The average leaves stops out, and says so, because a
                         // number in a briefing that quietly included a lunch
                         // break is worse than no number.
                         if (report.stoppedCount > 0) {
                             Text(
                                 "${report.stoppedCount} of ${report.passes.size} were " +
-                                    "stopped here and are left out of the average.",
+                                    "stopped here and are left out of the spot speed.",
                                 style = MaterialTheme.typography.labelSmall
                             )
                         }
-                        if (report.passes.any { it.speedMetersPerSecond == null }) {
+                        if (report.passes.any { it.trackAverageSpeed == null }) {
                             Text(
                                 "Some passes carry no times — recorded before times " +
                                     "were kept, or imported without them.",
@@ -94,6 +120,22 @@ fun TrackOverlapSheet(
 }
 
 @Composable
+private fun Figure(label: String, value: String) {
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+        Text(value, fontWeight = FontWeight.Black)
+    }
+}
+
+/**
+ * One pass, as a line in the log.
+ *
+ * Its own distance, its own elapsed time and its own average -- not just what
+ * it was doing at the spot that was tapped. A pass that took an hour and a
+ * pass that took twenty minutes over the same road is the whole finding, and
+ * it is invisible if only the corner speed is shown.
+ */
+@Composable
 private fun PassRow(pass: TrackPass) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -101,34 +143,44 @@ private fun PassRow(pass: TrackPass) {
             containerColor = MaterialTheme.colorScheme.surfaceVariant
         )
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(pass.trackName, fontWeight = FontWeight.Bold)
+        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(pass.trackName, modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold)
                 Text(
-                    listOfNotNull(
-                        pass.atMillis?.let { whenItWas(it) },
-                        "${pass.closestMeters.toInt()} m off"
-                    ).joinToString(" · "),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    when {
+                        pass.trackAverageSpeed != null ->
+                            OverlapReport.formatSpeed(pass.trackAverageSpeed!!)
+                        else -> "no times"
+                    },
+                    fontWeight = FontWeight.Black,
+                    color = if (pass.trackAverageSpeed != null) Color(0xFF69F0AE)
+                    else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
             Text(
-                when {
-                    pass.stopped -> "stopped"
-                    pass.speedMetersPerSecond != null ->
-                        OverlapReport.formatSpeed(pass.speedMetersPerSecond!!)
-                    else -> "no times"
-                },
-                fontWeight = FontWeight.Black,
-                color = when {
-                    pass.stopped -> Color(0xFFFFB74D)
-                    pass.speedMetersPerSecond != null -> Color(0xFF69F0AE)
-                    else -> MaterialTheme.colorScheme.onSurfaceVariant
-                }
+                listOfNotNull(
+                    pass.atMillis?.let { whenItWas(it) },
+                    OverlapReport.formatDistance(pass.trackDistanceMeters)
+                        .takeIf { pass.trackDistanceMeters > 0 },
+                    OverlapReport.formatElapsed(pass.trackElapsedMillis)
+                        .takeIf { pass.trackElapsedMillis > 0 }
+                ).joinToString(" · "),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                listOfNotNull(
+                    "${pass.closestMeters.toInt()} m off the tap",
+                    when {
+                        pass.stopped -> "stopped here"
+                        pass.speedMetersPerSecond != null ->
+                            OverlapReport.formatSpeed(pass.speedMetersPerSecond!!) + " here"
+                        else -> null
+                    }
+                ).joinToString(" · "),
+                style = MaterialTheme.typography.labelSmall,
+                color = if (pass.stopped) Color(0xFFFFB74D)
+                else MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }

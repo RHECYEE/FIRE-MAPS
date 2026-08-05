@@ -21,6 +21,15 @@ class TrackOverlapTest {
 
     private fun north(meters: Double) = roadLat + meters / 111_194.93
 
+    /**
+     * A real epoch, not zero.
+     *
+     * Zero is what the app uses for "time not known", so a fixture starting
+     * there has its first fix silently discarded and every elapsed time comes
+     * out one interval short. No receiver has ever reported 1970.
+     */
+    private val base = 1_754_390_000_000L
+
     /** A run north along the road at [speed] m/s, one fix every five seconds. */
     private fun run(
         id: String,
@@ -36,7 +45,7 @@ class TrackOverlapTest {
             points += Fix(
                 latitude = north(speed * elapsed - 100.0),
                 longitude = roadLon + offsetMeters / (111_194.93 * 0.7009),
-                timeMillis = fromMillis + elapsed * 1000L
+                timeMillis = base + fromMillis + elapsed * 1000L
             )
             elapsed += 5
         }
@@ -96,7 +105,7 @@ class TrackOverlapTest {
         val parked = TrackLine(
             "p", "Parked at the gate",
             (0..40).map { step ->
-                Fix(north((step % 2) * 1.5), roadLon, step * 5000L)
+                Fix(north((step % 2) * 1.5), roadLon, base + step * 5000L)
             }
         )
         val tracks = listOf(run("a", "Monday", 8.0, 0), parked)
@@ -114,7 +123,7 @@ class TrackOverlapTest {
             TrackLine(
                 "p$index", "Pass $index",
                 (0..40).map { step ->
-                    Fix(north((step % 2) * 1.5), roadLon, step * 5000L)
+                    Fix(north((step % 2) * 1.5), roadLon, base + step * 5000L)
                 }
             )
         }
@@ -217,5 +226,61 @@ class TrackOverlapTest {
         )
         val report = TrackOverlap.at(roadLat, roadLon, tracks)
         assertEquals("4 tracks · 18 mph average", report.describe())
+    }
+
+    /**
+     * The whole-track figures, which is what the readout leads with.
+     *
+     * The speed through one corner answers a different question from how long
+     * the road takes end to end, and the second is the one somebody writes
+     * down. Both are reported.
+     */
+    @Test
+    fun eachPassCarriesItsOwnDistanceTimeAndAverage() {
+        // Two hundred seconds at eight metres a second is 1,600 m.
+        val report = TrackOverlap.at(roadLat, roadLon, listOf(run("a", "Monday", 8.0, 0)))
+        val pass = report.passes.first()
+        assertEquals(1_600.0, pass.trackDistanceMeters, 30.0)
+        assertEquals(200_000L, pass.trackElapsedMillis)
+        assertEquals(8.0, pass.trackAverageSpeed!!, 0.3)
+    }
+
+    @Test
+    fun theTopLineAveragesTheWholeTracksNotJustTheCorner() {
+        val tracks = listOf(
+            run("a", "Monday", 6.0, 0),
+            run("b", "Tuesday", 10.0, 86_400_000L)
+        )
+        val report = TrackOverlap.at(roadLat, roadLon, tracks)
+        assertEquals(8.0, report.averageTrackSpeed!!, 0.3)
+        assertEquals(200_000L, report.averageElapsedMillis)
+        assertEquals(400_000L, report.totalElapsedMillis)
+        // 200 s at 6 m/s plus 200 s at 10 m/s.
+        assertEquals(3_200.0, report.totalDistanceMeters, 60.0)
+    }
+
+    @Test
+    fun aTrackWithNoTimesContributesNothingToTheAveragesRatherThanAZero() {
+        val untimed = TrackLine(
+            "u", "No times",
+            (0..40).map { step -> Fix(north(-100.0 + step * 8.0), roadLon, 0L) }
+        )
+        val report = TrackOverlap.at(
+            roadLat, roadLon, listOf(run("a", "Monday", 8.0, 0), untimed)
+        )
+        assertEquals(2, report.passes.size)
+        // The timed one alone, not the mean of eight and nothing.
+        assertEquals(8.0, report.averageTrackSpeed!!, 0.3)
+        assertEquals(200_000L, report.averageElapsedMillis)
+    }
+
+    @Test
+    fun figuresReadTheWayTheyAreWrittenDown() {
+        assertEquals("1:00:00", OverlapReport.formatElapsed(3_600_000))
+        assertEquals("20:00", OverlapReport.formatElapsed(1_200_000))
+        assertEquals("00:07", OverlapReport.formatElapsed(7_000))
+        assertEquals("1.0 mi", OverlapReport.formatDistance(1609.344))
+        assertEquals("12.4 mi", OverlapReport.formatDistance(20_000.0))
+        assertEquals("80 m", OverlapReport.formatDistance(80.0))
     }
 }
