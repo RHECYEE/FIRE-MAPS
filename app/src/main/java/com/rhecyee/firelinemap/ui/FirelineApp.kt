@@ -231,6 +231,8 @@ fun FirelineApp() {
     // so closing it to go and copy the next part does not lose the ones
     // already in, which is exactly what an operator will do.
     var pasted by remember { mutableStateOf(TextCodec.Assembly()) }
+    // Set while the next map tap is to become the landing zone.
+    var placingLandingZone by remember { mutableStateOf(false) }
     var incidentTallies by remember { mutableStateOf<Map<String, IncidentTally>>(emptyMap()) }
     // Set when the app made an incident by itself, so it can ask for the real
     // name once rather than leaving a placeholder on every medical report.
@@ -303,6 +305,7 @@ fun FirelineApp() {
                 DictationField.ASSESSMENT -> current.copy(patientAssessment = spoken)
                 DictationField.HAZARDS -> current.copy(lzHazards = spoken)
                 DictationField.RADIO_NAME -> current.copy(radioNameOverride = spoken)
+                DictationField.LANDING -> current.copy(airPickupName = spoken)
                 DictationField.UPDATE -> {
                     scope.launch { medical.addUpdate(current.id, spoken) }
                     current.copy(
@@ -333,6 +336,7 @@ fun FirelineApp() {
                     DictationField.HAZARDS -> "LZ hazards"
                     DictationField.UPDATE -> "Update"
                     DictationField.RADIO_NAME -> "Radio name"
+                    DictationField.LANDING -> "Helispot or landing zone"
                 }
             )
         }
@@ -1000,6 +1004,7 @@ fun FirelineApp() {
                     DictationField.ASSESSMENT -> "Patient assessment"
                     DictationField.HAZARDS -> "LZ hazards"
                     DictationField.RADIO_NAME -> "Radio name"
+                    DictationField.LANDING -> "Helispot or landing zone"
                     DictationField.UPDATE -> "Update"
                 },
                 initial = when (field) {
@@ -1007,6 +1012,7 @@ fun FirelineApp() {
                     DictationField.ASSESSMENT -> report.patientAssessment.orEmpty()
                     DictationField.HAZARDS -> report.lzHazards.orEmpty()
                     DictationField.RADIO_NAME -> report.radioName
+                    DictationField.LANDING -> report.airPickupName.orEmpty()
                     DictationField.UPDATE -> ""
                 },
                 onDismiss = { typing = null },
@@ -1017,6 +1023,7 @@ fun FirelineApp() {
                         DictationField.ASSESSMENT -> report.copy(patientAssessment = entered)
                         DictationField.HAZARDS -> report.copy(lzHazards = entered)
                         DictationField.RADIO_NAME -> report.copy(radioNameOverride = entered)
+                        DictationField.LANDING -> report.copy(airPickupName = entered)
                         DictationField.UPDATE -> {
                             scope.launch { medical.addUpdate(report.id, entered) }
                             report.copy(
@@ -1055,7 +1062,32 @@ fun FirelineApp() {
                 },
                 onType = { typing = it },
                 onDictate = { dictate(it) },
-                onNameNearby = {
+                onDropLandingZone = {
+                placingLandingZone = true
+                medicalReport?.let { report -> scope.launch { medical.save(report) } }
+                showReadout = false
+                statusMessage = "Tap the map where the aircraft can land."
+            },
+            // A drop point is a place the responding unit already has on
+            // their own map. Offering it saves reading a coordinate aloud.
+            nearestDropPoint = medicalReport?.let { report ->
+                markers
+                    .filter { it.symbol == "drop_point" || it.symbol == "helispot" }
+                    .minByOrNull {
+                        MapCoverage.distanceMeters(
+                            report.latitude, report.longitude, it.latitude, it.longitude
+                        )
+                    }
+                    ?.let { nearest ->
+                        val away = MapCoverage.distanceMeters(
+                            report.latitude, report.longitude,
+                            nearest.latitude, nearest.longitude
+                        )
+                        if (away > 1_600) null
+                        else "${nearest.title}, ${DistanceUnit.readable(away)} away"
+                    }
+            },
+            onNameNearby = {
                     scope.launch {
                         val name = withContext(Dispatchers.IO) {
                             placeNamer.nearbyName(report.latitude, report.longitude)
@@ -1803,7 +1835,17 @@ fun FirelineApp() {
                     scope.launch { resources.move(marker, lat, lon) }
                 },
                 onMapTap = { lat, lon ->
-                    if (placingResources && selectedSymbol != null) {
+                    if (placingLandingZone) {
+                        // The one tap the medical form is waiting on, so it
+                        // takes precedence over every armed tool.
+                        placingLandingZone = false
+                        medicalReport = medicalReport?.copy(
+                            airPickupLatitude = lat,
+                            airPickupLongitude = lon
+                        )
+                        medicalReport?.let { report -> scope.launch { medical.save(report) } }
+                        statusMessage = "Landing zone set."
+                    } else if (placingResources && selectedSymbol != null) {
                         pendingPlacement = lat to lon
                     } else if (simMode) {
                         simulated = lat to lon

@@ -57,18 +57,77 @@ object RadioReadout {
         append("${report.radioName} Medical. ")
         report.incidentCommander?.takeIf { it.isNotBlank() }?.let { append("IC $it. ") }
         report.medicalProvider?.takeIf { it.isNotBlank() }?.let { append("Patient care $it. ") }
-        append("Pickup at ${coordinates(report)}. ")
+        if (report.hasSeparateLandingZone) {
+            append("Patient at ${coordinates(report)}. ")
+            append("Ground to ${report.airPickupName?.takeIf { it.isNotBlank() }
+                ?: "the landing zone"} for air pickup. ")
+        } else {
+            append("Pickup at ${coordinates(report)}. ")
+        }
         append("Request ${report.transport.spoken}")
         if (report.resources.isNotEmpty()) {
             append(" with ${spokenList(report.resources.map { it.spoken })}")
         }
         append(". ")
-        // Not capitalised: it follows a colon, where a capital reads oddly.
-        report.lzHazards?.takeIf { it.isNotBlank() }?.let {
-            append("LZ hazards: ${it.trim().trimEnd('.')}. ")
+        // Only for air, and not capitalised: it follows a colon, where a
+        // capital reads oddly.
+        if (report.transport.needsAir) {
+            report.lzHazards?.takeIf { it.isNotBlank() }?.let {
+                append("LZ hazards: ${it.trim().trimEnd('.')}. ")
+            }
         }
         report.patientAssessment?.takeIf { it.isNotBlank() }?.let { append("${sentence(it)}. ") }
     }.trim()
+
+
+    /**
+     * Where the patient is picked up, and how they get there.
+     *
+     * The distinction the old wording lost: when an aircraft cannot land on
+     * the patient, there are two places and a carry between them. Saying only
+     * "LZ at <coordinates>" leaves whoever is listening to work out whether
+     * that is where the patient is, and the answer decides whether a ground
+     * unit is needed at all.
+     */
+    private fun transportPlan(report: MedicalReport): String = buildString {
+        append("Request ${report.transport.spoken}.")
+
+        if (report.hasSeparateLandingZone) {
+            val place = report.airPickupName?.takeIf { it.isNotBlank() }
+            val where = if (
+                report.airPickupLatitude != null && report.airPickupLongitude != null
+            ) {
+                CoordinateFormatter.format(
+                    report.airPickupLatitude, report.airPickupLongitude, CoordinateFormat.DDM
+                )
+            } else {
+                null
+            }
+            append(" Patient at ${coordinates(report)}.")
+            // Named first: a helispot has a name on the IAP and that is what
+            // goes over the radio, not a coordinate.
+            append(" Ground to ${place ?: "the landing zone"}")
+            where?.let { append(" at $it") }
+            append(" for air pickup.")
+        } else {
+            append(" Pickup ${coordinates(report)}.")
+            if (report.transport.needsAir) append(" Aircraft lands at the patient.")
+        }
+
+        report.groundContact?.takeIf { it.isNotBlank() }?.let {
+            append(" Ground contact $it.")
+        }
+
+        // Only for air. A ground request has no landing zone, so a line about
+        // its hazards is a blank that reads as an omission.
+        if (report.transport.needsAir) {
+            append(
+                report.lzHazards?.takeIf { it.isNotBlank() }
+                    ?.let { " LZ hazards: $it." }
+                    ?: " LZ hazards: none reported."
+            )
+        }
+    }
 
     private fun eightLine(report: MedicalReport): List<ReadoutLine> = listOf(
         ReadoutLine(1, "Contact Communications", STANDBY),
@@ -95,21 +154,7 @@ object RadioReadout {
                 append(".")
             }
         ),
-        ReadoutLine(
-            4, "Transport Request",
-            buildString {
-                append("Request ${report.transport.spoken}.")
-                report.groundContact?.takeIf { it.isNotBlank() }?.let {
-                    append(" Ground contact $it.")
-                }
-                append(" LZ ${coordinates(report)}.")
-                append(
-                    report.lzHazards?.takeIf { it.isNotBlank() }
-                        ?.let { " LZ hazards: $it." }
-                        ?: " LZ hazards: none reported."
-                )
-            }
-        ),
+        ReadoutLine(4, "Transport Request", transportPlan(report)),
         ReadoutLine(
             5, "Additional Resources Needed",
             if (report.resources.isEmpty()) "None."
@@ -152,21 +197,7 @@ object RadioReadout {
                 append(".")
             }
         ),
-        ReadoutLine(
-            4, "Transport Plan",
-            buildString {
-                append("Request ${report.transport.spoken}. ")
-                append("Pickup ${coordinates(report)}.")
-                report.groundContact?.takeIf { it.isNotBlank() }?.let {
-                    append(" Ground contact $it.")
-                }
-                append(
-                    report.lzHazards?.takeIf { it.isNotBlank() }
-                        ?.let { " LZ hazards: $it." }
-                        ?: " LZ hazards: none reported."
-                )
-            }
-        ),
+        ReadoutLine(4, "Transport Plan", transportPlan(report)),
         ReadoutLine(
             5, "Additional Resources",
             if (report.resources.isEmpty()) "None."

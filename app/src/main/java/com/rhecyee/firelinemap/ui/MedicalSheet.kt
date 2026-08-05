@@ -42,6 +42,10 @@ fun MedicalSheet(
     onType: (field: DictationField) -> Unit,
     onDictate: (field: DictationField) -> Unit,
     onNameNearby: () -> Unit,
+    /** Puts the next map tap down as the landing zone. */
+    onDropLandingZone: () -> Unit,
+    /** The nearest drop point already on the map, if one is close. */
+    nearestDropPoint: String?,
     onReadout: () -> Unit,
     onAddUpdate: () -> Unit,
     onDismiss: () -> Unit
@@ -116,6 +120,48 @@ fun MedicalSheet(
                     }
                 }
 
+                // Only for air. There is nothing to land on a ground request,
+                // so asking where it lands is a blank nobody can fill.
+                if (report.transport.needsAir) {
+                    Section("WHERE DOES IT LAND")
+                    Text(
+                        "If the aircraft cannot land on the patient, name the helispot " +
+                            "or drop a pin for the LZ. The readout then says the patient " +
+                            "is carried to it, which is what tells dispatch a ground unit " +
+                            "is needed as well.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            when {
+                                !report.airPickupName.isNullOrBlank() -> report.airPickupName!!
+                                report.hasSeparateLandingZone -> "LZ pin dropped"
+                                else -> "Lands at the patient"
+                            },
+                            modifier = Modifier.weight(1f),
+                            fontWeight = FontWeight.Bold
+                        )
+                        Chip("Helispot", selected = false) { onType(DictationField.LANDING) }
+                        Chip("Drop LZ pin", selected = false) { onDropLandingZone() }
+                    }
+                    if (report.hasSeparateLandingZone) {
+                        Chip("Lands at the patient instead", selected = false) {
+                            onChange(
+                                report.copy(
+                                    airPickupName = null,
+                                    airPickupLatitude = null,
+                                    airPickupLongitude = null
+                                )
+                            )
+                        }
+                    }
+                }
+
                 Section("RESOURCES")
                 MedicalResource.entries.chunked(4).forEach { row ->
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -154,6 +200,12 @@ fun MedicalSheet(
                     Chip("Edit", selected = false) { onType(DictationField.RADIO_NAME) }
                     Chip("Nearby", selected = false) { onNameNearby() }
                 }
+                Text(
+                    "This is the incident name, not a callsign — what dispatch will " +
+                        "hear this medical filed under.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
 
                 Section("DETAIL")
                 Entry("Nature of injury", report.natureOfInjury,
@@ -162,9 +214,22 @@ fun MedicalSheet(
                 Entry("Patient assessment", report.patientAssessment,
                     onType = { onType(DictationField.ASSESSMENT) },
                     onDictate = { onDictate(DictationField.ASSESSMENT) })
-                Entry("LZ hazards", report.lzHazards,
-                    onType = { onType(DictationField.HAZARDS) },
-                    onDictate = { onDictate(DictationField.HAZARDS) })
+                if (report.transport.needsAir) {
+                    Entry("LZ hazards", report.lzHazards,
+                        onType = { onType(DictationField.HAZARDS) },
+                        onDictate = { onDictate(DictationField.HAZARDS) })
+                }
+                // The position is exact, and exact is not always what helps.
+                // A drop point is a place the responding unit already has on
+                // their own map and can drive to without reading a coordinate.
+                nearestDropPoint?.let {
+                    Text(
+                        "Nearest drop point: $it — give this as the location if it is " +
+                            "close enough. It is already on their map.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFFFFB74D)
+                    )
+                }
 
                 if (report.updates.isNotEmpty()) {
                     Section("UPDATES")
@@ -208,7 +273,7 @@ fun MedicalSheet(
     )
 }
 
-enum class DictationField { NATURE, ASSESSMENT, HAZARDS, UPDATE, RADIO_NAME }
+enum class DictationField { NATURE, ASSESSMENT, HAZARDS, UPDATE, RADIO_NAME, LANDING }
 
 /** Typed entry, which is the preferred way in; the microphone is the option. */
 @Composable

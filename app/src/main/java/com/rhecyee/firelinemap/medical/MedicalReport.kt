@@ -10,7 +10,17 @@ enum class Priority(val label: String, val spoken: String, val colorArgb: Int) {
 enum class TransportMode(val label: String, val spoken: String) {
     GROUND("GROUND", "ground ambulance"),
     AIR("AIR", "air ambulance"),
-    BOTH("BOTH", "air and ground ambulance")
+    BOTH("BOTH", "air and ground ambulance");
+
+    /**
+     * Whether an aircraft is coming.
+     *
+     * Decides several things that only make sense for air: where it lands,
+     * what is around that spot, and whether the patient has to be moved to
+     * meet it. Asking any of those for a ground request is noise on a form
+     * being filled in with a patient on the ground.
+     */
+    val needsAir: Boolean get() = this != GROUND
 }
 
 /** Kit called for alongside the transport request. */
@@ -36,6 +46,17 @@ enum class ReportFormat(val label: String) {
     MIR("Medical Incident Report"),
     EIGHT_LINE("8-Line")
 }
+
+/**
+ * What the operator sees this called.
+ *
+ * The 206 is the medical plan on an IAP, and it is the number people ask for:
+ * "have you got the 206". The form filled in here is what goes onto it, so
+ * that is what the button says. The readout underneath can still follow either
+ * the Medical Incident Report or the older eight-line, since which one a
+ * division runs is theirs to decide -- but neither is what anybody calls it.
+ */
+const val MEDICAL_PLAN_LABEL = "206"
 
 /** One entry in the running record of a medical incident. */
 data class ReportUpdate(val recordedAt: Long, val text: String)
@@ -102,8 +123,25 @@ data class MedicalReport(
      * "Chico Creek Medical" locates a call for anyone listening in a way that
      * "Incident Aug 4 Medical" does not.
      */
-    val radioNameOverride: String? = null
+    val radioNameOverride: String? = null,
+
+    /**
+     * Where the aircraft actually lands, when it is not where the patient is.
+     *
+     * Named rather than only positioned, because a helispot has a name on the
+     * IAP and that name is what goes over the radio -- "H-3", not a
+     * coordinate. Left empty for a ground request, where there is nothing to
+     * land.
+     */
+    val airPickupName: String? = null,
+    val airPickupLatitude: Double? = null,
+    val airPickupLongitude: Double? = null
 ) {
+    /** True when the patient has to be carried to meet the aircraft. */
+    val hasSeparateLandingZone: Boolean
+        get() = transport.needsAir &&
+            (!airPickupName.isNullOrBlank() ||
+                (airPickupLatitude != null && airPickupLongitude != null))
     val radioName: String
         get() = radioNameOverride?.takeIf { it.isNotBlank() } ?: shorten(incidentName)
     /** Fields that would leave a gap on the radio if left empty. */
@@ -112,8 +150,11 @@ data class MedicalReport(
             if (!hasPosition) add("a position fix")
             if (natureOfInjury.isNullOrBlank()) add("nature of injury")
             if (patientAssessment.isNullOrBlank()) add("patient assessment")
-            if (transport != TransportMode.GROUND && lzHazards.isNullOrBlank()) {
-                add("LZ hazards")
+            // Only for air. There is no landing zone on a ground request, so
+            // asking for its hazards is a blank nobody can fill.
+            if (transport.needsAir && lzHazards.isNullOrBlank()) add("LZ hazards")
+            if (transport.needsAir && !hasSeparateLandingZone && !hasPosition) {
+                add("a landing zone")
             }
         }
 
