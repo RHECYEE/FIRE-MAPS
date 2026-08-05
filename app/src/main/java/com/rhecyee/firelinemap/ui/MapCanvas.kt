@@ -539,7 +539,6 @@ fun MapCanvas(
             // the sheet, the position and the tracks with it -- a blank
             // screen instead of a missing background.
             if (basemap != null) {
-                runCatching {
                 drawBasemap(
                     basemap = basemap,
                     projection = projection,
@@ -549,7 +548,6 @@ fun MapCanvas(
                     drawHeight = drawHeight,
                     held = tileZoom
                 )
-                }.onFailure { basemap.lastFailure = it::class.java.simpleName }
             }
 
             // Only the part of the sheet that is actually on screen.
@@ -780,11 +778,7 @@ private const val MAX_TILES_PER_FRAME = 220L
  */
 private const val BASE_LAYER_STEPS = 3
 
-/** How far off screen a tile may be before it is not worth drawing. */
-private const val TILE_MARGIN = 400f
 
-/** A tile drawn larger than this means the transform has come apart. */
-private const val MAX_TILE_PIXELS = 20_000
 
 /** How long the view has to hold still before contours are re-cut. */
 private const val VIEW_SETTLE_MILLIS = 300L
@@ -901,7 +895,45 @@ private fun DrawScope.drawBasemap(
     drawHeight: Float,
     held: TileZoomHolder
 ) {
-    if (drawWidth <= 0f || drawHeight <= 0f || size.width <= 0f) return
+    // Every way out of this leads through the rescue.
+    //
+    // The checks below are all reasons the wanted level cannot be worked out,
+    // and each used to return outright -- leaving the screen empty because the
+    // arithmetic was uncertain, which is the worst possible response to
+    // uncertainty on a navigation tool. Whatever is already decoded gets drawn
+    // instead. It may be soft and it may be the wrong level; it is ground, and
+    // ground is what the screen is for.
+    val drawn = runCatching {
+        drawTerrain(basemap, projection, originX, originY, drawWidth, drawHeight, held)
+    }.getOrElse {
+        basemap.lastFailure = it::class.java.simpleName
+        0
+    }
+    if (drawn > 0) return
+
+    val rescued = runCatching {
+        drawHeldTiles(basemap, projection, originX, originY, drawWidth, drawHeight)
+    }.getOrDefault(0)
+    basemap.lastRescue = rescued
+    if (rescued > 0) return
+
+    // Nothing at all. Say so on the map rather than leaving a grey rectangle
+    // that is indistinguishable from the app having failed, and say enough
+    // that the next report is a fact instead of a description.
+    drawEmptyTerrainNotice(basemap.diagnostics())
+}
+
+/** Returns how many tiles were drawn. */
+private fun DrawScope.drawTerrain(
+    basemap: BasemapTileCache,
+    projection: MapProjection,
+    originX: Float,
+    originY: Float,
+    drawWidth: Float,
+    drawHeight: Float,
+    held: TileZoomHolder
+): Int {
+    if (drawWidth <= 0f || drawHeight <= 0f || size.width <= 0f) return 0
 
     fun screenToGeo(x: Float, y: Float): Pair<Double, Double>? =
         projection.toGeo((x - originX) / drawWidth, (y - originY) / drawHeight)
@@ -916,21 +948,20 @@ private fun DrawScope.drawBasemap(
         screenToGeo(0f, size.height),
         screenToGeo(size.width, size.height)
     )
-    if (corners.size < 4) return
+    if (corners.size < 4) return 0
 
     val north = corners.maxOf { it.first }
     val south = corners.minOf { it.first }
     val west = corners.minOf { it.second }
     val east = corners.maxOf { it.second }
-    if (north <= south || east <= west) return
-    if (!north.isFinite() || !south.isFinite() || !west.isFinite() || !east.isFinite()) return
+    if (north <= south || east <= west) return 0
+    if (!north.isFinite() || !south.isFinite() || !west.isFinite() || !east.isFinite()) return 0
 
     val centreLatitude = (north + south) / 2.0
-    // Match tile resolution to what is actually on screen.
     val spanMeters = com.rhecyee.firelinemap.map.MapCoverage.distanceMeters(
         centreLatitude, west, centreLatitude, east
     )
-    if (spanMeters <= 0.0 || !spanMeters.isFinite()) return
+    if (spanMeters <= 0.0 || !spanMeters.isFinite()) return 0
 
     var zoom = BasemapTileCache.zoomForStable(
         latitude = centreLatitude,
@@ -949,14 +980,12 @@ private fun DrawScope.drawBasemap(
 
     // A coarse layer underneath, always.
     //
-    // This is the answer to the map going blank mid-pinch. A gesture sweeps
-    // through several levels in a second; each one loads a screenful of tiles
-    // and pushes the level before it out of memory, so by the time the gesture
-    // settles there is nothing left to scale up and the screen is empty until
-    // the new level arrives. Three levels coarser is a sixty-fourth of the
-    // tiles -- a handful, cheap to hold and cheap to fetch -- and it is held
-    // back from eviction, so there is always something to draw. Soft is not
-    // the same as absent.
+    // A gesture sweeps through several levels in a second; each one loads a
+    // screenful of tiles and pushes the level before it out of memory, so by
+    // the time the gesture settles there is nothing left to scale up. Three
+    // levels coarser is a sixty-fourth of the tiles -- a handful, cheap to
+    // hold and cheap to fetch -- and it is held back from eviction, so there
+    // is always something to draw. Soft is not the same as absent.
     val baseZoom = (zoom - BASE_LAYER_STEPS).coerceAtLeast(0)
     var drawn = 0
     if (baseZoom < zoom) {
@@ -965,27 +994,26 @@ private fun DrawScope.drawBasemap(
             originX, originY, drawWidth, drawHeight
         )
     }
-
     drawn += drawTileLayer(
         basemap, projection, zoom, north, south, west, east,
         originX, originY, drawWidth, drawHeight
     )
-
-    // Last resort: draw whatever is held, wherever it lands.
-    //
-    // If neither the wanted level nor the coarse one under it produced a
-    // single tile, the alternative is an empty screen -- and an empty screen
-    // is the one outcome this layer must never produce, because it is
-    // indistinguishable from the app being broken. Anything in memory that
-    // overlaps the view is better than nothing, however soft or however odd
-    // the level it came from. The cache is a couple of hundred entries, so
-    // looking through all of it costs nothing.
-    if (drawn == 0) {
-        drawHeldTiles(basemap, projection, originX, originY, drawWidth, drawHeight)
-    }
+    return drawn
 }
 
-/** Draws every decoded tile that lands on screen, at whatever level it is. */
+/**
+ * Draws every decoded tile that lands on screen, at whatever level it is.
+ *
+ * The last resort. If neither the wanted level nor the coarse layer under it
+ * produced anything, the alternative is an empty screen -- and an empty screen
+ * is indistinguishable from the app being broken, which is the one outcome
+ * this layer must never produce. Anything in memory overlapping the view is
+ * better than nothing, however soft, however odd the level it came from. The
+ * cache is a couple of hundred entries, so looking through all of it costs
+ * nothing.
+ *
+ * Returns how many tiles were drawn.
+ */
 private fun DrawScope.drawHeldTiles(
     basemap: BasemapTileCache,
     projection: MapProjection,
@@ -993,7 +1021,8 @@ private fun DrawScope.drawHeldTiles(
     originY: Float,
     drawWidth: Float,
     drawHeight: Float
-) {
+): Int {
+    var drawn = 0
     // Coarsest first, so finer detail lands on top of it.
     for ((zoom, x, y) in basemap.cached().sortedBy { it.first }) {
         val bitmap = basemap.peek(zoom, x, y) ?: continue
@@ -1004,25 +1033,39 @@ private fun DrawScope.drawHeldTiles(
             BasemapTileCache.tileNorth(y + 1, zoom), BasemapTileCache.tileWest(x + 1, zoom)
         ) ?: continue
 
-        val left = originX + topLeftUnit.first * drawWidth
-        val top = originY + topLeftUnit.second * drawHeight
-        val right = originX + bottomRightUnit.first * drawWidth
-        val bottom = originY + bottomRightUnit.second * drawHeight
-        if (!left.isFinite() || !top.isFinite() || !right.isFinite() || !bottom.isFinite()) {
-            continue
+        if (
+            drawTileCropped(
+                bitmap = bitmap,
+                sourceLeft = 0,
+                sourceTop = 0,
+                sourceSize = bitmap.width,
+                left = originX + topLeftUnit.first * drawWidth,
+                top = originY + topLeftUnit.second * drawHeight,
+                right = originX + bottomRightUnit.first * drawWidth,
+                bottom = originY + bottomRightUnit.second * drawHeight
+            )
+        ) {
+            drawn++
         }
-        if (right < 0f || left > size.width || bottom < 0f || top > size.height) continue
+    }
+    return drawn
+}
 
-        val width = (right - left).roundToInt()
-        val height = (bottom - top).roundToInt()
-        if (width <= 0 || height <= 0 || width > MAX_TILE_PIXELS || height > MAX_TILE_PIXELS) {
-            continue
+/** Says why the terrain is empty, on the terrain. */
+private fun DrawScope.drawEmptyTerrainNotice(detail: String) {
+    drawContext.canvas.nativeCanvas.apply {
+        val paint = android.graphics.Paint().apply {
+            color = android.graphics.Color.argb(190, 255, 255, 255)
+            textAlign = android.graphics.Paint.Align.CENTER
+            textSize = 26f
+            isAntiAlias = true
+            isFakeBoldText = true
         }
-        drawImage(
-            image = bitmap.asImageBitmap(),
-            dstOffset = IntOffset(left.roundToInt(), top.roundToInt()),
-            dstSize = IntSize(width + 1, height + 1)
-        )
+        drawText("NO TERRAIN FOR THIS VIEW", size.width / 2f, size.height / 2f - 14f, paint)
+        paint.textSize = 20f
+        paint.isFakeBoldText = false
+        paint.color = android.graphics.Color.argb(150, 255, 255, 255)
+        drawText(detail, size.width / 2f, size.height / 2f + 18f, paint)
     }
 }
 
@@ -1038,6 +1081,72 @@ private fun tileCount(
     val minY = BasemapTileCache.tileY(north, zoom)
     val maxY = BasemapTileCache.tileY(south, zoom)
     return (maxX - minX + 1).toLong() * (maxY - minY + 1).toLong()
+}
+
+/**
+ * Draws a tile, cropped to the part of it that is on screen.
+ *
+ * Tiles get very large. At street zoom the coarse layer's tiles are tens of
+ * thousands of pixels across, and a destination rectangle that size leaves the
+ * range the renderer works in -- the draw is dropped and nothing appears. The
+ * previous version skipped those tiles outright, which meant the layer that
+ * exists to cover a gap was itself missing exactly when the gap was widest.
+ *
+ * Cropping first keeps every coordinate inside the viewport at any zoom, and
+ * hands over a few pixels of source instead of a whole tile. No tile is ever
+ * too big to draw now; it is only ever partly visible.
+ *
+ * Returns whether anything was drawn.
+ */
+private fun DrawScope.drawTileCropped(
+    bitmap: android.graphics.Bitmap,
+    sourceLeft: Int,
+    sourceTop: Int,
+    sourceSize: Int,
+    left: Float,
+    top: Float,
+    right: Float,
+    bottom: Float
+): Boolean {
+    val spanX = right - left
+    val spanY = bottom - top
+    if (spanX <= 0f || spanY <= 0f) return false
+    if (!left.isFinite() || !top.isFinite() || !right.isFinite() || !bottom.isFinite()) {
+        return false
+    }
+    if (right < 0f || left > size.width || bottom < 0f || top > size.height) return false
+
+    val u0 = ((0f - left) / spanX).coerceIn(0f, 1f)
+    val u1 = ((size.width - left) / spanX).coerceIn(0f, 1f)
+    val v0 = ((0f - top) / spanY).coerceIn(0f, 1f)
+    val v1 = ((size.height - top) / spanY).coerceIn(0f, 1f)
+    if (u1 <= u0 || v1 <= v0) return false
+
+    val srcLeft = sourceLeft + (u0 * sourceSize).roundToInt()
+    val srcTop = sourceTop + (v0 * sourceSize).roundToInt()
+    val srcWidth = ((u1 - u0) * sourceSize).roundToInt().coerceAtLeast(1)
+    val srcHeight = ((v1 - v0) * sourceSize).roundToInt().coerceAtLeast(1)
+    if (srcLeft >= bitmap.width || srcTop >= bitmap.height) return false
+
+    val dstLeft = (left + u0 * spanX).roundToInt()
+    val dstTop = (top + v0 * spanY).roundToInt()
+    val dstWidth = ((u1 - u0) * spanX).roundToInt()
+    val dstHeight = ((v1 - v0) * spanY).roundToInt()
+    if (dstWidth <= 0 || dstHeight <= 0) return false
+
+    drawImage(
+        image = bitmap.asImageBitmap(),
+        srcOffset = IntOffset(srcLeft, srcTop),
+        srcSize = IntSize(
+            srcWidth.coerceAtMost(bitmap.width - srcLeft),
+            srcHeight.coerceAtMost(bitmap.height - srcTop)
+        ),
+        dstOffset = IntOffset(dstLeft, dstTop),
+        // Overdraw by a pixel: adjacent tiles are positioned independently and
+        // rounding leaves hairline seams otherwise.
+        dstSize = IntSize(dstWidth + 1, dstHeight + 1)
+    )
+    return true
 }
 
 /** One level of terrain across the view. */
@@ -1076,32 +1185,18 @@ private fun DrawScope.drawTileLayer(
             val top = originY + topLeftUnit.second * drawHeight
             val right = originX + bottomRightUnit.first * drawWidth
             val bottom = originY + bottomRightUnit.second * drawHeight
-            if (!left.isFinite() || !top.isFinite() || !right.isFinite() || !bottom.isFinite()) {
-                continue
-            }
-            // Off screen entirely, or so large that the numbers have stopped
-            // meaning anything.
-            if (right < -TILE_MARGIN || left > size.width + TILE_MARGIN) continue
-            if (bottom < -TILE_MARGIN || top > size.height + TILE_MARGIN) continue
 
-            val width = (right - left).roundToInt()
-            val height = (bottom - top).roundToInt()
-            if (width <= 0 || height <= 0 || width > MAX_TILE_PIXELS ||
-                height > MAX_TILE_PIXELS
+            if (
+                drawTileCropped(
+                    bitmap = sample.bitmap,
+                    sourceLeft = sample.sourceLeft,
+                    sourceTop = sample.sourceTop,
+                    sourceSize = sample.sourceSize,
+                    left = left, top = top, right = right, bottom = bottom
+                )
             ) {
-                continue
+                drawn++
             }
-
-            drawImage(
-                image = sample.bitmap.asImageBitmap(),
-                srcOffset = IntOffset(sample.sourceLeft, sample.sourceTop),
-                srcSize = IntSize(sample.sourceSize, sample.sourceSize),
-                dstOffset = IntOffset(left.roundToInt(), top.roundToInt()),
-                // Overdraw by a pixel: adjacent tiles are positioned
-                // independently and rounding leaves hairline seams otherwise.
-                dstSize = IntSize(width + 1, height + 1)
-            )
-            drawn++
         }
     }
     return drawn

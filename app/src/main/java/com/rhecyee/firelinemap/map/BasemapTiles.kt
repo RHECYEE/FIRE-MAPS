@@ -330,6 +330,7 @@ class BasemapTileCache(context: Context) {
         }
         return "${tiles.size} held · $flight fetching · $waiting waiting" +
             (lastLevel?.let { " · level $it" } ?: "") +
+            (lastRescue.takeIf { it > 0 }?.let { " · rescued $it" } ?: "") +
             (lastFailure?.let { " · DRAW FAILED: $it" } ?: "")
     }
 
@@ -340,6 +341,10 @@ class BasemapTileCache(context: Context) {
     /** Set when a terrain draw threw, so a silent failure is not silent. */
     @Volatile
     var lastFailure: String? = null
+
+    /** Tiles the last-resort pass had to fall back on, if any. */
+    @Volatile
+    var lastRescue: Int = 0
 
     /**
      * Levels at or below this are never evicted.
