@@ -211,29 +211,51 @@ const TRACK_COLOURS = [
 ];
 
 /**
- * Draws a track, with the stretches nothing observed drawn as gaps.
+ * How much the map is claiming to know, drawn so it can be read at a glance.
  *
- * A solid line says the receiver followed this ground. Across a suspension it
- * did not, and a straight line between two fixes an hour apart looks exactly
- * like one that was followed -- so those are dashed and paler. The distinction
- * is invisible on a map unless it is drawn, and it is the difference between a
- * record and a guess.
+ * Solid   -- recorded. A receiver followed this ground and reported it.
+ * Dotted  -- inferred. Only the ends are real; the phone was asleep between
+ *            them and nothing observed the middle.
+ * Dashed  -- imported or hand edited. Somebody else's word for it.
+ *
+ * The distinction is invisible unless it is drawn, and it decides how much
+ * weight a division supervisor should put on a route without opening a menu
+ * or reading metadata. It is also what makes deduplication deterministic:
+ * recorded geometry always supersedes inferred geometry, so when a real track
+ * turns up for a stretch that was only inferred, there is a rule rather than
+ * a judgement.
  */
+const LINE = {
+    recorded: { dash: [], width: 4, alpha: 1 },
+    inferred: { dash: [2, 7], width: 4, alpha: 0.85 },
+    imported: { dash: [11, 7], width: 3, alpha: 0.9 }
+};
+
+/** What a whole track is, before its individual legs are looked at. */
+function trackQuality(track) {
+    if (track && track.source === 'imported') return 'imported';
+    return 'recorded';
+}
+
 function drawTracks() {
     tracks.forEach((track, index) => {
         if (!track.points || track.points.length < 2) return;
         const colour = TRACK_COLOURS[index % TRACK_COLOURS.length];
+        const base = trackQuality(track);
         ctx.lineJoin = 'round';
         ctx.lineCap = 'round';
 
         for (let i = 0; i < track.points.length - 1; i++) {
             const from = track.points[i];
             const to = track.points[i + 1];
-            const inferred = isGap(from, to);
+            // A gap inside an otherwise recorded track is inferred, whatever
+            // the rest of the track is. That is the hybrid case, and it is the
+            // common one on a phone that suspends.
+            const style = LINE[isGap(from, to) ? 'inferred' : base];
             ctx.strokeStyle = colour;
-            ctx.globalAlpha = inferred ? 0.5 : 1;
-            ctx.lineWidth = inferred ? 3 : 4;
-            ctx.setLineDash(inferred ? [9, 8] : []);
+            ctx.globalAlpha = style.alpha;
+            ctx.lineWidth = style.width;
+            ctx.setLineDash(style.dash);
             ctx.beginPath();
             const a = toScreen(from.latitude, from.longitude);
             const b = toScreen(to.latitude, to.longitude);
@@ -847,6 +869,9 @@ function applyParts(body) {
     (fresh.tracks || []).forEach((track, index) => {
         tracks.push(Object.assign({}, track, {
             id: 'r' + Date.now() + '-t' + index,
+            // Somebody else's word for it, drawn dashed. A recorded track of
+            // your own always outranks it.
+            source: 'imported',
             note: 'Received from ' + (incoming.author || incoming.incidentName)
         }));
     });
@@ -863,6 +888,18 @@ function applyParts(body) {
 }
 
 // ------------------------------------------------------------------ list
+
+/** What the line styles mean. Shown from the list, where tracks are read. */
+function qualityLegend() {
+    return `
+      <h4>Track quality</h4>
+      <p class="note">
+        <b>Solid</b> — recorded. A receiver followed this ground.<br>
+        <b>Dotted</b> — inferred. Only the ends are real; nothing observed the
+        middle, and its distance is an estimate.<br>
+        <b>Dashed</b> — received from somebody else.
+      </p>`;
+}
 
 document.getElementById('listTool').onclick = () => {
     const trackRows = tracks.map((track, index) => {
@@ -896,7 +933,8 @@ document.getElementById('listTool').onclick = () => {
           <div class="meta">${formatted(pin.latitude, pin.longitude)}</div>
         </div>`).join('') || '<p class="note">No pins yet.</p>';
 
-    openSheet(incident, `<h4>Tracks</h4>${trackRows}<h4>Pins</h4>${pinRows}`);
+    openSheet(incident,
+        `<h4>Tracks</h4>${trackRows}${qualityLegend()}<h4>Pins</h4>${pinRows}`);
 
     document.querySelectorAll('[data-track]').forEach(button => {
         button.onclick = () => {
