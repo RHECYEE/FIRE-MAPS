@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Straighten
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -76,6 +77,11 @@ import com.rhecyee.firelinemap.data.MarkerEntity
 import com.rhecyee.firelinemap.resources.ResourceRepository
 import com.rhecyee.firelinemap.resources.ResourceSymbol
 import com.rhecyee.firelinemap.incident.IncidentNaming
+import com.rhecyee.firelinemap.share.ShareIntents
+import com.rhecyee.firelinemap.share.SharePackage
+import com.rhecyee.firelinemap.share.SharePin
+import com.rhecyee.firelinemap.share.SharePoint
+import com.rhecyee.firelinemap.share.ShareTrack
 import com.rhecyee.firelinemap.geopdf.DropPoint
 import com.rhecyee.firelinemap.geopdf.DropPointDetector
 import com.rhecyee.firelinemap.geopdf.DropPointSettings
@@ -86,6 +92,7 @@ import com.rhecyee.firelinemap.geopdf.PdfKind
 import com.rhecyee.firelinemap.geopdf.RemotePdf
 import com.rhecyee.firelinemap.geopdf.UrlProbe
 import com.rhecyee.firelinemap.location.LocationRepository
+import com.rhecyee.firelinemap.location.TrackGeometry
 import com.rhecyee.firelinemap.location.TrackRecordingState
 import com.rhecyee.firelinemap.medical.MedicalReport
 import com.rhecyee.firelinemap.medical.MedicalRepository
@@ -558,9 +565,49 @@ fun FirelineApp() {
     }
     var inspectingTrack by remember { mutableStateOf<SavedTrack?>(null) }
 
+
     val markers by (activeIncident?.id?.let { app.database.dao().observeMarkers(it) }
         ?: kotlinx.coroutines.flow.flowOf(emptyList()))
         .collectAsState(initial = emptyList())
+
+    /**
+     * The incident's tracks and pins, ready to hand to somebody.
+     *
+     * Everything on the incident rather than a selection. A shift's worth is a
+     * few tens of kilobytes, choosing takes longer than sending, and the thing
+     * that actually goes wrong is sending half of it and not knowing.
+     */
+    fun sharePackage(): SharePackage = SharePackage(
+        incidentName = activeIncident?.name ?: "Fireline Map",
+        createdAt = System.currentTimeMillis(),
+        author = reporterName.ifBlank { null },
+        tracks = trackEntities.filter { !it.isRecording }.mapNotNull { entity ->
+            val points = parseLineString(entity.geometryGeoJson)
+            if (points.size < 2) return@mapNotNull null
+            ShareTrack(
+                id = entity.id,
+                name = entity.name,
+                points = points.map { SharePoint(it.first, it.second) },
+                startedAt = entity.startedAt,
+                endedAt = entity.endedAt,
+                distanceMeters = entity.distanceMeters,
+                activityType = entity.activityType,
+                note = entity.note
+            )
+        },
+        pins = markers.map { marker ->
+            SharePin(
+                id = marker.id,
+                title = marker.title,
+                latitude = marker.latitude,
+                longitude = marker.longitude,
+                symbolId = marker.symbol,
+                note = marker.note,
+                status = marker.status,
+                createdAt = marker.createdAt
+            )
+        }
+    )
 
     // A report opened before the receiver was ready takes the first fix it
     // sees, so nobody has to remember to come back and fill it in.
@@ -1399,6 +1446,21 @@ fun FirelineApp() {
                     }
                 },
                 actions = {
+                    // Sends whatever is on this incident through whatever the
+                    // phone already has -- Bluetooth, a message, email, a
+                    // nearby phone. The file is GPX, so it opens on an iPhone
+                    // too, with nothing of ours installed.
+                    IconButton(onClick = {
+                        touched()
+                        val pkg = sharePackage()
+                        statusMessage = when {
+                            pkg.isEmpty -> "Nothing to send yet — no tracks or pins."
+                            ShareIntents.share(context, pkg) -> null
+                            else -> "Could not prepare the file to send."
+                        }
+                    }) {
+                        Icon(Icons.Default.Share, contentDescription = "Send tracks and pins")
+                    }
                     IconButton(onClick = { showSearch = !showSearch }) {
                         Icon(Icons.Default.Search, contentDescription = "Go to coordinate")
                     }
@@ -1783,27 +1845,14 @@ fun FirelineApp() {
 }
 
 /**
- * Reads a GeoJSON LineString's coordinates.
+ * Reads a stored track's shape.
  *
- * Hand-parsed rather than routed through a JSON library: the shape is fixed,
- * it is written by this app, and org.json is only a stub on the unit test
- * classpath.
+ * Delegates so the reader and the writer cannot drift apart: the service
+ * writes this column, and a track that reads back differently from how it was
+ * written is a track drawn somewhere it was not walked.
  */
-private fun parseLineString(geoJson: String): List<Pair<Double, Double>> {
-    val open = geoJson.indexOf("[[")
-    if (open < 0) return emptyList()
-    val close = geoJson.lastIndexOf("]]")
-    if (close <= open) return emptyList()
-    return Regex("""\[\s*(-?[0-9.eE+-]+)\s*,\s*(-?[0-9.eE+-]+)\s*\]""")
-        .findAll(geoJson.substring(open, close + 2))
-        .mapNotNull { match ->
-            // GeoJSON is longitude first.
-            val longitude = match.groupValues[1].toDoubleOrNull() ?: return@mapNotNull null
-            val latitude = match.groupValues[2].toDoubleOrNull() ?: return@mapNotNull null
-            latitude to longitude
-        }
-        .toList()
-}
+private fun parseLineString(geoJson: String): List<Pair<Double, Double>> =
+    TrackGeometry.readPositions(geoJson)
 
 /** Twenty seconds of no touching and the controls fold away again. */
 

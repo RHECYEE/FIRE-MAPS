@@ -43,6 +43,18 @@
                 <data android:mimeType="application/pdf" />
             </intent-filter>
 
+            <!-- Tracks and pins arriving from somebody else. GPX has no
+                 registered MIME type that senders agree on, so the wildcard
+                 and the octet-stream form are both needed: a file sent from a
+                 message arrives as one and from a file manager as the other. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/gpx+xml" />
+                <data android:mimeType="application/xml" />
+                <data android:mimeType="text/xml" />
+            </intent-filter>
+
             <!-- And accept being opened directly as a PDF viewer. -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
@@ -51,6 +63,21 @@
                 <data android:mimeType="application/pdf" />
             </intent-filter>
         </activity>
+
+        <!--
+            Hands a written file to whatever the operator picks in the share
+            sheet: Bluetooth, a message, email, a nearby phone. The grant is
+            read-only, one file at a time, and expires with the intent.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.shares"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/shared_files" />
+        </provider>
 
         <service
             android:name=".location.TrackRecordingService"

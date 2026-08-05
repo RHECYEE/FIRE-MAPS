@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    What may leave the app through the share sheet.
+
+    Deliberately one directory rather than the whole cache. A share grants
+    another app read access to the path named here, so widening it would hand
+    out imported sheets and the tile cache along with the file the operator
+    meant to send.
+-->
+<paths>
+    <cache-path name="shares" path="shares/" />
+</paths>

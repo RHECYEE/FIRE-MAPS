@@ -337,16 +337,11 @@ class TrackRecordingService : Service() {
     }
 
     private fun traceGeometry(): String =
-        detector.currentTrace.joinToString(
-            prefix = "{\"type\":\"LineString\",\"coordinates\":[",
-            postfix = "]}"
-        ) { "[${it.second},${it.first}]" }
+        TrackGeometry.writePositions(detector.currentTrace)
 
-    private fun geometryOf(points: List<Fix>): String =
-        points.joinToString(
-            prefix = "{\"type\":\"LineString\",\"coordinates\":[",
-            postfix = "]}"
-        ) { "[${it.longitude},${it.latitude}]" }
+    // Times go with the shape. Without them a saved track is a line and
+    // nothing more -- no speed, and no way to answer how long a road takes.
+    private fun geometryOf(points: List<Fix>): String = TrackGeometry.write(points)
 
     private fun createNotificationChannel() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(
