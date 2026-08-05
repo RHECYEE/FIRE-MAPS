@@ -25,8 +25,21 @@ data class TrackDetectionSettings(
     /** Ground speed at or above which the operator counts as moving. ~1.5 mph. */
     val movingSpeedMetersPerSecond: Double = 0.7,
 
-    /** Movement must persist this long before a track opens. */
-    val startSustainedMillis: Long = 30_000,
+    /**
+     * Movement must persist this long before a track opens.
+     *
+     * Ten seconds. Half a minute meant walking off from a rig and looking down
+     * to find nothing recording yet, which reads as the feature being broken --
+     * and the operator then starts one by hand, which is the thing automatic
+     * detection exists to avoid.
+     *
+     * Nothing is lost by being quick here. The track is backdated to when
+     * movement actually began, not to when the threshold expired, and a run
+     * that turns out to be nothing is dropped at the other end by the minimum
+     * distance and duration. The real guard against a parked receiver's drift
+     * is [noiseFloorMeters] over [movementWindowMillis], which is untouched.
+     */
+    val startSustainedMillis: Long = 10_000,
 
     /** Stationary for this long ends the track. */
     val stopThresholdMillis: Long = 300_000,

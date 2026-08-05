@@ -98,10 +98,46 @@ class TrackDetectorTest {
     @Test
     fun briefMovementDoesNotOpenATrack() {
         val detector = detector()
-        // Ten seconds of walking, well under the thirty-second confirmation.
-        walk(detector, 0, seconds = 10, speed = 1.4)
+        // Five seconds of walking. Under the confirmation, and under the noise
+        // floor too -- seven metres is inside what a receiver wanders while
+        // parked, which is the test that does the real work here.
+        walk(detector, 0, seconds = 5, speed = 1.4)
 
         assertFalse(detector.isRecording)
+    }
+
+    /**
+     * Confirmation is ten seconds, not thirty.
+     *
+     * Half a minute meant walking off from a rig, looking down, and finding
+     * nothing recording -- which reads as the feature being broken, and gets
+     * the operator to start one by hand, which is the thing automatic
+     * detection exists to avoid.
+     */
+    @Test
+    fun walkingOffIsPickedUpWithinTenSeconds() {
+        val detector = detector()
+        walk(detector, 0, seconds = 10, speed = 1.4)
+
+        assertTrue("should be recording by ten seconds", detector.isRecording)
+    }
+
+    /**
+     * The quick start must not have been bought by loosening the noise floor.
+     *
+     * Confirming sooner is only safe while a parked receiver's wander is still
+     * rejected on displacement. If this ever fails, a rig sitting at ICP
+     * overnight will record miles it never drove.
+     */
+    @Test
+    fun aQuickerStartStillRefusesAParkedReceiver() {
+        val detector = detector()
+        // Four hours parked, wandering three metres either way -- more drift
+        // than a receiver with a clear sky produces.
+        idle(detector, 0, seconds = 14_400, wanderMeters = 3.0)
+
+        assertFalse(detector.isRecording)
+        assertEquals(0.0, detector.currentDistanceMeters, 0.001)
     }
 
     @Test
@@ -110,7 +146,7 @@ class TrackDetectorTest {
         val events = walk(detector, 100_000, seconds = 120, speed = 1.4)
         val started = events.filterIsInstance<TrackEvent.Started>().first()
 
-        // Movement began at the first moving fix, not thirty seconds later.
+        // Movement began at the first moving fix, not once it was confirmed.
         assertTrue(
             "track opened at ${started.atMillis}",
             started.atMillis <= 100_000 + 10_000
