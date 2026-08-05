@@ -472,6 +472,55 @@ document.getElementById('zoomOut').onclick = () => {
  */
 const live = { recorder: null, points: [], startedAt: 0, wakeLock: null, hiddenAt: 0 };
 
+/**
+ * A recording in progress, written down as it happens.
+ *
+ * This is not a nicety. iOS kills a web app whenever it is backgrounded, and
+ * it does so without warning and without running any code -- so a recording
+ * held only in memory is a recording that ends the moment somebody takes a
+ * phone call. Every fix is written straight to storage, which costs nothing
+ * (a shift is a couple of kilobytes) and means a kill loses at most one
+ * update rather than the whole shift.
+ *
+ * Recovered on the next start rather than resumed silently: the gap between
+ * being killed and being reopened is unobserved travel, and the operator has
+ * to be told that rather than shown a line across it.
+ */
+function saveLive() {
+    if (!live.recorder) { Store.write('live', null); return; }
+    Store.write('live', {
+        startedAt: live.startedAt,
+        points: live.points,
+        savedAt: Date.now()
+    });
+}
+
+function recoverLive() {
+    const held = Store.read('live', null);
+    if (!held || !held.points || held.points.length < 2) {
+        Store.write('live', null);
+        return;
+    }
+    // Kept as a track rather than resumed. Whatever happened between the app
+    // being killed and being opened again was not recorded, and rolling it
+    // into the same track would hide that.
+    const track = {
+        id: 'rec' + held.startedAt,
+        name: 'Travel ' + new Date(held.startedAt).toLocaleString() + ' (recovered)',
+        points: held.points.map(p => ({
+            latitude: p[0], longitude: p[1], timeMillis: p[2] || 0
+        })),
+        note: 'Recovered after the app was closed while recording'
+    };
+    tracks.push(track);
+    saveTracks();
+    Store.write('live', null);
+    banner(
+        'Recovered a recording that was interrupted — ' + track.points.length +
+        ' positions kept.', 'good'
+    );
+}
+
 async function holdScreenAwake() {
     try {
         if ('wakeLock' in navigator) {
@@ -490,6 +539,7 @@ function startRecording() {
     live.recorder = K.recorder(300);
     live.points = [];
     live.startedAt = Date.now();
+    saveLive();
     holdScreenAwake();
     document.getElementById('recordTool').classList.add('rec');
     document.getElementById('recordTool').textContent = 'Stop';
@@ -502,7 +552,10 @@ function onFix() {
         position.latitude, position.longitude, position.at,
         position.accuracy || 10, position.speed == null ? -1 : position.speed
     );
-    live.points.push([position.latitude, position.longitude]);
+    // The time goes in too. Without it a recovered track is a line with no
+    // clock -- no elapsed, no speed, and nothing for the merge readout.
+    live.points.push([position.latitude, position.longitude, position.at]);
+    saveLive();
 }
 
 function stopRecording() {
@@ -514,6 +567,7 @@ function stopRecording() {
 
     const finished = recorder && recorder.finish();
     live.points = [];
+    Store.write('live', null);
     if (!finished) {
         banner('Too short to keep.', 'warn');
         draw();
@@ -892,6 +946,9 @@ function escapeHtml(text) {
 }
 
 // ------------------------------------------------------------------ start
+
+// Before anything else: a recording the app was killed in the middle of.
+recoverLive();
 
 window.addEventListener('resize', resize);
 resize();
