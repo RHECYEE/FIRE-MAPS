@@ -56,7 +56,7 @@ fun ShareSheet(
     onText: () -> Unit,
     onSendFile: () -> Unit,
     onSendFullFile: () -> Unit,
-    onTextAll: (List<String>) -> Unit,
+    onTextPart: (String, Int, Int) -> Unit,
     onCopyPart: (String) -> Unit,
     onPaste: (String) -> Unit,
     onApplyPasted: () -> Unit,
@@ -99,7 +99,7 @@ fun ShareSheet(
                 } else {
                     Send(
                         pkg = pkg,
-                        onTextAll = onTextAll,
+                        onTextPart = onTextPart,
                         onText = onText,
                         onSendFile = onSendFile,
                         onSendFullFile = onSendFullFile,
@@ -116,7 +116,7 @@ fun ShareSheet(
 @Composable
 private fun Send(
     pkg: SharePackage,
-    onTextAll: (List<String>) -> Unit,
+    onTextPart: (String, Int, Int) -> Unit,
     onText: () -> Unit,
     onSendFile: () -> Unit,
     onSendFullFile: () -> Unit,
@@ -130,23 +130,43 @@ private fun Send(
     var nextPart by remember(pkg) { mutableIntStateOf(0) }
     val overBudget = fullBytes > ShareIntents.MESSAGE_BUDGET_BYTES
 
-    Heading("TEXT THE WHOLE INCIDENT")
+    Heading("SEND THE WHOLE INCIDENT")
     Note(
-        "Every pin and every track, as ${parts.size} " +
-            "message${if (parts.size == 1) "" else "s"}. They paste each one into " +
-            "their copy and the whole map redraws. Nothing between here and there " +
-            "can refuse it — no attachment, no file type, no size cap."
+        if (parts.size == 1) {
+            "Every pin and every track, in one message. They paste it into their " +
+                "copy and the whole map redraws. Nothing between here and there can " +
+                "refuse it — no attachment, no file type, no size cap."
+        } else {
+            "Every pin and every track. Too much for one message, so it goes as " +
+                "${parts.size}. They paste each into their copy and the whole map " +
+                "redraws — any order."
+        }
     )
-    Button(onClick = { onTextAll(parts) }, modifier = Modifier.fillMaxWidth()) {
+    Button(
+        onClick = {
+            onTextPart(parts[nextPart], nextPart + 1, parts.size)
+            if (nextPart < parts.lastIndex) nextPart++
+        },
+        modifier = Modifier.fillMaxWidth()
+    ) {
         Text(
-            "TEXT IT ALL — ${parts.size} message${if (parts.size == 1) "" else "s"}",
+            if (parts.size == 1) "SEND IT — one message"
+            else "SEND PART ${nextPart + 1} OF ${parts.size}",
             fontWeight = FontWeight.Bold
         )
     }
+    if (parts.size > 1) {
+        Note(
+            if (nextPart == parts.lastIndex) {
+                "Last one. Send them all — they can be pasted in any order."
+            } else {
+                "Pick who it goes to, then come back for part ${nextPart + 2}."
+            }
+        )
+    }
 
-    // Kept for the cases texting cannot reach: a tablet with no SIM, a
-    // recipient on a different app, or somewhere the operator would rather
-    // paste it themselves.
+    // For a recipient on something the share sheet cannot reach, or an
+    // operator who would rather place it themselves.
     OutlinedButton(
         onClick = {
             onCopyPart(parts[nextPart])

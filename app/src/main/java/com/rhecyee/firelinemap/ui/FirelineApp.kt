@@ -78,7 +78,6 @@ import com.rhecyee.firelinemap.resources.ResourceRepository
 import com.rhecyee.firelinemap.resources.ResourceSymbol
 import com.rhecyee.firelinemap.incident.IncidentNaming
 import com.rhecyee.firelinemap.share.ShareIntents
-import com.rhecyee.firelinemap.share.SmsSender
 import com.rhecyee.firelinemap.share.TextCodec
 import com.rhecyee.firelinemap.share.SharePackage
 import com.rhecyee.firelinemap.share.SharePin
@@ -231,9 +230,6 @@ fun FirelineApp() {
     // so closing it to go and copy the next part does not lose the ones
     // already in, which is exactly what an operator will do.
     var pasted by remember { mutableStateOf(TextCodec.Assembly()) }
-    // A run of texts waiting on permission. Held rather than sent, so the
-    // grant dialog cannot turn into messages nobody confirmed.
-    var textingParts by remember { mutableStateOf<List<String>?>(null) }
     var incidentTallies by remember { mutableStateOf<Map<String, IncidentTally>>(emptyMap()) }
     // Set when the app made an incident by itself, so it can ask for the real
     // name once rather than leaving a placeholder on every medical report.
@@ -288,22 +284,6 @@ fun FirelineApp() {
         // point is what left the panel stuck on "waiting for GPS".
         hasLocationPermission = grants.values.any { it }
         if (hasLocationPermission) locationRepository.start()
-    }
-
-    // Asked for at the moment it is used, never at startup. A map that wants
-    // to send texts before it has drawn anything is a map nobody trusts.
-    val smsPermissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        val parts = textingParts
-        if (!granted) {
-            statusMessage = "Texts not permitted — use COPY PART instead."
-            textingParts = null
-        } else if (parts != null) {
-            // Permission only; the send itself still waits for the
-            // confirmation dialog, which names the number and the count.
-            statusMessage = null
-        }
     }
 
     val speechLauncher = rememberLauncherForActivityResult(
@@ -1381,32 +1361,6 @@ fun FirelineApp() {
         null
     }
 
-    // Only once permission is actually held. Offering a send that cannot
-    // happen is worse than not offering it.
-    overlapAt?.let { report ->
-        TrackOverlapSheet(
-            report = report,
-            onDismiss = { overlapAt = null }
-        )
-    }
-
-    textingParts?.takeIf { SmsSender.hasPermission(context) }?.let { parts ->
-        val pkg = sharing ?: sharePackage()
-        TextSendDialog(
-            pkg = pkg,
-            parts = parts,
-            initialNumber = remember { SmsSender.lastNumber(context) },
-            canSend = SmsSender.hasTelephony(context),
-            onSend = { number ->
-                val outcome = SmsSender.send(context, number, parts)
-                statusMessage = outcome.describe()
-                textingParts = null
-                if (outcome.allSent) sharing = null
-            },
-            onDismiss = { textingParts = null }
-        )
-    }
-
     sharing?.let { pkg ->
         ShareSheet(
             pkg = pkg,
@@ -1427,16 +1381,12 @@ fun FirelineApp() {
                 else "Could not prepare the file to send."
                 sharing = null
             },
-            onTextAll = { parts ->
-                // Permission first, then the confirmation. Neither on its own
-                // is enough: one grants the ability, the other agrees to the
-                // number and the count.
-                if (!SmsSender.hasPermission(context)) {
-                    textingParts = parts
-                    smsPermissionLauncher.launch(android.Manifest.permission.SEND_SMS)
-                } else {
-                    textingParts = parts
-                }
+            onTextPart = { part, index, total ->
+                // Straight to the share sheet, which is where the operator's
+                // own contacts are. No number typed here and no permission to
+                // send anything -- they pick the recipient, every time.
+                statusMessage = if (ShareIntents.textPart(context, pkg, part, index, total)) null
+                else "Nothing on this phone will send a message."
             },
             onCopyPart = { part ->
                 val clipboard =

@@ -37,6 +37,46 @@ object ShareIntents {
     const val MESSAGE_BUDGET_BYTES = 250_000
 
     /**
+     * Puts one encoded part into a message, through the normal share sheet.
+     *
+     * The share sheet is the whole point. It is where the operator's actual
+     * contacts are, one tap each, and it reaches Messages, WhatsApp, Signal
+     * and a nearby phone without this app knowing anything about any of them
+     * -- no phone numbers typed, no permission to send texts, and nothing that
+     * could send a message the operator did not pick a recipient for.
+     *
+     * A readable line goes in front of the payload so whoever receives it
+     * knows what it is and what to do with it. The reader ignores anything
+     * before the marker, so the note costs nothing.
+     */
+    fun textPart(
+        context: Context,
+        pkg: SharePackage,
+        part: String,
+        index: Int,
+        total: Int
+    ): Boolean {
+        val which = if (total > 1) " (part $index of $total)" else ""
+        val instruction = if (total > 1) {
+            "Paste each part into Fireline Map, Share, Receive."
+        } else {
+            "Paste into Fireline Map, Share, Receive."
+        }
+        val body = "${pkg.incidentName} — ${pkg.describe()}$which\n$instruction\n\n$part"
+
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, body)
+            putExtra(Intent.EXTRA_SUBJECT, pkg.incidentName)
+        }
+        val chooser = Intent.createChooser(
+            intent,
+            if (total > 1) "Send part $index of $total" else "Send ${pkg.describe()}"
+        ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+        return runCatching { context.startActivity(chooser); true }.getOrDefault(false)
+    }
+
+    /**
      * Sends the positions as the text of a message.
      *
      * The path that always works. No attachment, so nothing can refuse it on

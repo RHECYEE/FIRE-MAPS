@@ -25,11 +25,17 @@ object TextCodec {
     /**
      * Characters per part.
      *
-     * A text splits into segments of 153 characters and phones reassemble
-     * them, so this is not a hard limit -- it is a judgement about how much
-     * somebody will reliably copy in one go. Around ten segments.
+     * Set high on purpose. A text is split into 153 character segments by the
+     * sending phone and put back together by the receiving one, so a long
+     * message arrives as a single message that can be pasted in a single go --
+     * the splitting is the network's problem, not the operator's.
+     *
+     * So the only reason to break an incident into parts at all is that
+     * carriers do not carry an unbounded message. Three thousand characters is
+     * about twenty segments, which every carrier reassembles, and it puts a
+     * typical incident in one message and a heavy one in two.
      */
-    const val DEFAULT_PART_LENGTH = 1_500
+    const val DEFAULT_PART_LENGTH = 3_000
 
     /**
      * Separators chosen from below the polyline alphabet.
