@@ -15,7 +15,7 @@
  * the division this morning in town.
  */
 
-const SHELL = 'fireline-shell-v3';
+const SHELL = 'fireline-shell-v4';
 const TILES = 'fireline-tiles-v1';
 
 const SHELL_FILES = [

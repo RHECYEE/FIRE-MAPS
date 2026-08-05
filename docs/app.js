@@ -23,7 +23,7 @@
  * is otherwise no way to answer "have you got the fix yet" -- which turns every
  * report of a bug into a guess about whether it is even the same code.
  */
-const BUILD = '0.18.2';
+const BUILD = '0.18.3';
 
 // The Kotlin bundle exports itself under a module object; find it either way.
 const K = (() => {
@@ -226,6 +226,155 @@ function toGeo(screenX, screenY) {
 }
 
 /**
+ * Terrain under and around an open sheet.
+ *
+ * Each tile's north-west and south-east corners are converted back through the
+ * sheet's own transform, so terrain and page share one coordinate system and
+ * stay registered to each other however the view is panned or zoomed. This is
+ * the phone's approach, tile for tile.
+ *
+ * A tile is drawn as an axis-aligned rectangle between those two corners. On a
+ * north-up sheet that is exact; on a rotated one it is slightly sheared, which
+ * at tile size is invisible and is the price of not warping every tile on every
+ * frame. It is context, not the thing being measured -- everything that decides
+ * a position still goes through the sheet.
+ */
+function drawSheetTerrain() {
+    const width = canvas.width / dpr();
+    const height = canvas.height / dpr();
+
+    // All four corners: a sheet is not obliged to be north-up, so two opposite
+    // corners describe a box that need not contain what is on screen.
+    const corners = [
+        toGeo(0, 0), toGeo(width, 0), toGeo(0, height), toGeo(width, height)
+    ].filter(c => isFinite(c.latitude) && isFinite(c.longitude));
+    if (corners.length < 4) return;
+
+    const north = Math.max(...corners.map(c => c.latitude));
+    const south = Math.min(...corners.map(c => c.latitude));
+    const west = Math.min(...corners.map(c => c.longitude));
+    const east = Math.max(...corners.map(c => c.longitude));
+    if (!(north > south) || !(east > west)) return;
+
+    // A zoom that puts roughly one tile pixel on one screen pixel.
+    const middle = (north + south) / 2;
+    const spanMetres = K ? K.distanceMeters(middle, west, middle, east) : 0;
+    if (!(spanMetres > 0)) return;
+    const metresPerPixel = spanMetres / width;
+    const atLatitude = 156543.03392 * Math.cos(middle * Math.PI / 180);
+    let level = Math.round(Math.log2(atLatitude / metresPerPixel));
+    level = Math.max(4, Math.min(15, level));
+
+    // Step coarser rather than give up, so something is always drawn.
+    const count = () => (tileXOf(east, level) - tileXOf(west, level) + 1) *
+        (tileYOf(south, level) - tileYOf(north, level) + 1);
+    while (level > 4 && count() > 120) level--;
+
+    for (let x = tileXOf(west, level); x <= tileXOf(east, level); x++) {
+        for (let y = tileYOf(north, level); y <= tileYOf(south, level); y++) {
+            const image = tile(level, x, y);
+            if (!image || !image.complete || !image.naturalWidth) continue;
+            const topLeft = groundToScreen(tileNorthOf(y, level), tileWestOf(x, level));
+            const bottomRight =
+                groundToScreen(tileNorthOf(y + 1, level), tileWestOf(x + 1, level));
+            if (!topLeft || !bottomRight) continue;
+            const w = bottomRight.x - topLeft.x;
+            const h = bottomRight.y - topLeft.y;
+            if (!(w > 0) || !(h > 0)) continue;
+            if (topLeft.x > width || topLeft.y > height ||
+                bottomRight.x < 0 || bottomRight.y < 0) continue;
+            ctx.drawImage(image, topLeft.x, topLeft.y, Math.ceil(w), Math.ceil(h));
+        }
+    }
+}
+
+/** A position on screen through the sheet, without the on-sheet restriction. */
+function groundToScreen(latitude, longitude) {
+    if (!sheet) return null;
+    const pageX = sheet.frame.pageX(latitude, longitude);
+    const pageY = sheet.frame.pageY(latitude, longitude);
+    if (!isFinite(pageX) || !isFinite(pageY)) return null;
+    return sheetToScreen(pageX / sheet.pageWidth, 1 - pageY / sheet.pageHeight);
+}
+
+const tileXOf = (longitude, zoom) =>
+    Math.floor((longitude + 180) / 360 * Math.pow(2, zoom));
+
+function tileYOf(latitude, zoom) {
+    const radians =
+        Math.max(-85.05112878, Math.min(85.05112878, latitude)) * Math.PI / 180;
+    return Math.floor(
+        (1 - Math.log(Math.tan(radians) + 1 / Math.cos(radians)) / Math.PI) / 2 *
+        Math.pow(2, zoom));
+}
+
+const tileWestOf = (x, zoom) => x / Math.pow(2, zoom) * 360 - 180;
+
+function tileNorthOf(y, zoom) {
+    const n = Math.PI - 2 * Math.PI * y / Math.pow(2, zoom);
+    return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+}
+
+/**
+ * Where the operator is, when they are not on the page.
+ *
+ * An arrow pinned to the edge of the screen pointing at them. Being off the
+ * sheet is the moment it matters most to know which way you are from it, and
+ * the alternative is a dot drawn somewhere nobody can see.
+ */
+function drawOffSheetArrow() {
+    const at = here();
+    if (!at || onSheet(at.latitude, at.longitude)) return;
+    const target = groundToScreen(at.latitude, at.longitude);
+    if (!target) return;
+
+    const width = canvas.width / dpr();
+    const height = canvas.height / dpr();
+    if (target.x > 0 && target.x < width && target.y > 0 && target.y < height) return;
+
+    const margin = 30;
+    const anchor = {
+        x: Math.max(margin, Math.min(width - margin, target.x)),
+        y: Math.max(margin, Math.min(height - margin, target.y))
+    };
+    const angle = Math.atan2(target.y - height / 2, target.x - width / 2);
+
+    ctx.save();
+    ctx.translate(anchor.x, anchor.y);
+    ctx.rotate(angle);
+    ctx.fillStyle = simulated ? '#E65100' : '#2196F3';
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(16, 0);
+    ctx.lineTo(-10, -11);
+    ctx.lineTo(-5, 0);
+    ctx.lineTo(-10, 11);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.font = '700 11px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(0,0,0,0.75)';
+    ctx.fillStyle = '#fff';
+    ctx.strokeText('YOU', anchor.x, anchor.y + 24);
+    ctx.fillText('YOU', anchor.x, anchor.y + 24);
+}
+
+/** Frames the whole page, which is where you want to be when you are lost. */
+function fitSheet() {
+    if (!sheet) return;
+    sheetView.x = 0.5;
+    sheetView.y = 0.5;
+    sheetView.scale = 1;
+    draw();
+}
+
+/**
  * Whether a position is actually on the sheet.
  *
  * The transform does not stop at the frame's edge -- it is an affine, and it
@@ -288,8 +437,11 @@ function screenToSheet(x, y) {
  * way to tell it apart from one.
  */
 function clampSheetView() {
-    sheetView.x = Math.max(-0.25, Math.min(1.25, sheetView.x));
-    sheetView.y = Math.max(-0.25, Math.min(1.25, sheetView.y));
+    // Roomier than the page, because terrain is drawn beyond it now and
+    // panning onto the surrounding ground is a thing worth doing. Still
+    // bounded, so the sheet can never be lost off the edge of the world.
+    sheetView.x = Math.max(-2, Math.min(3, sheetView.x));
+    sheetView.y = Math.max(-2, Math.min(3, sheetView.y));
 }
 
 /** The sheet drawn to fit the view at scale 1, so zoom 1 shows the whole page. */
@@ -368,8 +520,15 @@ function draw() {
     ctx.fillRect(0, 0, width, height);
 
     if (sheet) {
-        // The page itself, in place of the tile map. Everything after this
-        // draws exactly as it does on tiles, because toScreen already knows.
+        // Terrain first, positioned through the sheet's own georeferencing, so
+        // the ground around the page is there rather than a grey void. A sheet
+        // covers a division, not a district, and the moment you pan off it the
+        // screen used to go empty -- which made it hard to tell where the sheet
+        // even was, or to get back to it.
+        drawSheetTerrain();
+
+        // Then the page itself, over the terrain. Everything after this draws
+        // exactly as it does on tiles, because toScreen already knows.
         const size = sheetSize();
         const at = sheetToScreen(0, 0);
         ctx.drawImage(sheet.canvas, at.x, at.y,
@@ -380,6 +539,7 @@ function draw() {
         drawPins();
         drawLandingZone();
         drawMe();
+        drawOffSheetArrow();
         drawLegend();
         return;
     }
@@ -875,7 +1035,7 @@ canvas.addEventListener('pointermove', event => {
         const now = spread();
         if (now > 0 && pinchFrom > 0) {
             if (sheet) {
-                sheetView.scale = Math.max(1, Math.min(12,
+                sheetView.scale = Math.max(0.2, Math.min(12,
                     sheetView.scale * (now / pinchFrom)));
             } else {
                 const next = view.zoom + Math.log2(now / pinchFrom);
@@ -1037,6 +1197,15 @@ document.getElementById('copyCoords').onclick = async () => {
 };
 
 document.getElementById('follow').onclick = () => {
+    // On a sheet you are either on it, in which case centre on yourself, or
+    // off it, in which case the thing you are hunting for is the sheet.
+    const at = here();
+    if (sheet && (!at || !onSheet(at.latitude, at.longitude))) {
+        fitSheet();
+        banner('Showing the whole sheet.', 'good');
+        return;
+    }
+
     view.following = !view.following;
     document.getElementById('follow').classList.toggle('on', view.following);
     if (view.following && position) {
@@ -1052,7 +1221,14 @@ document.getElementById('zoomIn').onclick = () => {
     view.zoom = Math.min(16, view.zoom + 1); draw(); refreshContours();
 };
 document.getElementById('zoomOut').onclick = () => {
-    if (sheet) { sheetView.scale = Math.max(1, sheetView.scale / 1.5); draw(); return; }
+    if (sheet) {
+        // Out past the page, so the ground around it comes into view: that is
+        // how you find where the sheet sits and how you get back to it.
+        sheetView.scale = Math.max(0.2, sheetView.scale / 1.5);
+        clampSheetView();
+        draw();
+        return;
+    }
     view.zoom = Math.max(3, view.zoom - 1); draw(); refreshContours();
 };
 
@@ -2913,7 +3089,8 @@ function showImport() {
     openSheet('Import', `
         <h4>Product sheets</h4>
         ${rows || '<p class="note">Nothing imported on this incident yet.</p>'}
-        ${sheet ? '<button class="wide quiet" id="closeSheetMap">BACK TO THE TERRAIN MAP</button>' : ''}
+        ${sheet ? `<button class="wide" id="fitSheetNow">SHOW THE WHOLE SHEET</button>
+          <button class="wide quiet" id="closeSheetMap">BACK TO THE TERRAIN MAP</button>` : ''}
 
         <h4>From a file</h4>
         <p class="note">The operations or transportation PDF off the briefing.
@@ -3009,6 +3186,12 @@ function showImport() {
             showImport();
         };
     });
+
+    document.getElementById('fitSheetNow') && (
+        document.getElementById('fitSheetNow').onclick = () => {
+            closeSheet();
+            fitSheet();
+        });
 
     document.getElementById('closeSheetMap') && (
         document.getElementById('closeSheetMap').onclick = async () => {
