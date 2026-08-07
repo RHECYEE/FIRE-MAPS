@@ -16,8 +16,8 @@ android {
         targetSdk = 35
         // Bumped per build that goes out, so a phone can answer "which
         // one is this" from its own settings rather than from memory.
-        versionCode = 19
-        versionName = "0.19.0"
+        versionCode = 20
+        versionName = "0.19.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true

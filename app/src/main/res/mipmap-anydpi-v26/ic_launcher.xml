@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The adaptive icon, for launchers that mask it into their own shape.
+
+  The foreground is drawn inside the safe zone rather than to the edges: a
+  round mask crops the outer quarter, and an icon that loses its track to the
+  crop is an icon nobody recognises in a grid.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/launcherBackground" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>

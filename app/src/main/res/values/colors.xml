@@ -2,4 +2,6 @@
 <resources>
     <color name="black">#000000</color>
     <color name="white">#FFFFFF</color>
+    <!-- Behind the adaptive launcher icon: the app's own ground colour. -->
+    <color name="launcherBackground">#0B171F</color>
 </resources>

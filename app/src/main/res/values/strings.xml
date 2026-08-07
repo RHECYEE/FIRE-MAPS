@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Fireline Map</string>
+    <!-- What the head unit's launcher shows under the icon. -->
+    <string name="car_app_name">Fireline</string>
 </resources>
