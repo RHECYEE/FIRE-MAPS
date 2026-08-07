@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  What this app offers a car.
+
+  "template" is the Car App Library, which is the only way a third-party app
+  draws its own map on Android Auto. Declaring it is what makes the app appear
+  in the head unit's launcher at all.
+-->
+<automotiveApp>
+    <uses name="template" />
+</automotiveApp>

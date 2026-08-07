@@ -16,8 +16,8 @@ android {
         targetSdk = 35
         // Bumped per build that goes out, so a phone can answer "which
         // one is this" from its own settings rather than from memory.
-        versionCode = 18
-        versionName = "0.18.0"
+        versionCode = 19
+        versionName = "0.19.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -53,6 +53,11 @@ dependencies {
     ksp("androidx.room:room-compiler:2.6.1")
 
     implementation("com.google.android.gms:play-services-location:21.3.0")
+
+    // Android Auto. The projected artifact is the head-unit host; the base
+    // library is the templates and the drawing surface.
+    implementation("androidx.car.app:app:1.7.0")
+    implementation("androidx.car.app:app-projected:1.7.0")
 
     testImplementation("junit:junit:4.13.2")
 

@@ -14,6 +14,15 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!--
+        Android Auto. The surface permission is what lets the app draw its own
+        map on the head unit rather than being limited to lists and cards; the
+        navigation templates permission is what a map-drawing app is required
+        to hold.
+    -->
+    <uses-permission android:name="androidx.car.app.ACCESS_SURFACE" />
+    <uses-permission android:name="androidx.car.app.NAVIGATION_TEMPLATES" />
+
+    <!--
         largeHeap: a rendered sheet is twenty megabytes of bitmap, terrain
         tiles are a quarter of a megabyte each, and contours are cut from
         elevation grids. The tile cache is bounded, but the default heap on a
@@ -26,6 +35,31 @@
         android:largeHeap="true"
         android:supportsRtl="true"
         android:theme="@style/Theme.FirelineMap">
+
+        <!--
+            What the head unit reads to decide whether this app belongs in its
+            launcher, and at which library level it can be driven.
+        -->
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+        <meta-data
+            android:name="androidx.car.app.minCarApiLevel"
+            android:value="1" />
+
+        <!--
+            The map on the head unit. Exported because the Android Auto host is
+            another process and has to be able to bind to it; the service's own
+            host validator is what decides who may.
+        -->
+        <service
+            android:name=".car.FirelineCarAppService"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="androidx.car.app.CarAppService" />
+                <category android:name="androidx.car.app.category.NAVIGATION" />
+            </intent-filter>
+        </service>
 
         <activity
             android:name=".MainActivity"
