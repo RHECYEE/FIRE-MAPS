@@ -80,7 +80,6 @@ import com.rhecyee.firelinemap.geopdf.MapUrlImporter
 import com.rhecyee.firelinemap.geopdf.PdfKind
 import com.rhecyee.firelinemap.geopdf.RemotePdf
 import com.rhecyee.firelinemap.geopdf.UrlProbe
-import com.rhecyee.firelinemap.location.LocationRepository
 import com.rhecyee.firelinemap.location.TrackRecordingState
 import com.rhecyee.firelinemap.medical.MedicalReport
 import com.rhecyee.firelinemap.medical.MedicalRepository
@@ -131,7 +130,12 @@ fun FirelineApp() {
     var coordinateFormat by remember { mutableStateOf(CoordinateFormat.DDM) }
 
     val trackSettings = remember { TrackSettingsStore(context) }
+    // Optimistic locally so the button responds to the press, then reconciled
+    // against the service, which is the only thing that knows whether it armed
+    // -- and which the Android Auto screen can now arm as well.
+    val armed by TrackRecordingState.armed.collectAsState()
     var watching by remember { mutableStateOf(false) }
+    LaunchedEffect(armed) { watching = armed }
     var stopThreshold by remember { mutableIntStateOf(trackSettings.stopThresholdSeconds) }
     var showTrackSettings by remember { mutableStateOf(false) }
     var showSearch by remember { mutableStateOf(false) }
@@ -223,7 +227,7 @@ fun FirelineApp() {
     // incident. Always rendered and labelled differently from a real fix.
     var simulated by remember { mutableStateOf<Pair<Double, Double>?>(null) }
 
-    val locationRepository = remember { LocationRepository(context) }
+    val locationRepository = app.location
     val gpsLocation by locationRepository.locations.collectAsState(initial = null)
     var hasLocationPermission by remember { mutableStateOf(locationRepository.hasPermission()) }
 
@@ -369,7 +373,17 @@ fun FirelineApp() {
             )
         }
         importedMaps = repository.imported()
-        if (activeMap == null) activeMap = importedMaps.firstOrNull()
+        if (activeMap == null) {
+            val remembered = settings.activeMapId
+            activeMap = importedMaps.firstOrNull { it.id == remembered }
+                ?: importedMaps.firstOrNull()
+        }
+    }
+
+    // Written out so the Android Auto screen opens the same sheet. It runs in
+    // its own process context and cannot see this composition's state.
+    LaunchedEffect(activeMap?.id) {
+        settings.activeMapId = activeMap?.id
     }
 
     // Permission can also be granted from settings while the app is backgrounded.

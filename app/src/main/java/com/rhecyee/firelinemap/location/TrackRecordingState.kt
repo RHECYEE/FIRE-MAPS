@@ -54,6 +54,21 @@ object TrackRecordingState {
     private val _live = MutableStateFlow(LiveTrack())
     val live: StateFlow<LiveTrack> = _live.asStateFlow()
 
+    /**
+     * Whether the service is watching for travel.
+     *
+     * Distinct from [LiveTrack.recording], which is only true once movement has
+     * actually opened a track. Two surfaces can now arm this -- the phone and
+     * the car display -- so the fact has to come from the service rather than
+     * from either screen's own idea of what it last pressed.
+     */
+    private val _armed = MutableStateFlow(false)
+    val armed: StateFlow<Boolean> = _armed.asStateFlow()
+
+    fun setArmed(value: Boolean) {
+        _armed.value = value
+    }
+
     fun update(value: LiveTrack) {
         _live.value = value
     }

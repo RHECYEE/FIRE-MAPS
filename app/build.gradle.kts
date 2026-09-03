@@ -52,6 +52,13 @@ dependencies {
 
     implementation("com.google.android.gms:play-services-location:21.3.0")
 
+    // Android Auto. `app` is the template library the car screen is built from;
+    // `app-projected` is the host-side piece that makes the app discoverable by
+    // Android Auto specifically, as opposed to a built-in Automotive OS head
+    // unit. Without the second one the app builds and does nothing in the car.
+    implementation("androidx.car.app:app:1.7.0")
+    implementation("androidx.car.app:app-projected:1.7.0")
+
     testImplementation("junit:junit:4.13.2")
 
     androidTestImplementation(platform("androidx.compose:compose-bom:2024.12.01"))

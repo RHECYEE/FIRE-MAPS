@@ -8,3 +8,6 @@
 /captures/
 /local.properties
 app/build/
+
+# Kotlin compiler session files
+.kotlin/

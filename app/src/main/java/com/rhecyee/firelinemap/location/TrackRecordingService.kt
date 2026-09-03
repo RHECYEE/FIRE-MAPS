@@ -93,6 +93,7 @@ class TrackRecordingService : Service() {
         }
 
         armed = true
+        TrackRecordingState.setArmed(true)
         detector.settings = settingsStore.settings()
         detector.anchors = (application as FirelineApplication).dropPoints
         startForeground(NOTIFICATION_ID, notification("Watching for travel"))
@@ -110,6 +111,7 @@ class TrackRecordingService : Service() {
 
     private fun disarm() {
         TrackRecordingState.clear()
+        TrackRecordingState.setArmed(false)
         client.removeLocationUpdates(callback)
         armed = false
         stopForeground(STOP_FOREGROUND_REMOVE)

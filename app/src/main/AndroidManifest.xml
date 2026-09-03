@@ -10,9 +10,18 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Android Auto. NAVIGATION_TEMPLATES is what a navigation-category app
+         needs to be allowed to use NavigationTemplate at all; ACCESS_SURFACE is
+         what lets it draw the map onto the car display rather than only filling
+         in a list. Both are install-time, so nothing is prompted for in the car. -->
+    <uses-permission android:name="androidx.car.app.NAVIGATION_TEMPLATES" />
+    <uses-permission android:name="androidx.car.app.ACCESS_SURFACE" />
+
     <application
         android:name=".FirelineApplication"
         android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:label="Fireline Map"
         android:supportsRtl="true"
         android:theme="@style/Theme.FirelineMap">
@@ -46,5 +55,30 @@
             android:name=".location.TrackRecordingService"
             android:exported="false"
             android:foregroundServiceType="location" />
+
+        <!-- Android Auto discovery.
+
+             All three of these have to be present or the app never reaches the
+             car launcher: the descriptor declares that this app drives the
+             display with the Car App Library's templates, the API level tells
+             the host how old a head unit may be and still be offered the app,
+             and the service is what the host actually binds to. A minimum of 1
+             is deliberate: the screen checks at runtime before using anything
+             newer, so an older unit gets the map rather than nothing. -->
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+        <meta-data
+            android:name="androidx.car.app.minCarApiLevel"
+            android:value="1" />
+
+        <service
+            android:name=".car.FirelineCarAppService"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="androidx.car.app.CarAppService" />
+                <category android:name="androidx.car.app.category.NAVIGATION" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>

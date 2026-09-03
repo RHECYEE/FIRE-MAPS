@@ -41,6 +41,18 @@ class AppSettings(context: Context) {
         get() = preferences.getBoolean(KEY_OWNERSHIP, true)
         set(value) = preferences.edit().putBoolean(KEY_OWNERSHIP, value).apply()
 
+    /**
+     * The sheet the operator has open.
+     *
+     * Persisted so the Android Auto screen shows the same map as the phone.
+     * The car display can be brought up with the phone activity long dead, and
+     * a car screen showing terrain but not the incident's sheet would be the
+     * exact failure the car screen exists to avoid.
+     */
+    var activeMapId: String?
+        get() = preferences.getString(KEY_ACTIVE_MAP, null)
+        set(value) = preferences.edit().putString(KEY_ACTIVE_MAP, value).apply()
+
     /** Null when offline; true when the connection is not metered. */
     fun connectionState(): Pair<Boolean, Boolean> {
         val manager = app.getSystemService(ConnectivityManager::class.java)
@@ -67,6 +79,7 @@ class AppSettings(context: Context) {
         private const val KEY_WIFI_ONLY = "auto_download_wifi_only"
         private const val KEY_TOPO = "topography_enabled"
         private const val KEY_OWNERSHIP = "land_ownership_enabled"
+        private const val KEY_ACTIVE_MAP = "active_map_id"
 
         const val MAX_RADIUS_MILES = 50
         val RADIUS_CHOICES = listOf(0, 5, 10, 25, 50)

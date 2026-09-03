@@ -2,10 +2,21 @@ package com.rhecyee.firelinemap
 
 import android.app.Application
 import com.rhecyee.firelinemap.data.FirelineDatabase
+import com.rhecyee.firelinemap.location.LocationRepository
 import com.rhecyee.firelinemap.location.SegmentAnchor
 
 class FirelineApplication : Application() {
     val database: FirelineDatabase by lazy { FirelineDatabase.create(this) }
+
+    /**
+     * The one live-position feed.
+     *
+     * Held here because the phone screen is no longer the only thing that
+     * needs it: the Android Auto screen can be brought up with the activity
+     * never having run this shift. A second repository would mean a second
+     * fused-location subscription draining the same battery for the same fixes.
+     */
+    val location: LocationRepository by lazy { LocationRepository(this) }
 
     /**
      * Drop points read off the active sheet.

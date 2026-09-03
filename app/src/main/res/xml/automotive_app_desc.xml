@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Tells Android Auto that this app drives the car display with the Car App
+  Library's templates. The host reads this descriptor while enumerating
+  installed apps; without it the app is not listed even though the
+  CarAppService below it is declared correctly.
+-->
+<automotiveApp>
+    <uses name="template" />
+</automotiveApp>

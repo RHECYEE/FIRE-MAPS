@@ -15,6 +15,10 @@ interface FirelineDao {
     @Query("SELECT * FROM incidents WHERE isActive = 1 LIMIT 1")
     fun observeActiveIncident(): Flow<IncidentEntity?>
 
+    /** The active incident's id for a one-off read, such as from the car screen. */
+    @Query("SELECT id FROM incidents WHERE isActive = 1 LIMIT 1")
+    suspend fun activeIncidentId(): String?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertIncident(incident: IncidentEntity)
 
