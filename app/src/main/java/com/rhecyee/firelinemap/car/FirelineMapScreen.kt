@@ -16,6 +16,7 @@ import androidx.core.graphics.drawable.IconCompat
 import androidx.lifecycle.lifecycleScope
 import com.rhecyee.firelinemap.FirelineApplication
 import com.rhecyee.firelinemap.R
+import com.rhecyee.firelinemap.car.CarLinkLog
 import com.rhecyee.firelinemap.location.TrackRecordingService
 import com.rhecyee.firelinemap.location.TrackRecordingState
 import kotlinx.coroutines.launch
@@ -36,6 +37,7 @@ class FirelineMapScreen(
     private val application = carContext.applicationContext as FirelineApplication
 
     init {
+        CarLinkLog.record(carContext, "Map screen created")
         renderer.onStateChanged = { invalidate() }
         lifecycleScope.launch {
             // The phone can arm or disarm recording while the car screen is up.

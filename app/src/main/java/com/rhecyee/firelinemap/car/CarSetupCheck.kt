@@ -49,7 +49,11 @@ data class CarSetupFacts(
     val debuggable: Boolean,
     /** Android user the app is installed for. Anything but 0 the car cannot see. */
     val userId: Int,
-    val connectionType: Int?
+    val connectionType: Int?,
+    /** Whether the host has ever bound this app, and what happened when it did. */
+    val hostEverBound: Boolean,
+    val linkEvents: List<String>,
+    val installedBy: String?
 )
 
 private const val CAR_APP_SERVICE_ACTION = "androidx.car.app.CarAppService"
@@ -120,7 +124,17 @@ fun gatherCarSetupFacts(context: Context, connectionType: Int? = null): CarSetup
         otherTemplateApps = byAction.filter { it != context.packageName }.distinct().sorted(),
         debuggable = (application?.flags ?: 0) and ApplicationInfo.FLAG_DEBUGGABLE != 0,
         userId = runCatching { Process.myUserHandle().hashCode() }.getOrDefault(0),
-        connectionType = connectionType
+        connectionType = connectionType,
+        hostEverBound = CarLinkLog.everReached(context),
+        linkEvents = CarLinkLog.events(context),
+        installedBy = runCatching {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                packages.getInstallSourceInfo(context.packageName).installingPackageName
+            } else {
+                @Suppress("DEPRECATION")
+                packages.getInstallerPackageName(context.packageName)
+            }
+        }.getOrNull()
     )
 }
 
@@ -276,6 +290,23 @@ fun interpret(facts: CarSetupFacts): List<CheckLine> {
     )
 
     lines += CheckLine(
+        "Has the car ever opened this app",
+        if (facts.hostEverBound) {
+            facts.linkEvents.take(4).joinToString("\n")
+        } else {
+            "Never. The host has not bound this app once, so it is not being " +
+                "offered in the car at all rather than failing after it is opened."
+        },
+        if (facts.hostEverBound) CheckState.PASS else CheckState.WARN
+    )
+
+    lines += CheckLine(
+        "Installed by",
+        facts.installedBy ?: "Sideloaded (no installing app recorded)",
+        CheckState.INFO
+    )
+
+    lines += CheckLine(
         "Build",
         if (facts.debuggable) {
             "Debug — accepts any host, and needs Unknown sources in Android Auto"
@@ -313,12 +344,19 @@ private fun verdict(facts: CarSetupFacts): String = when {
     facts.userId != 0 ->
         "The app is installed for a secondary profile, which Android Auto never lists. " +
             "Reinstall it for the primary user."
+    facts.hostEverBound ->
+        "Everything this app controls is correct and the car has opened this app " +
+            "before, so discovery works. If it is missing now, it is the launcher " +
+            "list rather than the app: check Android Auto, Customize launcher, and " +
+            "make sure Fireline Map is switched on there."
     else ->
-        "Everything this app controls is correct, so the app is not the reason it is " +
-            "missing. What is left is Android Auto's own list: turn on Unknown sources " +
-            "under Android Auto, Additional settings, Developer settings, then force " +
-            "stop Android Auto so it rescans, and reconnect. Send this report if it is " +
-            "still missing after that."
+        "Everything this app controls is correct and the car has never once bound " +
+            "this app, so it is not being offered in the launcher at all. That is " +
+            "Android Auto's own list, not the build. With Unknown sources already on, " +
+            "the remaining step is Android Auto, Customize launcher: sideloaded apps " +
+            "are listed there switched off, and stay invisible in the car until they " +
+            "are switched on. Force stop Android Auto afterwards so it rescans, then " +
+            "reconnect."
 }
 
 /** The report as text, for pasting into a message. */

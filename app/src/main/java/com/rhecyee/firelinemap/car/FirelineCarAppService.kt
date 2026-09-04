@@ -34,5 +34,24 @@ class FirelineCarAppService : CarAppService() {
                 .build()
         }
 
-    override fun onCreateSession(): Session = FirelineSession()
+    /**
+     * Bound by a host.
+     *
+     * Recorded because it is the one fact that separates "the car never looked
+     * at this app" from "the car looked and something here went wrong", and
+     * neither the phone nor the head unit reports it anywhere.
+     */
+    override fun onCreate() {
+        super.onCreate()
+        CarLinkLog.record(this, "Car host bound the app")
+    }
+
+    override fun onCreateSession(): Session {
+        val host = runCatching { hostInfo }.getOrNull()
+        CarLinkLog.record(
+            this,
+            "Session opened by ${host?.packageName ?: "an unnamed host"}"
+        )
+        return FirelineSession()
+    }
 }

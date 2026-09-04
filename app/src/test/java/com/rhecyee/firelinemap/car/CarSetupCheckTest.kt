@@ -28,7 +28,8 @@ class CarSetupCheckTest {
         applicationIcon: Boolean = true,
         androidAutoInstalled: Boolean = true,
         androidAutoEnabled: Boolean = true,
-        userId: Int = 0
+        userId: Int = 0,
+        hostEverBound: Boolean = false
     ) = CarSetupFacts(
         serviceDeclared = serviceDeclared,
         serviceExported = serviceExported,
@@ -47,7 +48,10 @@ class CarSetupCheckTest {
         otherTemplateApps = emptyList(),
         debuggable = true,
         userId = userId,
-        connectionType = CONNECTION_NOT_CONNECTED
+        connectionType = CONNECTION_NOT_CONNECTED,
+        hostEverBound = hostEverBound,
+        linkEvents = if (hostEverBound) listOf("04 Sep 08:13:02  Car host bound the app") else emptyList(),
+        installedBy = null
     )
 
     private fun verdictOf(facts: CarSetupFacts) =
@@ -57,14 +61,29 @@ class CarSetupCheckTest {
         interpret(facts).first { it.label == label }
 
     @Test
-    fun `a correct build on a phone with the host blames the host list`() {
-        val verdict = verdictOf(facts())
+    fun `a correct build the car has never bound blames the launcher list`() {
+        val verdict = verdictOf(facts(hostEverBound = false))
         assertEquals(CheckState.WARN, verdict.state)
         assertTrue(
-            "should name the setting that is left",
-            verdict.detail.contains("Unknown sources")
+            "should name the list that is left to check",
+            verdict.detail.contains("Customize launcher")
         )
-        assertTrue(verdict.detail.contains("not the reason"))
+        assertTrue(verdict.detail.contains("never once bound"))
+    }
+
+    @Test
+    fun `a car that has opened the app before is told apart from one that never has`() {
+        // Opposite problems: never bound is the launcher list, bound before is
+        // the app being switched off in it or failing after it opens.
+        val never = lineNamed(facts(hostEverBound = false), "Has the car ever opened this app")
+        assertEquals(CheckState.WARN, never.state)
+        assertTrue(never.detail.contains("Never"))
+
+        val bound = lineNamed(facts(hostEverBound = true), "Has the car ever opened this app")
+        assertEquals(CheckState.PASS, bound.state)
+        assertTrue(bound.detail.contains("Car host bound the app"))
+
+        assertTrue(verdictOf(facts(hostEverBound = true)).detail.contains("discovery works"))
     }
 
     @Test

@@ -204,6 +204,10 @@ class CarMapRenderer(
 
     override fun onSurfaceAvailable(surfaceContainer: SurfaceContainer) {
         this.surfaceContainer = surfaceContainer
+        CarLinkLog.record(
+            carContext,
+            "Car surface ${surfaceContainer.width}x${surfaceContainer.height}"
+        )
         startRendering()
     }
 
