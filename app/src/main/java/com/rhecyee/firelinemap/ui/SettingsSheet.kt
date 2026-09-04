@@ -37,6 +37,8 @@ import com.rhecyee.firelinemap.location.TrackSettingsStore
  */
 @Composable
 fun SettingsSheet(
+    incidentName: String,
+    onIncidentName: (String) -> Unit,
     reporterName: String,
     reporterQualification: String,
     onReporterChange: (String, String) -> Unit,
@@ -63,6 +65,24 @@ fun SettingsSheet(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                Heading("INCIDENT")
+                Text(
+                    "Names every track, marker and medical report filed from this " +
+                        "phone. It arrives seeded and is meant to be changed: the " +
+                        "incident you are on is not the one the app was built against.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = incidentName,
+                    onValueChange = onIncidentName,
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("Incident name") },
+                    placeholder = { Text("Burnt Creek 2026") }
+                )
+
+                HorizontalDivider()
                 Heading("WHO IS REPORTING")
                 Text(
                     "Filled into medical reports automatically, so nobody types it " +

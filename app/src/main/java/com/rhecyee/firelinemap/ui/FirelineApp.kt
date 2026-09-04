@@ -78,6 +78,7 @@ import com.rhecyee.firelinemap.geopdf.ImportedMap
 import com.rhecyee.firelinemap.geopdf.MapDocumentRepository
 import com.rhecyee.firelinemap.geopdf.MapUrlImporter
 import com.rhecyee.firelinemap.geopdf.PdfKind
+import com.rhecyee.firelinemap.geopdf.TerrainSheet
 import com.rhecyee.firelinemap.geopdf.RemotePdf
 import com.rhecyee.firelinemap.geopdf.UrlProbe
 import com.rhecyee.firelinemap.location.TrackRecordingState
@@ -177,6 +178,8 @@ fun FirelineApp() {
     var showLayers by remember { mutableStateOf(false) }
     var showLegend by remember { mutableStateOf(true) }
     val settings = remember { AppSettings(context) }
+    val rememberedMapId = remember { settings.activeMapId }
+    var mapsLoaded by remember { mutableStateOf(false) }
     var topographyOn by remember { mutableStateOf(settings.topographyEnabled) }
     var landOwnershipOn by remember { mutableStateOf(settings.landOwnershipEnabled) }
     var autoRadius by remember { mutableIntStateOf(settings.autoDownloadRadiusMiles) }
@@ -373,17 +376,20 @@ fun FirelineApp() {
             )
         }
         importedMaps = repository.imported()
-        if (activeMap == null) {
-            val remembered = settings.activeMapId
-            activeMap = importedMaps.firstOrNull { it.id == remembered }
+        if (activeMap == null && rememberedMapId != AppSettings.TERRAIN_ONLY) {
+            activeMap = importedMaps.firstOrNull { it.id == rememberedMapId }
                 ?: importedMaps.firstOrNull()
         }
+        mapsLoaded = true
     }
 
     // Written out so the Android Auto screen opens the same sheet. It runs in
-    // its own process context and cannot see this composition's state.
-    LaunchedEffect(activeMap?.id) {
-        settings.activeMapId = activeMap?.id
+    // its own process context and cannot see this composition's state. Held
+    // back until the sheets are listed, so the choice being restored is not
+    // overwritten by the empty state it is being restored into.
+    LaunchedEffect(activeMap?.id, mapsLoaded) {
+        if (!mapsLoaded) return@LaunchedEffect
+        settings.activeMapId = activeMap?.id ?: AppSettings.TERRAIN_ONLY
     }
 
     // Permission can also be granted from settings while the app is backgrounded.
@@ -445,6 +451,35 @@ fun FirelineApp() {
 
     val displayLatitude = simulated?.first ?: gpsLocation?.latitude
     val displayLongitude = simulated?.second ?: gpsLocation?.longitude
+
+    // Terrain as the map in its own right, rather than as fill around an
+    // imported sheet. The anchor is held still between rebuilds: the canvas
+    // resets pan and zoom whenever the sheet identity changes, and rebuilding
+    // on every fix would drag the view out from under whoever is reading it.
+    var terrainAnchor by remember { mutableStateOf<Pair<Double, Double>?>(null) }
+    LaunchedEffect(displayLatitude, displayLongitude) {
+        val lat = displayLatitude ?: return@LaunchedEffect
+        val lon = displayLongitude ?: return@LaunchedEffect
+        val anchor = terrainAnchor
+        if (anchor == null ||
+            TerrainSheet.needsReanchor(anchor.first, anchor.second, lat, lon)
+        ) {
+            terrainAnchor = lat to lon
+        }
+    }
+    val terrainMap = remember(terrainAnchor) {
+        terrainAnchor?.let { TerrainSheet.map(it.first, it.second) }
+    }
+    val terrainPage = remember { TerrainSheet.blankPage() }
+
+    // Only stands in when nothing is open. A plain PDF is still shown: the
+    // operator chose to look at it, and swapping it for terrain would take away
+    // the document rather than add a map.
+    val onTerrain = activeMap == null && terrainMap != null
+    val canvasMap = if (onTerrain) terrainMap else activeMap
+    val canvasPage = if (onTerrain) terrainPage else bitmap
+    val canvasPageWidth = if (onTerrain) TerrainSheet.PAGE_POINTS else pageWidth
+    val canvasPageHeight = if (onTerrain) TerrainSheet.PAGE_POINTS else pageHeight
     val trackEntities by (activeIncident?.id?.let { app.database.dao().observeTracks(it) }
         ?: kotlinx.coroutines.flow.flowOf(emptyList()))
         .collectAsState(initial = emptyList())
@@ -761,6 +796,7 @@ fun FirelineApp() {
             importedMaps = importedMaps,
             activeMapId = activeMap?.id,
             onSelectMap = { activeMap = it; showLayers = false },
+            onSelectTerrain = { activeMap = null; showLayers = false },
             topographyOn = topographyOn,
             onToggleTopography = { settings.topographyEnabled = it; topographyOn = it },
             landOwnershipOn = landOwnershipOn,
@@ -824,6 +860,14 @@ fun FirelineApp() {
             cachedTerrain = withContext(Dispatchers.IO) { basemap.cachedBytes() }
         }
         SettingsSheet(
+            incidentName = activeIncident?.name.orEmpty(),
+            onIncidentName = { typed ->
+                val incident = activeIncident ?: return@SettingsSheet
+                // Written straight through rather than on a Save button. There
+                // is no second step to forget with gloves on, and the name is
+                // read back off the database wherever it is used.
+                scope.launch { app.database.dao().upsertIncident(incident.copy(name = typed)) }
+            },
             reporterName = reporterName,
             reporterQualification = reporterQualification,
             onReporterChange = { name, qualification ->
@@ -1022,7 +1066,9 @@ fun FirelineApp() {
                 }
             )
 
-            if (chromeVisible && !showSearch) MapStatusRow(activeMap, statusMessage)
+            if (chromeVisible && !showSearch) {
+                MapStatusRow(activeMap, statusMessage, onTerrain)
+            }
 
             if (chromeVisible && !showSearch && simMode && simulated == null) {
                 SimulatedBanner("SIM MODE — tap the map to set a test position")
@@ -1078,15 +1124,15 @@ fun FirelineApp() {
 
             Box(modifier = Modifier.weight(1f)) {
                 MapCanvas(
-                    map = activeMap,
-                    bitmap = bitmap,
-                pageWidthPoints = pageWidth,
-                pageHeightPoints = pageHeight,
+                    map = canvasMap,
+                    bitmap = canvasPage,
+                pageWidthPoints = canvasPageWidth,
+                pageHeightPoints = canvasPageHeight,
                 latitude = displayLatitude,
                 longitude = displayLongitude,
                 positionIsSimulated = simulated != null,
                 dropPoints = if (segmentAtDropPoints) dropPoints else emptyList(),
-                basemap = basemap,
+                basemap = if (topographyOn) basemap else null,
                 measurePoints = measurePoints,
                 measureMode = measureMode,
                 markers = markers,
@@ -1345,13 +1391,17 @@ private fun parseLineString(geoJson: String): List<Pair<Double, Double>> {
 private const val CHROME_TIMEOUT_MILLIS = 20_000L
 
 @Composable
-private fun MapStatusRow(map: ImportedMap?, message: String?) {
+private fun MapStatusRow(map: ImportedMap?, message: String?, onTerrain: Boolean = false) {
     val text: String
     val colour: Color
     when {
         message != null -> {
             text = message
             colour = Color(0xFFB3261E)
+        }
+        onTerrain -> {
+            text = "Terrain — ${BasemapTileCache.ATTRIBUTION} · import a GeoPDF for the sheet"
+            colour = Color(0xFF33691E)
         }
         map == null -> {
             text = "No map loaded — import from a file or a URL"

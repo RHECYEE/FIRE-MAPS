@@ -49,6 +49,8 @@ class AppSettings(context: Context) {
      * a car screen showing terrain but not the incident's sheet would be the
      * exact failure the car screen exists to avoid.
      */
+    val terrainOnly: Boolean get() = activeMapId == TERRAIN_ONLY
+
     var activeMapId: String?
         get() = preferences.getString(KEY_ACTIVE_MAP, null)
         set(value) = preferences.edit().putString(KEY_ACTIVE_MAP, value).apply()
@@ -80,6 +82,16 @@ class AppSettings(context: Context) {
         private const val KEY_TOPO = "topography_enabled"
         private const val KEY_OWNERSHIP = "land_ownership_enabled"
         private const val KEY_ACTIVE_MAP = "active_map_id"
+
+        /**
+         * Stored in place of a sheet id when terrain is the map on purpose.
+         *
+         * Distinct from having stored nothing. Nothing means the app has never
+         * chosen, and the most recent import wins; this means the operator
+         * chose terrain over the sheets they have, and it has to survive being
+         * closed or the choice would be undone by the next launch.
+         */
+        const val TERRAIN_ONLY = "terrain-only"
 
         const val MAX_RADIUS_MILES = 50
         val RADIUS_CHOICES = listOf(0, 5, 10, 25, 50)

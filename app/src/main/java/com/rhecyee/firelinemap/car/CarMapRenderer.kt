@@ -159,6 +159,10 @@ class CarMapRenderer(
     private suspend fun loadSheet(wanted: String?) {
         val repository = MapDocumentRepository(carContext)
         val loaded = withContext(Dispatchers.IO) {
+            // Terrain chosen deliberately on the phone. The car draws terrain
+            // regardless, so this is simply no sheet on top of it rather than a
+            // reason to go and pick one the operator has just set aside.
+            if (wanted == AppSettings.TERRAIN_ONLY) return@withContext null
             val available = repository.imported()
             // Falls back to the most recent import when the remembered sheet
             // has since been deleted off the phone.
@@ -591,7 +595,7 @@ class CarMapRenderer(
         val onSheet = sheetFrame != null && fix != null &&
             sheetFrame?.containsGeo(fix.latitude, fix.longitude) == true
         parts += when {
-            sheetName == null -> "No sheet imported"
+            sheetName == null -> "Terrain"
             sheetFrame == null -> "${sheetName} (no georeferencing)"
             onSheet -> sheetName.orEmpty()
             else -> "Off ${sheetName}"

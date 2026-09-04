@@ -13,13 +13,32 @@ This initial Android Studio project includes:
 - Degrees/decimal-minutes and decimal-degree formats
 - Tap-to-copy coordinates
 - GPS accuracy and elevation display
+- USGS topographic base map, with or without an incident sheet
+- Renameable incident
 - Field-sized Measure, Drop, Resources, and Draw controls
 - Foreground travel-recording service
 - Persistent track records with GeoJSON line geometry
 - Process-restart-compatible foreground service declaration
 - Android Auto map screen sharing the phone's sheet, position and track
 
-The map canvas is currently a deliberate placeholder. GeoPDF metadata parsing, raster tiling, MapLibre display, measurement geometry, markers, drawings, photos, and incident package export are the next implementation increments.
+## The base map
+
+Terrain is a map in its own right, not only the fill around an imported sheet.
+With no GeoPDF open the app draws USGS topo around the operator and places
+position, tracks, markers and measurements on it; an incident sheet drops on top
+when one is imported. **Layers → Terrain only** selects it deliberately when
+sheets are present, and the choice survives a restart.
+
+This works by handing the canvas a synthetic georeferenced sheet
+(`geopdf/TerrainSheet.kt`) covering 40 km of ground around the operator, with a
+blank page behind it. Everything downstream already places things by converting
+through a frame, so nothing needed a second rendering path. Before this the
+canvas returned "NO MAP IMPORTED" and drew nothing at all without a GeoPDF,
+terrain included.
+
+The topography switch in Layers now actually stops the terrain drawing. It
+previously only gated the background pre-download, so turning it off left the
+tiles on screen.
 
 ## Open in Android Studio
 
@@ -89,6 +108,7 @@ This is an early engineering prototype, not a field-ready navigation or life-saf
 ## Architecture
 
 - `car/`: Android Auto service, map screen, and surface renderer
+- `geopdf/`: GeoPDF reading, and the synthetic terrain sheet
 - `data/`: Room entities, DAO, and database
 - `location/`: live location and foreground track recording
 - `ui/`: Compose operational screen and theme

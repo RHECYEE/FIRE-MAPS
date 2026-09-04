@@ -46,6 +46,7 @@ fun LayersSheet(
     importedMaps: List<com.rhecyee.firelinemap.geopdf.ImportedMap>,
     activeMapId: String?,
     onSelectMap: (com.rhecyee.firelinemap.geopdf.ImportedMap) -> Unit,
+    onSelectTerrain: () -> Unit,
     topographyOn: Boolean,
     onToggleTopography: (Boolean) -> Unit,
     landOwnershipOn: Boolean,
@@ -70,9 +71,48 @@ fun LayersSheet(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 SectionHeading("PRODUCT MAPS")
+
+                // Terrain is a map on its own, not only the fill around a
+                // sheet, so it has to be selectable even when sheets exist --
+                // the drive in and the search are often better read off topo
+                // than off an ops map that stops at the neatline.
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onSelectTerrain() }
+                        .padding(vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        if (activeMapId == null) "\u25cf" else "\u25cb",
+                        color = if (activeMapId == null) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        fontWeight = FontWeight.Black
+                    )
+                    Column(Modifier.padding(start = 10.dp)) {
+                        Text(
+                            "Terrain only",
+                            fontWeight = if (activeMapId == null) {
+                                FontWeight.Bold
+                            } else {
+                                FontWeight.Normal
+                            },
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Text(
+                            "USGS topo around you \u2014 no incident sheet",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFF2E7D32)
+                        )
+                    }
+                }
+
                 if (importedMaps.isEmpty()) {
                     Text(
-                        "No maps imported yet.",
+                        "No incident maps imported yet.",
                         style = MaterialTheme.typography.bodySmall
                     )
                 } else {
