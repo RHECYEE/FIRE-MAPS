@@ -300,10 +300,21 @@ fun interpret(facts: CarSetupFacts): List<CheckLine> {
         if (facts.hostEverBound) CheckState.PASS else CheckState.WARN
     )
 
+    // Android Auto filters its launcher on who installed the app, not only on
+    // what the app declares. A correctly declared app installed by the plain
+    // package installer is a reported cause of exactly this: present, valid,
+    // and absent from the launcher.
     lines += CheckLine(
         "Installed by",
-        facts.installedBy ?: "Sideloaded (no installing app recorded)",
-        CheckState.INFO
+        when (facts.installedBy) {
+            PLAY_STORE -> "The Play Store"
+            null -> "Nothing recorded an installer. Android Auto is known to hide " +
+                "apps installed this way even when everything else is right."
+            else -> "$PLAY_STORE is what Android Auto expects; this was installed by " +
+                "${facts.installedBy}. That alone is a known reason for a correctly " +
+                "declared app to stay out of the launcher."
+        },
+        if (facts.installedBy == PLAY_STORE) CheckState.PASS else CheckState.WARN
     )
 
     lines += CheckLine(
@@ -349,14 +360,29 @@ private fun verdict(facts: CarSetupFacts): String = when {
             "before, so discovery works. If it is missing now, it is the launcher " +
             "list rather than the app: check Android Auto, Customize launcher, and " +
             "make sure Fireline Map is switched on there."
-    else ->
-        "Everything this app controls is correct and the car has never once bound " +
-            "this app, so it is not being offered in the launcher at all. That is " +
-            "Android Auto's own list, not the build. With Unknown sources already on, " +
-            "the remaining step is Android Auto, Customize launcher: sideloaded apps " +
-            "are listed there switched off, and stay invisible in the car until they " +
-            "are switched on. Force stop Android Auto afterwards so it rescans, then " +
-            "reconnect."
+    else -> buildString {
+        append(
+            "Everything this app controls is correct and the car has never once bound " +
+                "it, so Android Auto is not offering it at all. Nothing in the build " +
+                "will change that. In order: "
+        )
+        append(
+            "(1) In Android Auto developer settings set Application Mode back to " +
+                "Release and turn Test harness mode off. Both are non-default, and " +
+                "Developer mode runs a different build of Android Auto. "
+        )
+        append("(2) Check Android Auto, Customize launcher, and switch this app on. ")
+        if (facts.installedBy != PLAY_STORE) {
+            append(
+                "(3) Android Auto also filters on who installed the app. This one was " +
+                    "installed by ${facts.installedBy ?: "no recorded installer"}, and " +
+                    "a correctly declared app installed that way is a reported cause of " +
+                    "being hidden. Reinstalling with the installer set to $PLAY_STORE " +
+                    "is the known fix. "
+            )
+        }
+        append("Force stop Android Auto after each change so it rescans, then reconnect.")
+    }
 }
 
 /** The report as text, for pasting into a message. */
@@ -373,6 +399,9 @@ fun List<CheckLine>.asReport(header: String): String = buildString {
         appendLine("[$mark] ${line.label}: ${line.detail}")
     }
 }
+
+/** The installer Android Auto expects to see. */
+private const val PLAY_STORE = "com.android.vending"
 
 const val CONNECTION_NOT_CONNECTED = 0
 const val CONNECTION_NATIVE = 1

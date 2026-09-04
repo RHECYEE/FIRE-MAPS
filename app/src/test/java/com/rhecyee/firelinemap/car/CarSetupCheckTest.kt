@@ -29,7 +29,8 @@ class CarSetupCheckTest {
         androidAutoInstalled: Boolean = true,
         androidAutoEnabled: Boolean = true,
         userId: Int = 0,
-        hostEverBound: Boolean = false
+        hostEverBound: Boolean = false,
+        installedBy: String? = "com.android.vending"
     ) = CarSetupFacts(
         serviceDeclared = serviceDeclared,
         serviceExported = serviceExported,
@@ -51,7 +52,7 @@ class CarSetupCheckTest {
         connectionType = CONNECTION_NOT_CONNECTED,
         hostEverBound = hostEverBound,
         linkEvents = if (hostEverBound) listOf("04 Sep 08:13:02  Car host bound the app") else emptyList(),
-        installedBy = null
+        installedBy = installedBy
     )
 
     private fun verdictOf(facts: CarSetupFacts) =
@@ -106,6 +107,34 @@ class CarSetupCheckTest {
                 !verdict.detail.contains("Unknown sources")
             )
         }
+    }
+
+    @Test
+    fun `an installer other than the play store is called out`() {
+        // Android Auto filters its launcher on the installing package, so a
+        // correct build can still be hidden. The report has to say so, or the
+        // only remaining lead goes unmentioned.
+        val sideloaded = facts(installedBy = "com.google.android.packageinstaller")
+        val line = lineNamed(sideloaded, "Installed by")
+        assertEquals(CheckState.WARN, line.state)
+        assertTrue(line.detail.contains("com.android.vending"))
+
+        assertTrue(verdictOf(sideloaded).detail.contains("who installed the app"))
+
+        val fromPlay = facts(installedBy = "com.android.vending")
+        assertEquals(CheckState.PASS, lineNamed(fromPlay, "Installed by").state)
+        assertTrue(
+            "a Play install should not be blamed",
+            !verdictOf(fromPlay).detail.contains("who installed the app")
+        )
+    }
+
+    @Test
+    fun `the ordered steps lead with the non-default developer settings`() {
+        val detail = verdictOf(facts()).detail
+        assertTrue(detail.contains("Application Mode"))
+        assertTrue(detail.contains("Test harness"))
+        assertTrue(detail.indexOf("Application Mode") < detail.indexOf("Customize launcher"))
     }
 
     @Test
