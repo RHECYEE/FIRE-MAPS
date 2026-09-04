@@ -17,6 +17,18 @@
     <uses-permission android:name="androidx.car.app.NAVIGATION_TEMPLATES" />
     <uses-permission android:name="androidx.car.app.ACCESS_SURFACE" />
 
+    <!-- Package visibility. Android 11 and later hide other installed apps
+         unless they are declared here, so without this the in-app Android Auto
+         check would report the host as not installed on a phone that has it,
+         which is the one answer worse than no answer at all. -->
+    <queries>
+        <package android:name="com.google.android.projection.gearhead" />
+        <package android:name="com.google.android.apps.automotive.templates.host" />
+        <intent>
+            <action android:name="androidx.car.app.CarAppService" />
+        </intent>
+    </queries>
+
     <application
         android:name=".FirelineApplication"
         android:allowBackup="true"

@@ -53,6 +53,7 @@ fun SettingsSheet(
     onWifiOnly: (Boolean) -> Unit,
     cachedTerrainBytes: Long,
     onClearTerrain: () -> Unit,
+    onCarCheck: () -> Unit,
     onDismiss: () -> Unit
 ) {
     AlertDialog(
@@ -161,6 +162,25 @@ fun SettingsSheet(
                         style = MaterialTheme.typography.labelMedium
                     )
                 }
+
+                HorizontalDivider()
+                Heading("ANDROID AUTO")
+                Text(
+                    "An app the car host rejects is simply not listed, with nothing " +
+                        "reported anywhere to say why. This runs the checks over that, " +
+                        "on this phone, and says which side the problem is on.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    "RUN THE CHECK",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onCarCheck() }
+                        .padding(vertical = 8.dp),
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Black
+                )
 
                 HorizontalDivider()
                 Heading("EXPERIMENTAL")

@@ -139,6 +139,7 @@ fun FirelineApp() {
     LaunchedEffect(armed) { watching = armed }
     var stopThreshold by remember { mutableIntStateOf(trackSettings.stopThresholdSeconds) }
     var showTrackSettings by remember { mutableStateOf(false) }
+    var showCarCheck by remember { mutableStateOf(false) }
     var showSearch by remember { mutableStateOf(false) }
 
     // The map runs full screen until it is touched. Everything else is a
@@ -895,6 +896,7 @@ fun FirelineApp() {
             wifiOnly = wifiOnly,
             onWifiOnly = { settings.autoDownloadWifiOnly = it; wifiOnly = it },
             cachedTerrainBytes = cachedTerrain,
+            onCarCheck = { showCarCheck = true },
             onClearTerrain = {
                 scope.launch {
                     withContext(Dispatchers.IO) { basemap.clear() }
@@ -902,6 +904,20 @@ fun FirelineApp() {
                 }
             },
             onDismiss = { showTrackSettings = false }
+        )
+    }
+
+    if (showCarCheck) {
+        CarCheckDialog(
+            onDismiss = { showCarCheck = false },
+            onCopy = { report ->
+                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE)
+                    as ClipboardManager
+                clipboard.setPrimaryClip(
+                    ClipData.newPlainText("Android Auto check", report)
+                )
+                statusMessage = "Report copied — paste it into a message."
+            }
         )
     }
 
