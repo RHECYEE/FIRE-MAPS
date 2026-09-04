@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -43,7 +44,11 @@ import com.rhecyee.firelinemap.car.interpret
  * sent to somebody.
  */
 @Composable
-fun CarCheckDialog(onDismiss: () -> Unit, onCopy: (String) -> Unit) {
+fun CarCheckDialog(
+    onDismiss: () -> Unit,
+    onCopy: (String) -> Unit,
+    onOpenAndroidAuto: () -> Unit
+) {
     val context = LocalContext.current
 
     // Live, because whether the phone can see a car right now is half the
@@ -71,6 +76,28 @@ fun CarCheckDialog(onDismiss: () -> Unit, onCopy: (String) -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(9.dp)
             ) {
                 lines.forEach { line -> CheckRow(line) }
+
+                // The two settings worth trying first are four screens deep in
+                // another app. This is as close as anything can get the
+                // operator to them: the installer name cannot be rewritten from
+                // here, so opening the right app is the whole of what is left.
+                Text(
+                    "OPEN ANDROID AUTO SETTINGS",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onOpenAndroidAuto() }
+                        .padding(top = 6.dp, bottom = 4.dp),
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Black,
+                    style = MaterialTheme.typography.labelMedium
+                )
+                Text(
+                    "Then: three dots, Developer settings. Set Application Mode to " +
+                        "Release and turn Test harness mode off, then force stop " +
+                        "Android Auto and reconnect.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         },
         confirmButton = {

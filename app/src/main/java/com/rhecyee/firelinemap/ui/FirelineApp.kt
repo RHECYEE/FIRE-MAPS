@@ -917,6 +917,26 @@ fun FirelineApp() {
                     ClipData.newPlainText("Android Auto check", report)
                 )
                 statusMessage = "Report copied — paste it into a message."
+            },
+            onOpenAndroidAuto = {
+                // Its own launcher entry lands on the settings screen the
+                // developer options hang off. App details is the fallback for
+                // phones that do not expose one.
+                val direct = context.packageManager
+                    .getLaunchIntentForPackage("com.google.android.projection.gearhead")
+                val details = Intent(
+                    android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:com.google.android.projection.gearhead")
+                )
+                val opened = listOfNotNull(direct, details).any { intent ->
+                    runCatching {
+                        context.startActivity(
+                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                    }.isSuccess
+                }
+                if (!opened) statusMessage = "Android Auto could not be opened."
+                showCarCheck = false
             }
         )
     }
