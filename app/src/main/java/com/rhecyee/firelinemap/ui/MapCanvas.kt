@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculateCentroidSize
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
@@ -35,6 +36,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.isUnspecified
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
@@ -192,7 +194,7 @@ fun MapCanvas(
          * which read as the map teleporting. Being outside is allowed; going
          * further out is not, and moving back in always is.
          */
-        fun clamp(candidate: Offset, atScale: Float): Offset {
+        fun clamp(candidate: Offset, atScale: Float, from: Offset = offset): Offset {
             val drawWidth = image.width * fitScale() * atScale
             val drawHeight = image.height * fitScale() * atScale
             val slackX = viewport.width * OFF_SHEET_PAN_ALLOWANCE
@@ -206,8 +208,8 @@ fun MapCanvas(
                 else -> current
             }
             return Offset(
-                axis(candidate.x, offset.x, maxX),
-                axis(candidate.y, offset.y, maxY)
+                axis(candidate.x, from.x, maxX),
+                axis(candidate.y, from.y, maxY)
             )
         }
 
@@ -334,9 +336,33 @@ fun MapCanvas(
                             travelled += panChange.getDistance() + abs(1f - zoomChange) * 200f
 
                             if (travelled > viewConfiguration.touchSlop) {
+                                val previous = scale
                                 val next = (scale * zoomChange).coerceIn(1f, 12f)
+                                // The applied ratio, not the requested one: at
+                                // the ends of the range the pinch is refused
+                                // and the offset must not be moved for it.
+                                val ratio = if (previous > 0f) next / previous else 1f
+                                val centroid = event.calculateCentroid(useCurrent = true)
+                                val focus = if (centroid.isUnspecified) {
+                                    Offset.Zero
+                                } else {
+                                    Offset(
+                                        centroid.x - viewport.width / 2f,
+                                        centroid.y - viewport.height / 2f
+                                    )
+                                }
+                                val (zoomedX, zoomedY) = zoomedOffset(
+                                    offset.x, offset.y, focus.x, focus.y, ratio
+                                )
+                                val zoomed = Offset(zoomedX, zoomedY)
                                 scale = next
-                                offset = clamp(offset + panChange, next)
+                                // Clamped against the zoomed offset rather than
+                                // the old one. Zooming in off the sheet
+                                // legitimately increases the offset, and
+                                // measuring that against where the view was
+                                // before the zoom made the clamp reject its own
+                                // correction and hand back the teleport.
+                                offset = clamp(zoomed + panChange, next, zoomed)
                                 event.changes.forEach { if (it.positionChanged()) it.consume() }
                             }
                         } while (event.changes.any { it.pressed })
@@ -590,6 +616,20 @@ fun MapCanvas(
 
 private const val OFF_SHEET_PAN_ALLOWANCE = 1.5f
 
+/**
+ * Widest a single tile may draw before it is skipped.
+ *
+ * A frame pushed far outside its fitted region can produce a transform that
+ * blows up; painting a bitmap across a million pixels would drop the frame
+ * without putting anything useful on screen.
+ */
+private const val MAX_TILE_EXTENT = 20_000f
+
+/** Shared by every tile draw. Compose runs the draw pass on one thread. */
+private val TILE_PAINT = android.graphics.Paint(
+    android.graphics.Paint.FILTER_BITMAP_FLAG or android.graphics.Paint.ANTI_ALIAS_FLAG
+)
+
 /** Where a searched position could be: a point, a line, or a box. */
 data class SearchRegion(
     val south: Double,
@@ -813,37 +853,59 @@ private fun DrawScope.drawBasemap(
     // fetching thousands of tiles would be worse than drawing nothing.
     if ((maxX - minX + 1).toLong() * (maxY - minY + 1).toLong() > 200) return
 
+    val canvas = drawContext.canvas.nativeCanvas
+    val matrix = android.graphics.Matrix()
+    val clip = android.graphics.Path()
+    val source = FloatArray(8)
+
     for (x in minX..maxX) {
         for (y in minY..maxY) {
             val sample = basemap.sample(zoom, x, y) ?: continue
-            val tileNorth = BasemapTileCache.tileNorth(y, zoom)
-            val tileSouth = BasemapTileCache.tileNorth(y + 1, zoom)
-            val tileWest = BasemapTileCache.tileWest(x, zoom)
-            val tileEast = BasemapTileCache.tileWest(x + 1, zoom)
+            val quad = tileQuad(
+                frame = frame,
+                north = BasemapTileCache.tileNorth(y, zoom),
+                south = BasemapTileCache.tileNorth(y + 1, zoom),
+                west = BasemapTileCache.tileWest(x, zoom),
+                east = BasemapTileCache.tileWest(x + 1, zoom),
+                pageWidthPoints = pageWidthPoints,
+                pageHeightPoints = pageHeightPoints,
+                originX = originX,
+                originY = originY,
+                drawWidth = drawWidth,
+                drawHeight = drawHeight
+            ) ?: continue
 
-            val topLeftPage = frame.geoToPage(tileNorth, tileWest) ?: continue
-            val bottomRightPage = frame.geoToPage(tileSouth, tileEast) ?: continue
+            val extent = quadExtent(quad)
+            // Sub-pixel is not worth a draw call; enormous means the transform
+            // has run away and drawing it would stall the frame.
+            if (extent < 1f || extent > MAX_TILE_EXTENT) continue
+            val grown = growQuad(quad)
 
-            val left = originX + (topLeftPage.first / pageWidthPoints).toFloat() * drawWidth
-            val top = originY +
-                (1f - (topLeftPage.second / pageHeightPoints).toFloat()) * drawHeight
-            val right = originX + (bottomRightPage.first / pageWidthPoints).toFloat() * drawWidth
-            val bottom = originY +
-                (1f - (bottomRightPage.second / pageHeightPoints).toFloat()) * drawHeight
+            // Mapped corner to corner rather than fitted into a rectangle, so
+            // the tile lands rotated exactly as the sheet's projection puts it
+            // and shares its edges with its neighbours.
+            val left = sample.sourceLeft.toFloat()
+            val top = sample.sourceTop.toFloat()
+            val size = sample.sourceSize.toFloat()
+            source[0] = left; source[1] = top
+            source[2] = left + size; source[3] = top
+            source[4] = left + size; source[5] = top + size
+            source[6] = left; source[7] = top + size
 
-            val width = (right - left).roundToInt()
-            val height = (bottom - top).roundToInt()
-            if (width <= 0 || height <= 0) continue
+            matrix.reset()
+            if (!matrix.setPolyToPoly(source, 0, grown, 0, 4)) continue
 
-            drawImage(
-                image = sample.bitmap.asImageBitmap(),
-                srcOffset = IntOffset(sample.sourceLeft, sample.sourceTop),
-                srcSize = IntSize(sample.sourceSize, sample.sourceSize),
-                dstOffset = IntOffset(left.roundToInt(), top.roundToInt()),
-                // Overdraw by a pixel: adjacent tiles are positioned
-                // independently and rounding leaves hairline seams otherwise.
-                dstSize = IntSize(width + 1, height + 1)
-            )
+            clip.reset()
+            clip.moveTo(grown[0], grown[1])
+            clip.lineTo(grown[2], grown[3])
+            clip.lineTo(grown[4], grown[5])
+            clip.lineTo(grown[6], grown[7])
+            clip.close()
+
+            val checkpoint = canvas.save()
+            canvas.clipPath(clip)
+            canvas.drawBitmap(sample.bitmap, matrix, TILE_PAINT)
+            canvas.restoreToCount(checkpoint)
         }
     }
 }
