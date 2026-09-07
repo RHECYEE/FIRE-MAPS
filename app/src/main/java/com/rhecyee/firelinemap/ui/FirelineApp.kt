@@ -1169,6 +1169,7 @@ fun FirelineApp() {
                 positionIsSimulated = simulated != null,
                 dropPoints = if (segmentAtDropPoints) dropPoints else emptyList(),
                 basemap = if (topographyOn) basemap else null,
+                maxScale = if (onTerrain) TERRAIN_MAX_SCALE else SHEET_MAX_SCALE,
                 measurePoints = measurePoints,
                 measureMode = measureMode,
                 markers = markers,

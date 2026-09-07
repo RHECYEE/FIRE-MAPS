@@ -88,6 +88,16 @@ fun MapCanvas(
     searchRegion: SearchRegion? = null,
     parcels: List<com.rhecyee.firelinemap.parcels.Parcel> = emptyList(),
     parcelOpacity: Float = 0.65f,
+    /**
+     * How far in the map may be pinched, as a multiple of the fitted view.
+     *
+     * A sheet is a fixed raster: past a point, zooming only magnifies its
+     * pixels, so the useful limit is low. Terrain is re-tiled from the basemap
+     * at whatever zoom the view asks for, so it keeps resolving detail long
+     * after a sheet has stopped, and the ceiling that suits one starves the
+     * other.
+     */
+    maxScale: Float = SHEET_MAX_SCALE,
     centreOn: Pair<Double, Double>? = null,
     onCentred: () -> Unit = {},
     onInteraction: () -> Unit = {},
@@ -337,7 +347,7 @@ fun MapCanvas(
 
                             if (travelled > viewConfiguration.touchSlop) {
                                 val previous = scale
-                                val next = (scale * zoomChange).coerceIn(1f, 12f)
+                                val next = (scale * zoomChange).coerceIn(1f, maxScale)
                                 // The applied ratio, not the requested one: at
                                 // the ends of the range the pinch is refused
                                 // and the offset must not be moved for it.
@@ -616,6 +626,22 @@ fun MapCanvas(
 
 private const val OFF_SHEET_PAN_ALLOWANCE = 1.5f
 
+/** Deepest zoom The National Map serves; 17 returns 404. */
+internal const val MAX_BASEMAP_ZOOM = 16
+
+/** Far enough into a fixed raster before it is only bigger pixels. */
+const val SHEET_MAX_SCALE = 12f
+
+/**
+ * Terrain keeps resolving, so it is allowed much further in.
+ *
+ * At the fitted view the terrain sheet spans forty kilometres; this brings that
+ * down to about a kilometre across, which is where a road junction is a road
+ * junction rather than a smudge, and is roughly where basemap zoom 16 runs out
+ * of its own detail.
+ */
+const val TERRAIN_MAX_SCALE = 40f
+
 /**
  * Widest a single tile may draw before it is skipped.
  *
@@ -841,8 +867,11 @@ private fun DrawScope.drawBasemap(
         centreLatitude, west, centreLatitude, east
     )
     if (spanMeters <= 0.0 || size.width <= 0f) return
+    // The National Map serves USGS topo to zoom 16 and 404s at 17. Sixteen is
+    // where the contour lines and their elevation labels are legible, so
+    // stopping at fifteen was throwing away the level the map is read at.
     val zoom = BasemapTileCache.zoomFor(centreLatitude, spanMeters / size.width)
-        .coerceIn(4, 15)
+        .coerceIn(4, MAX_BASEMAP_ZOOM)
 
     val minX = BasemapTileCache.tileX(west, zoom)
     val maxX = BasemapTileCache.tileX(east, zoom)

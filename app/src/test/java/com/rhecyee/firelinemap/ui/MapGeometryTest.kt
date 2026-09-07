@@ -2,6 +2,7 @@ package com.rhecyee.firelinemap.ui
 
 import com.rhecyee.firelinemap.geopdf.GeoPdfReader
 import com.rhecyee.firelinemap.geopdf.MapFrame
+import com.rhecyee.firelinemap.geopdf.TerrainSheet
 import com.rhecyee.firelinemap.map.BasemapTileCache
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -182,6 +183,40 @@ class MapGeometryTest {
             "the ground under the pinch must not move",
             operatorBefore.toDouble(), operatorAfter.toDouble(), 1.0
         )
+    }
+
+    @Test
+    fun `the canvas never clamps tiles below what the tile source will serve`() {
+        // This is the fault that lost the contour lines, and it was not the
+        // zoom ceiling: at the old ceiling the view already asked for zoom 16,
+        // and drawBasemap clamped it to 15 on the way out. Contours and their
+        // elevation labels are only drawn on USGS topo at 16, so the map came
+        // back as shaded relief with roads on it.
+        //
+        // BasemapTileCache.zoomFor already stops at the deepest level The
+        // National Map publishes, so the canvas clamping under that can only
+        // ever throw away detail that was there for the asking.
+        val fittedSpanMeters = 2 * TerrainSheet.HALF_SPAN_METERS
+        val viewportPixels = 1080
+
+        listOf(SHEET_MAX_SCALE, TERRAIN_MAX_SCALE).forEach { ceiling ->
+            val wanted = BasemapTileCache.zoomFor(
+                36.3838, (fittedSpanMeters / ceiling) / viewportPixels
+            )
+            assertTrue(
+                "at a ceiling of $ceiling the view wants zoom $wanted, " +
+                    "but the canvas clamps at $MAX_BASEMAP_ZOOM",
+                MAX_BASEMAP_ZOOM >= wanted
+            )
+        }
+    }
+
+    @Test
+    fun `terrain is allowed further in than a fixed sheet`() {
+        // A sheet is a raster and stops resolving; terrain is re-tiled at
+        // whatever zoom is asked for, so the ceiling that suits one starves
+        // the other.
+        assertTrue(TERRAIN_MAX_SCALE > SHEET_MAX_SCALE)
     }
 
     @Test

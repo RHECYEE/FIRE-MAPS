@@ -66,7 +66,7 @@ fun LayersSheet(
         text = {
             Column(
                 modifier = Modifier
-                    .heightIn(max = 430.dp)
+                    .heightIn(max = 520.dp)
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
@@ -162,8 +162,9 @@ fun LayersSheet(
 
                 ToggleRow(
                     title = "Topographic basemap",
-                    subtitle = "USGS contours and shaded relief beneath the sheet. " +
-                        "Tiles are kept once seen.",
+                    subtitle = "USGS contours and shaded relief. Draws under an " +
+                        "imported sheet, and is the map on its own when there is " +
+                        "none. Tiles are kept once seen.",
                     checked = topographyOn,
                     onCheckedChange = onToggleTopography
                 )
