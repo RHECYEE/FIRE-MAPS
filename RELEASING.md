@@ -44,6 +44,30 @@ It is deliberately not the same as `namespace`, which is still
 changed whenever; the applicationId is the identity Play and every phone use.
 Only the second one is a one-way door.
 
+## Play's target API floor moves every year
+
+Play refuses a new release whose `targetSdk` is below the current floor, and the
+floor rises annually. Raising it means raising `compileSdk` to match, which in
+turn usually means a newer Android Gradle Plugin and a newer Gradle wrapper --
+AGP refuses a `compileSdk` it does not know about. All four move together:
+
+- `compileSdk` and `targetSdk` in `app/build.gradle.kts`
+- `com.android.application` version in the root `build.gradle.kts`
+- `distributionUrl` in `gradle/wrapper/gradle-wrapper.properties`
+
+Targeting API 36 also requires native libraries to support 16 KB memory pages.
+Nothing here builds native code, but dependencies bring some in, so check after
+any dependency bump:
+
+```bash
+unzip -o app/build/outputs/bundle/release/app-release.aab 'base/lib/*' -d /tmp/so
+find /tmp/so -name '*.so' -exec sh -c \
+  'echo "$1 $(readelf -lW "$1" | awk "/LOAD/ {print \$NF; exit}")"' _ {} \;
+```
+
+Every line must read `0x4000`. Anything smaller is a 4 KB library and will fail
+on a 16 KB device.
+
 ## Every release
 
 1. Raise `versionCode` in `app/build.gradle.kts`. It must climb with every

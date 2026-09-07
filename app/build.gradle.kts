@@ -25,7 +25,7 @@ fun credential(property: String, variable: String): String? =
 
 android {
     namespace = "com.rhecyee.firelinemap"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         ksp { arg("room.schemaLocation", "$projectDir/schemas") }
@@ -35,11 +35,11 @@ android {
         // cannot be altered after the first upload.
         applicationId = "com.firelinemaps"
         minSdk = 26
-        targetSdk = 35
+        targetSdk = 36
         // Bumped for the first store upload. versionCode has to climb with
         // every upload; versionName is what a crew reads in the listing.
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.2.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -73,6 +73,18 @@ android {
              * somebody navigates a fire road with. Turn it on when there is an
              * instrumented run over a minified build to prove it.
              */
+            /*
+             * Set for whenever this app grows native code of its own.
+             *
+             * It produces nothing today, and Play's warning about missing
+             * debug symbols cannot be answered: the only .so files in the
+             * bundle come prebuilt and already stripped from the Compose
+             * graphics-path artifact, with no symbol table left to extract.
+             * Nothing here builds them, so nothing here can supply symbols
+             * for them. The warning does not block a release.
+             */
+            ndk { debugSymbolLevel = "SYMBOL_TABLE" }
+
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
