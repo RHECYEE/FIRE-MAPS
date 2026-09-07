@@ -29,7 +29,11 @@ android {
 
     defaultConfig {
         ksp { arg("room.schemaLocation", "$projectDir/schemas") }
-        applicationId = "com.rhecyee.firelinemap"
+        // The identity Play holds the app under. Deliberately not the same as
+        // the namespace above: the namespace is where the code lives and can be
+        // changed whenever, while this is fixed for the life of the listing and
+        // cannot be altered after the first upload.
+        applicationId = "com.firelinemaps"
         minSdk = 26
         targetSdk = 35
         // Bumped for the first store upload. versionCode has to climb with

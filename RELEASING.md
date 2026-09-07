@@ -32,6 +32,18 @@ A build server can set `FIRELINE_STORE_FILE`, `FIRELINE_STORE_PASSWORD`,
 the release build still runs and simply comes out unsigned, so the project
 builds for anyone who only wants to run the tests.
 
+## The package name is fixed
+
+Play holds the app under `com.firelinemaps`, which is the `applicationId` in
+`app/build.gradle.kts`. It cannot be changed after the first upload -- a
+different package name is a different app, with its own listing, its own reviews
+and its own installs.
+
+It is deliberately not the same as `namespace`, which is still
+`com.rhecyee.firelinemap`. The namespace says where the Kotlin lives and can be
+changed whenever; the applicationId is the identity Play and every phone use.
+Only the second one is a one-way door.
+
 ## Every release
 
 1. Raise `versionCode` in `app/build.gradle.kts`. It must climb with every
