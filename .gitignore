@@ -11,3 +11,8 @@ app/build/
 
 # Kotlin compiler session files
 .kotlin/
+
+# Upload signing. Never commit the keystore or its passwords.
+keystore.properties
+*.jks
+*.keystore

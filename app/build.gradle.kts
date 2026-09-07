@@ -1,9 +1,27 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("com.google.devtools.ksp")
 }
+
+/**
+ * Upload signing, kept out of the repository.
+ *
+ * Read from keystore.properties next to the root build file, or from the
+ * environment when a build server holds them instead. Both are gitignored: a
+ * key checked in is a key that has to be reset with Google support, and the
+ * only warning is somebody else shipping an update.
+ */
+val signing = Properties().apply {
+    val file = rootProject.file("keystore.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+
+fun credential(property: String, variable: String): String? =
+    signing.getProperty(property) ?: System.getenv(variable)
 
 android {
     namespace = "com.rhecyee.firelinemap"
@@ -14,11 +32,52 @@ android {
         applicationId = "com.rhecyee.firelinemap"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        // Bumped for the first store upload. versionCode has to climb with
+        // every upload; versionName is what a crew reads in the listing.
+        versionCode = 2
+        versionName = "0.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
+    }
+
+    signingConfigs {
+        create("upload") {
+            val store = credential("storeFile", "FIRELINE_STORE_FILE")
+            // Absent on a machine without the key. The release build then falls
+            // back to unsigned rather than failing to configure, so the project
+            // still builds for anyone who only wants to run the tests.
+            if (store != null && file(store).exists()) {
+                storeFile = file(store)
+                storePassword = credential("storePassword", "FIRELINE_STORE_PASSWORD")
+                keyAlias = credential("keyAlias", "FIRELINE_KEY_ALIAS")
+                keyPassword = credential("keyPassword", "FIRELINE_KEY_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            /*
+             * Shipped unminified on purpose, for now.
+             *
+             * R8 would take a few megabytes off, and the libraries here carry
+             * their own keep rules, but the reflection-driven parts -- Room,
+             * the Compose runtime and the car app templates -- fail at runtime
+             * rather than at build time when a rule is missing. There is no
+             * device in the build path to catch that, and this is software
+             * somebody navigates a fire road with. Turn it on when there is an
+             * instrumented run over a minified build to prove it.
+             */
+            isMinifyEnabled = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+            signingConfig = signingConfigs.getByName("upload").takeIf {
+                it.storeFile != null
+            }
+        }
     }
 
     buildFeatures { compose = true }
