@@ -18,6 +18,7 @@ import com.google.android.gms.location.Priority
 import com.rhecyee.firelinemap.FirelineApplication
 import com.rhecyee.firelinemap.MainActivity
 import com.rhecyee.firelinemap.data.TrackEntity
+import com.rhecyee.firelinemap.data.ensureActiveIncident
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -182,11 +183,16 @@ class TrackRecordingService : Service() {
     private fun finalise(event: TrackEvent.Ended) {
         val id = trackId ?: return
         trackId = null
-        val incident = incidentId ?: return
 
         if (!event.kept) {
             // Too short to be travel. Remove the in-progress row rather than
-            // leaving a stub in the incident's track list.
+            // leaving a stub in the incident's track list -- but say so, because
+            // from the car this looked exactly like a finished drive being
+            // thrown away.
+            TrackRecordingState.reportOutcome(
+                "Too short to keep — that was under the movement threshold, " +
+                    "not a recording fault."
+            )
             scope.launch {
                 (application as FirelineApplication).database.dao().deleteTrack(id)
             }
@@ -195,7 +201,16 @@ class TrackRecordingService : Service() {
 
         val track = event.track
         scope.launch {
-            (application as FirelineApplication).database.dao().upsertTrack(
+            val dao = (application as FirelineApplication).database.dao()
+            // Settled at the point of writing, not carried in from whoever
+            // started the recording. Returning early here because no incident
+            // arrived in the intent threw away a finished drive, which is the
+            // one thing this service exists to not do.
+            val incident = incidentId ?: ensureActiveIncident(dao)
+            TrackRecordingState.reportOutcome(
+                "Travel saved — %.1f km".format(track.distanceMeters / 1000.0)
+            )
+            dao.upsertTrack(
                 TrackEntity(
                     id = id,
                     incidentId = incident,

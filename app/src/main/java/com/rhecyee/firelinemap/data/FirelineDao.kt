@@ -19,6 +19,27 @@ interface FirelineDao {
     @Query("SELECT id FROM incidents WHERE isActive = 1 LIMIT 1")
     suspend fun activeIncidentId(): String?
 
+    /**
+     * Every incident, newest first, read once rather than observed.
+     *
+     * Bootstrapping has to decide from the database and not from a flow that
+     * has yet to emit. Deciding from an unemitted flow is what seeded a fresh
+     * incident on every launch.
+     */
+    @Query("SELECT * FROM incidents ORDER BY createdAt DESC")
+    suspend fun allIncidents(): List<IncidentEntity>
+
+    @Query("DELETE FROM incidents WHERE id = :incidentId")
+    suspend fun deleteIncident(incidentId: String)
+
+    /** How much work is filed under an incident, for deciding which one is real. */
+    @Query(
+        "SELECT (SELECT COUNT(*) FROM markers WHERE incidentId = :incidentId) + " +
+        "(SELECT COUNT(*) FROM tracks WHERE incidentId = :incidentId) + " +
+        "(SELECT COUNT(*) FROM medical_reports WHERE incidentId = :incidentId)"
+    )
+    suspend fun incidentContentCount(incidentId: String): Int
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertIncident(incident: IncidentEntity)
 

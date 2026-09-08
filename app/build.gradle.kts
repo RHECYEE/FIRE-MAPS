@@ -38,8 +38,8 @@ android {
         targetSdk = 36
         // Bumped for the first store upload. versionCode has to climb with
         // every upload; versionName is what a crew reads in the listing.
-        versionCode = 4
-        versionName = "0.2.2"
+        versionCode = 5
+        versionName = "0.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -96,7 +96,9 @@ android {
         }
     }
 
-    buildFeatures { compose = true }
+    // buildConfig for the version the settings screen shows: "which build
+    // is on the phone" was being answered by guesswork.
+    buildFeatures { compose = true; buildConfig = true }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

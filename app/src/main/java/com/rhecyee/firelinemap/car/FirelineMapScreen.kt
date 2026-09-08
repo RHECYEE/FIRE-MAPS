@@ -17,6 +17,7 @@ import androidx.lifecycle.lifecycleScope
 import com.rhecyee.firelinemap.FirelineApplication
 import com.rhecyee.firelinemap.R
 import com.rhecyee.firelinemap.car.CarLinkLog
+import com.rhecyee.firelinemap.data.ensureActiveIncident
 import com.rhecyee.firelinemap.location.TrackRecordingService
 import com.rhecyee.firelinemap.location.TrackRecordingState
 import kotlinx.coroutines.launch
@@ -136,8 +137,12 @@ class FirelineMapScreen(
      */
     private fun toggleRecording(armed: Boolean) {
         lifecycleScope.launch {
+            // Settled rather than read. Android Auto can start the service
+            // with the phone screen never having run this shift, and a
+            // recording begun with no incident to file against was finalised
+            // into nothing at all.
             val incidentId = runCatching {
-                application.database.dao().activeIncidentId()
+                ensureActiveIncident(application.database.dao())
             }.getOrNull()
 
             val intent = Intent(carContext, TrackRecordingService::class.java).apply {

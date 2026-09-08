@@ -20,6 +20,7 @@ import androidx.lifecycle.lifecycleScope
 import com.rhecyee.firelinemap.FirelineApplication
 import com.rhecyee.firelinemap.data.AppSettings
 import com.rhecyee.firelinemap.data.MarkerEntity
+import com.rhecyee.firelinemap.data.parseLineString
 import com.rhecyee.firelinemap.geopdf.MapDocumentRepository
 import com.rhecyee.firelinemap.geopdf.MapFrame
 import com.rhecyee.firelinemap.location.TrackRecordingState
@@ -76,6 +77,10 @@ class CarMapRenderer(
     private var location: Location? = null
     private var markers: List<MarkerEntity> = emptyList()
 
+    /** Finished travel for this incident, and the drop points read off the sheet. */
+    private var savedTracks: List<List<Pair<Double, Double>>> = emptyList()
+    private val dropPoints get() = application.dropPoints
+
     /** The imported sheet, rendered once and held while the car screen is up. */
     private var sheetBitmap: Bitmap? = null
     private var sheetFrame: MapFrame? = null
@@ -115,6 +120,7 @@ class CarMapRenderer(
             }
         }
         owner.lifecycleScope.launch { observeMarkers() }
+        owner.lifecycleScope.launch { observeSavedTracks() }
         refreshSheet()
     }
 
@@ -126,6 +132,29 @@ class CarMapRenderer(
                 if (incident == null) flowOf(emptyList()) else dao.observeMarkers(incident.id)
             }
             .collect { markers = it }
+    }
+
+    /**
+     * Travel already recorded for this incident.
+     *
+     * The car drew only the drive in progress, which is the half an operator
+     * least needs: where they have already been is what says whether a spur has
+     * been checked. Parsed once per change rather than per frame -- a shift's
+     * worth of line geometry is not something to re-read four times a second.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private suspend fun observeSavedTracks() {
+        val dao = application.database.dao()
+        dao.observeActiveIncident()
+            .flatMapLatest { incident ->
+                if (incident == null) flowOf(emptyList()) else dao.observeTracks(incident.id)
+            }
+            .collect { entities ->
+                savedTracks = entities
+                    .filter { !it.isRecording }
+                    .map { parseLineString(it.geometryGeoJson) }
+                    .filter { it.size >= 2 }
+            }
     }
 
     /**
@@ -338,9 +367,11 @@ class CarMapRenderer(
         )
         drawTerrain(canvas, projection)
         drawSheet(canvas, projection)
+        drawSavedTracks(canvas, projection, density)
         drawTrack(canvas, projection, density)
         canvas.restore()
 
+        drawDropPoints(canvas, projection, density)
         drawMarkers(canvas, projection, density)
         drawVehicle(canvas, projection, density)
         drawReadout(canvas, container, projection, density)
@@ -460,6 +491,59 @@ class CarMapRenderer(
         strokePaint.color = TRACK
         strokePaint.strokeWidth = 4f * density
         canvas.drawPath(path, strokePaint)
+    }
+
+    private fun drawSavedTracks(
+        canvas: Canvas,
+        projection: CarMapProjection,
+        density: Float
+    ) {
+        if (savedTracks.isEmpty()) return
+        strokePaint.color = SAVED_TRACK
+        strokePaint.strokeWidth = 3f * density
+        savedTracks.forEach { points ->
+            val path = Path()
+            var started = false
+            points.forEach { (latitude, longitude) ->
+                val point = projection.toUnrotated(latitude, longitude)
+                if (!point.x.isFinite() || !point.y.isFinite()) return@forEach
+                if (started) path.lineTo(point.x, point.y) else {
+                    path.moveTo(point.x, point.y)
+                    started = true
+                }
+            }
+            if (started) canvas.drawPath(path, strokePaint)
+        }
+    }
+
+    /**
+     * Drop points read off the sheet.
+     *
+     * Held on the application rather than in the database: they are derived
+     * from whichever sheet is open, and the recording service already reads
+     * them from there to decide where to split travel.
+     */
+    private fun drawDropPoints(
+        canvas: Canvas,
+        projection: CarMapProjection,
+        density: Float
+    ) {
+        val points = dropPoints
+        if (points.isEmpty()) return
+        val radius = 7f * density
+        points.forEach { anchor ->
+            val point = projection.toScreen(anchor.latitude, anchor.longitude)
+            if (!point.x.isFinite() || !point.y.isFinite()) return@forEach
+            if (point.x < -radius || point.y < -radius) return@forEach
+            if (point.x > projection.widthPixels + radius) return@forEach
+            if (point.y > projection.heightPixels + radius) return@forEach
+
+            strokePaint.color = DROP_POINT
+            strokePaint.strokeWidth = 2.5f * density
+            canvas.drawCircle(point.x, point.y, radius, strokePaint)
+            fillPaint.color = DROP_POINT
+            canvas.drawCircle(point.x, point.y, radius * 0.35f, fillPaint)
+        }
     }
 
     // --------------------------------------------------------------- markers
@@ -605,6 +689,7 @@ class CarMapRenderer(
             else -> "Off ${sheetName}"
         }
         if (TrackRecordingState.live.value.recording) parts += "REC"
+        TrackRecordingState.lastOutcome.value?.let { parts += it }
         return parts.joinToString("  ·  ")
     }
 
@@ -658,6 +743,10 @@ class CarMapRenderer(
         private const val VEHICLE = 0xFF2E7D32.toInt()
         private const val TRACK = 0xFFFF7043.toInt()
         private const val TRACK_CASING = 0xCC1A1A1A.toInt()
+
+        /** Travel already recorded: present, but never louder than the live line. */
+        private const val SAVED_TRACK = 0xAAFFA270.toInt()
+        private const val DROP_POINT = 0xFF64B5F6.toInt()
         private const val ACCURACY_FILL = 0x332E7D32
         private const val ACCURACY_RING = 0x882E7D32.toInt()
 

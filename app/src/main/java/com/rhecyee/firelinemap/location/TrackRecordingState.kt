@@ -69,6 +69,21 @@ object TrackRecordingState {
         _armed.value = value
     }
 
+    /**
+     * What became of the last recording, for the screen that was not watching.
+     *
+     * A track shorter than the detector's threshold is discarded on purpose --
+     * it is a car park manoeuvre, not travel -- but the discard was silent, and
+     * from the car it was indistinguishable from the recording being thrown
+     * away. Saying which happened is the difference between a rule and a fault.
+     */
+    private val _lastOutcome = MutableStateFlow<String?>(null)
+    val lastOutcome: StateFlow<String?> = _lastOutcome.asStateFlow()
+
+    fun reportOutcome(message: String?) {
+        _lastOutcome.value = message
+    }
+
     fun update(value: LiveTrack) {
         _live.value = value
     }

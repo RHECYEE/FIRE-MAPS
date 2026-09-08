@@ -35,10 +35,19 @@ import com.rhecyee.firelinemap.location.TrackSettingsStore
  * name could only be set by a developer. Both belong here, alongside the
  * things that spend data or storage.
  */
+/** One incident as the settings list shows it. */
+data class IncidentSummary(val id: String, val name: String, val detail: String)
+
+
 @Composable
 fun SettingsSheet(
     incidentName: String,
     onIncidentName: (String) -> Unit,
+    incidents: List<IncidentSummary>,
+    activeIncidentId: String?,
+    onSelectIncident: (String) -> Unit,
+    onNewIncident: () -> Unit,
+    appVersion: String,
     reporterName: String,
     reporterQualification: String,
     onReporterChange: (String, String) -> Unit,
@@ -81,6 +90,54 @@ fun SettingsSheet(
                     singleLine = true,
                     label = { Text("Incident name") },
                     placeholder = { Text("Burnt Creek 2026") }
+                )
+
+                if (incidents.size > 1) {
+                    Text(
+                        "Everything filed from this phone belongs to the incident " +
+                            "selected here. Switching changes what the map shows.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                incidents.forEach { summary ->
+                    val active = summary.id == activeIncidentId
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelectIncident(summary.id) }
+                            .padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            if (active) "\u25cf" else "\u25cb",
+                            color = if (active) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontWeight = FontWeight.Black
+                        )
+                        Column(Modifier.padding(start = 10.dp).weight(1f)) {
+                            Text(
+                                summary.name.take(38),
+                                fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Text(
+                                summary.detail,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+                Text(
+                    "NEW INCIDENT",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onNewIncident() }
+                        .padding(vertical = 8.dp),
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Black,
+                    style = MaterialTheme.typography.labelMedium
                 )
 
                 HorizontalDivider()
@@ -162,6 +219,13 @@ fun SettingsSheet(
                         style = MaterialTheme.typography.labelMedium
                     )
                 }
+
+                HorizontalDivider()
+                Text(
+                    "Fireline Map $appVersion",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
 
                 HorizontalDivider()
                 Heading("ANDROID AUTO")

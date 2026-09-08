@@ -69,6 +69,8 @@ import androidx.lifecycle.LifecycleEventObserver
 import com.rhecyee.firelinemap.FirelineApplication
 import com.rhecyee.firelinemap.data.AppSettings
 import com.rhecyee.firelinemap.data.IncidentEntity
+import com.rhecyee.firelinemap.data.ensureActiveIncident
+import com.rhecyee.firelinemap.data.parseLineString
 import com.rhecyee.firelinemap.data.MarkerEntity
 import com.rhecyee.firelinemap.resources.ResourceRepository
 import com.rhecyee.firelinemap.resources.ResourceSymbol
@@ -140,6 +142,7 @@ fun FirelineApp() {
     var stopThreshold by remember { mutableIntStateOf(trackSettings.stopThresholdSeconds) }
     var showTrackSettings by remember { mutableStateOf(false) }
     var showCarCheck by remember { mutableStateOf(false) }
+    var incidentSummaries by remember { mutableStateOf<List<IncidentSummary>>(emptyList()) }
     var showSearch by remember { mutableStateOf(false) }
 
     // The map runs full screen until it is touched. Everything else is a
@@ -160,6 +163,7 @@ fun FirelineApp() {
         }
     }
     val liveTrack by TrackRecordingState.live.collectAsState()
+    val trackOutcome by TrackRecordingState.lastOutcome.collectAsState()
     var segmentAtDropPoints by remember { mutableStateOf(trackSettings.segmentAtDropPoints) }
     var dropPoints by remember { mutableStateOf<List<DropPoint>>(emptyList()) }
 
@@ -221,6 +225,15 @@ fun FirelineApp() {
     var pageWidth by remember { mutableIntStateOf(0) }
     var pageHeight by remember { mutableIntStateOf(0) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
+
+    // What became of the last recording. Shown once and then cleared, so a
+    // discarded short track says why rather than looking like a lost drive.
+    LaunchedEffect(trackOutcome) {
+        trackOutcome?.let {
+            statusMessage = it
+            TrackRecordingState.reportOutcome(null)
+        }
+    }
 
     var showUrlDialog by remember { mutableStateOf(false) }
     var urlBusy by remember { mutableStateOf(false) }
@@ -365,17 +378,11 @@ fun FirelineApp() {
         } else {
             locationRepository.start()
         }
-        if (incidents.isEmpty()) {
-            app.database.dao().upsertIncident(
-                IncidentEntity(
-                    id = UUID.randomUUID().toString(),
-                    name = "Burnt Creek 2026",
-                    year = 2026,
-                    createdAt = System.currentTimeMillis(),
-                    isActive = true
-                )
-            )
-        }
+        // Asked of the database rather than of `incidents`, which is a Room
+        // flow that has not emitted this early and reads as empty. Seeding off
+        // that inserted a fresh active incident on every single launch, and
+        // every marker, track and report stayed filed under the previous one.
+        ensureActiveIncident(app.database.dao())
         importedMaps = repository.imported()
         if (activeMap == null && rememberedMapId != AppSettings.TERRAIN_ONLY) {
             activeMap = importedMaps.firstOrNull { it.id == rememberedMapId }
@@ -856,6 +863,24 @@ fun FirelineApp() {
         ParcelDetailDialog(parcel = parcel, onDismiss = { tappedParcel = null })
     }
 
+    // Counted off the database rather than guessed, so an incident that holds
+    // work is distinguishable from one that only has a name.
+    LaunchedEffect(incidents) {
+        val dao = app.database.dao()
+        incidentSummaries = withContext(Dispatchers.IO) {
+            incidents.map { incident ->
+                val held = runCatching { dao.incidentContentCount(incident.id) }.getOrDefault(0)
+                IncidentSummary(
+                    id = incident.id,
+                    name = incident.name,
+                    detail = if (held == 0) "nothing filed yet"
+                    else "$held marker${if (held == 1) "" else "s"}, track" +
+                        "${if (held == 1) "" else "s"} and reports"
+                )
+            }
+        }
+    }
+
     if (showTrackSettings) {
         LaunchedEffect(Unit) {
             cachedTerrain = withContext(Dispatchers.IO) { basemap.cachedBytes() }
@@ -896,6 +921,22 @@ fun FirelineApp() {
             wifiOnly = wifiOnly,
             onWifiOnly = { settings.autoDownloadWifiOnly = it; wifiOnly = it },
             cachedTerrainBytes = cachedTerrain,
+            incidents = incidentSummaries,
+            activeIncidentId = activeIncident?.id,
+            onSelectIncident = { chosen ->
+                scope.launch { app.database.dao().setActiveIncident(chosen) }
+            },
+            onNewIncident = {
+                scope.launch {
+                    val fresh = com.rhecyee.firelinemap.data.seedIncident()
+                        .copy(name = "New incident")
+                    app.database.dao().upsertIncident(fresh)
+                    app.database.dao().setActiveIncident(fresh.id)
+                    statusMessage = "New incident created — name it above."
+                }
+            },
+            appVersion = com.rhecyee.firelinemap.BuildConfig.VERSION_NAME +
+                " (" + com.rhecyee.firelinemap.BuildConfig.VERSION_CODE + ")",
             onCarCheck = { showCarCheck = true },
             onClearTerrain = {
                 scope.launch {
@@ -1408,21 +1449,6 @@ fun FirelineApp() {
  * it is written by this app, and org.json is only a stub on the unit test
  * classpath.
  */
-private fun parseLineString(geoJson: String): List<Pair<Double, Double>> {
-    val open = geoJson.indexOf("[[")
-    if (open < 0) return emptyList()
-    val close = geoJson.lastIndexOf("]]")
-    if (close <= open) return emptyList()
-    return Regex("""\[\s*(-?[0-9.eE+-]+)\s*,\s*(-?[0-9.eE+-]+)\s*\]""")
-        .findAll(geoJson.substring(open, close + 2))
-        .mapNotNull { match ->
-            // GeoJSON is longitude first.
-            val longitude = match.groupValues[1].toDoubleOrNull() ?: return@mapNotNull null
-            val latitude = match.groupValues[2].toDoubleOrNull() ?: return@mapNotNull null
-            latitude to longitude
-        }
-        .toList()
-}
 
 /** Twenty seconds of no touching and the controls fold away again. */
 private const val CHROME_TIMEOUT_MILLIS = 20_000L
