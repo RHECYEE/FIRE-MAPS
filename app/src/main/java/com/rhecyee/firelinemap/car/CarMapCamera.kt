@@ -17,9 +17,30 @@ class CarMapCamera {
     var following: Boolean = true
         private set
 
-    /** Whether the map turns so the direction of travel is up. */
-    var headingUp: Boolean = true
+    /**
+     * Whether north is pinned regardless of what the driver would otherwise
+     * get, because a georeferenced sheet is the map.
+     *
+     * A sheet has writing on it -- road names, division letters, drop point
+     * numbers -- and writing only reads one way up. Turning the sheet to the
+     * direction of travel makes the terrain easier to follow and the sheet
+     * impossible to read, and the sheet is the reason it is on screen. So the
+     * page stays square and the vehicle marker turns instead, which is how a
+     * paper map on a seat has always worked.
+     */
+    var northLocked: Boolean = false
         private set
+
+    /**
+     * The driver's explicit choice, or null to take whatever suits the map.
+     *
+     * Kept apart from the answer so that opening a sheet gives north-up
+     * without permanently overriding anyone who wants it the other way.
+     */
+    private var headingUpChoice: Boolean? = null
+
+    /** Whether the map turns so the direction of travel is up. */
+    val headingUp: Boolean get() = headingUpChoice ?: !northLocked
 
     var zoom: Double = DEFAULT_ZOOM
         private set
@@ -85,7 +106,20 @@ class CarMapCamera {
     }
 
     fun toggleHeadingUp() {
-        headingUp = !headingUp
+        headingUpChoice = !headingUp
+    }
+
+    /**
+     * Says whether a sheet is the map.
+     *
+     * Changing it clears any override, so switching between a sheet and plain
+     * terrain lands on the right default each time rather than carrying a
+     * choice made about a different map.
+     */
+    fun setNorthLocked(locked: Boolean) {
+        if (locked == northLocked) return
+        northLocked = locked
+        headingUpChoice = null
     }
 
     /**

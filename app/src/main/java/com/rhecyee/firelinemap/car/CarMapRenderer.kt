@@ -26,6 +26,10 @@ import com.rhecyee.firelinemap.geopdf.MapFrame
 import com.rhecyee.firelinemap.location.TrackRecordingState
 import com.rhecyee.firelinemap.map.BasemapTileCache
 import com.rhecyee.firelinemap.resources.ResourceSymbol
+import com.rhecyee.firelinemap.map.ElevationTiles
+import com.rhecyee.firelinemap.terrain.ContourField
+import com.rhecyee.firelinemap.terrain.ContourWindow
+import com.rhecyee.firelinemap.terrain.ContourWindows
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -84,6 +88,15 @@ class CarMapRenderer(
     /** The imported sheet, rendered once and held while the car screen is up. */
     private var sheetBitmap: Bitmap? = null
     private var sheetFrame: MapFrame? = null
+
+    private val elevation = ElevationTiles(carContext)
+
+    /** The trace currently on screen, and what it was traced for. */
+    private var contourPaths: CarContourPaths? = null
+    private var contourWindow: ContourWindow? = null
+    private var contourTilesSeen = -1
+    private var contourJob: Job? = null
+    private var lastContourTraceAt = 0L
     private var sheetName: String? = null
     private var pageWidthPoints = 0
     private var pageHeightPoints = 0
@@ -107,6 +120,30 @@ class CarMapRenderer(
     }
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+    }
+
+    /** The three-letter code inside a pin. */
+    private val glyphPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        textAlign = Paint.Align.CENTER
+    }
+
+    private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        textAlign = Paint.Align.CENTER
+    }
+
+    /**
+     * Drawn under the caption so a name stays readable over pale ground.
+     *
+     * A car display is looked at in full sun through polarised glasses; text
+     * with no outline vanishes over a snow field or a sheet's white paper.
+     */
+    private val labelHaloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        textAlign = Paint.Align.CENTER
+        style = Paint.Style.STROKE
+        color = LABEL_HALO
     }
 
     // ------------------------------------------------------------- lifecycle
@@ -206,6 +243,9 @@ class CarMapRenderer(
 
         sheetBitmap = loaded?.bitmap
         sheetFrame = loaded?.frame
+        // A sheet on screen means north stays up; plain terrain goes back to
+        // turning with the vehicle.
+        camera.setNorthLocked(loaded?.frame != null)
         sheetName = loaded?.name
         pageWidthPoints = loaded?.pageWidth ?: 0
         pageHeightPoints = loaded?.pageHeight ?: 0
@@ -360,6 +400,7 @@ class CarMapRenderer(
             drawWaiting(canvas, container, density)
             return
         }
+        requestContours(projection)
 
         canvas.save()
         canvas.rotate(
@@ -367,6 +408,7 @@ class CarMapRenderer(
         )
         drawTerrain(canvas, projection)
         drawSheet(canvas, projection)
+        drawContours(canvas, projection, density)
         drawSavedTracks(canvas, projection, density)
         drawTrack(canvas, projection, density)
         canvas.restore()
@@ -382,10 +424,11 @@ class CarMapRenderer(
     private fun drawTerrain(canvas: Canvas, projection: CarMapProjection) {
         val tileZoom = projection.zoom.roundToInt().coerceIn(0, MAX_TILE_ZOOM)
         val bounds = projection.visibleBounds()
-        val minX = BasemapTileCache.tileX(bounds[1], tileZoom)
-        val maxX = BasemapTileCache.tileX(bounds[3], tileZoom)
-        val minY = BasemapTileCache.tileY(bounds[2], tileZoom)
-        val maxY = BasemapTileCache.tileY(bounds[0], tileZoom)
+        val minX = BasemapTileCache.tileX(bounds.west, tileZoom)
+        val maxX = BasemapTileCache.tileX(bounds.east, tileZoom)
+        // Tile rows count southward, so the northern edge is the smaller index.
+        val minY = BasemapTileCache.tileY(bounds.north, tileZoom)
+        val maxY = BasemapTileCache.tileY(bounds.south, tileZoom)
         // A view straddling the antimeridian inverts the column range. Not
         // ground this tool covers, and a wrapped fetch is not worth carrying.
         if (maxX < minX || maxY < minY) return
@@ -433,8 +476,8 @@ class CarMapRenderer(
 
         val visible = projection.visibleBounds()
         val sheetBounds = frame.geographicBounds()
-        val separated = sheetBounds[2] < visible[0] || sheetBounds[0] > visible[2] ||
-            sheetBounds[3] < visible[1] || sheetBounds[1] > visible[3]
+        val separated = sheetBounds[2] < visible.south || sheetBounds[0] > visible.north ||
+            sheetBounds[3] < visible.west || sheetBounds[1] > visible.east
         if (separated) return
 
         val source = FloatArray(8)
@@ -465,6 +508,102 @@ class CarMapRenderer(
         canvas.clipPath(clip)
         canvas.drawBitmap(bitmap, matrix, sheetPaint)
         canvas.restore()
+    }
+
+    // -------------------------------------------------------------- contours
+
+    /**
+     * Keeps a trace going for what is on screen.
+     *
+     * Tracing costs tens of milliseconds and the surface redraws four times a
+     * second, so it happens on a background thread and only when the request
+     * has genuinely changed. [ContourWindows] is what makes "genuinely" mean
+     * something: it rounds the view off, so driving down a road does not
+     * cancel and restart the trace on every fix.
+     */
+    private fun requestContours(projection: CarMapProjection) {
+        if (!settings.contourLinesEnabled) {
+            contourPaths = null
+            contourWindow = null
+            return
+        }
+        val owner = lifecycleOwner ?: return
+        val bounds = projection.visibleBounds()
+        val wanted = ContourWindows.of(
+            north = bounds.north,
+            west = bounds.west,
+            south = bounds.south,
+            east = bounds.east,
+            intervalFeet = settings.contourIntervalFeet
+        ) ?: return
+
+        val tiles = elevation.version.intValue
+        val sameGround = wanted == contourWindow
+        // Elevation arrives a tile at a time. Retracing on each arrival is how
+        // a first look at new country fills in, but it has to be paced or the
+        // initial fetch alone would start a hundred traces.
+        val now = System.currentTimeMillis()
+        val moreGroundIsWorthIt = sameGround && tiles != contourTilesSeen &&
+            now - lastContourTraceAt >= RETRACE_INTERVAL_MILLIS
+        if (sameGround && !moreGroundIsWorthIt) return
+        if (contourJob?.isActive == true && sameGround) return
+
+        contourJob?.cancel()
+        contourWindow = wanted
+        contourTilesSeen = tiles
+        lastContourTraceAt = now
+        contourJob = owner.lifecycleScope.launch {
+            val traced = withContext(Dispatchers.Default) {
+                val grid = elevation.grid(
+                    north = wanted.north,
+                    south = wanted.south,
+                    west = wanted.west,
+                    east = wanted.east,
+                    samples = CONTOUR_SAMPLES
+                ) ?: return@withContext null
+                buildCarContourPaths(ContourField.build(grid, wanted.intervalFeet))
+            }
+            // Nothing traced yet means the tiles have not landed; the previous
+            // lines stay up rather than blinking off and back on.
+            if (traced != null) contourPaths = traced
+        }
+    }
+
+    /**
+     * Contours over the sheet and the terrain both.
+     *
+     * Drawn inside the rotated frame with everything else that belongs to the
+     * ground, and above the sheet on purpose: reading slope off the map being
+     * worked from is the reason to draw them rather than take the ones already
+     * printed on the basemap.
+     */
+    private fun drawContours(canvas: Canvas, projection: CarMapProjection, density: Float) {
+        val paths = contourPaths ?: return
+        if (!settings.contourLinesEnabled) return
+
+        val world = projection.worldSize.toFloat()
+        if (!world.isFinite() || world <= 0f) return
+        val matrix = Matrix()
+        matrix.setScale(world, world)
+        matrix.postTranslate(
+            (projection.anchorX - projection.centerWorldX).toFloat(),
+            (projection.anchorY - projection.centerWorldY).toFloat()
+        )
+
+        val scratch = Path()
+        fun stroke(source: Path, width: Float) {
+            if (source.isEmpty) return
+            source.transform(matrix, scratch)
+            strokePaint.color = CONTOUR_HALO
+            strokePaint.strokeWidth = width + 2f * density
+            canvas.drawPath(scratch, strokePaint)
+            strokePaint.color = CONTOUR
+            strokePaint.strokeWidth = width
+            canvas.drawPath(scratch, strokePaint)
+        }
+
+        stroke(paths.regular, 1.4f * density)
+        stroke(paths.index, 2.8f * density)
     }
 
     // ----------------------------------------------------------------- track
@@ -559,7 +698,9 @@ class CarMapRenderer(
      */
     private fun drawMarkers(canvas: Canvas, projection: CarMapProjection, density: Float) {
         if (markers.isEmpty()) return
-        val radius = 9f * density
+        val radius = 11f * density
+        val captions = ArrayList<MarkerLabelRequest>(markers.size)
+
         markers.forEach { marker ->
             val point = projection.toScreen(marker.latitude, marker.longitude)
             if (!point.x.isFinite() || !point.y.isFinite()) return@forEach
@@ -567,10 +708,75 @@ class CarMapRenderer(
             if (point.x > projection.widthPixels + radius) return@forEach
             if (point.y > projection.heightPixels + radius) return@forEach
 
+            val symbol = ResourceSymbol.byId(marker.symbol)
             fillPaint.color = Color.WHITE
             canvas.drawCircle(point.x, point.y, radius + 2f * density, fillPaint)
-            fillPaint.color = ResourceSymbol.byId(marker.symbol).colorArgb
+            fillPaint.color = symbol.colorArgb
             canvas.drawCircle(point.x, point.y, radius, fillPaint)
+
+            // The three-letter code inside the pin. A driver glancing across
+            // reads the shape and the code before they read any caption, and
+            // for the common resources that is already the whole answer.
+            glyphPaint.textSize = radius * 0.95f
+            glyphPaint.color = Color.WHITE
+            canvas.drawText(
+                symbol.glyph,
+                point.x,
+                point.y + glyphPaint.textSize * 0.36f,
+                glyphPaint
+            )
+
+            captions.add(
+                MarkerLabelRequest(
+                    id = marker.id,
+                    x = point.x,
+                    y = point.y + radius,
+                    title = marker.title,
+                    type = symbol.label,
+                    priority = marker.priority
+                )
+            )
+        }
+
+        drawMarkerCaptions(canvas, captions, density)
+    }
+
+    /**
+     * Names under the pins.
+     *
+     * A coloured dot says something is there and nothing else, and in a vehicle
+     * there is no tapping it to find out which engine it is. Which captions
+     * survive a crowded patch of screen is decided in [CarMarkerLabels], away
+     * from the canvas, so it can be checked without a head unit.
+     */
+    private fun drawMarkerCaptions(
+        canvas: Canvas,
+        requests: List<MarkerLabelRequest>,
+        density: Float
+    ) {
+        if (requests.isEmpty()) return
+        val nameSize = 13f * density
+        val typeSize = 11f * density
+        val lineGap = nameSize * 1.15f
+
+        val placed = CarMarkerLabels.place(
+            requests = requests,
+            horizontalSpacing = 96f * density,
+            verticalSpacing = 30f * density
+        )
+
+        for (label in placed) {
+            var y = label.y + nameSize * 1.25f
+            label.lines.forEachIndexed { index, line ->
+                val size = if (index == 0) nameSize else typeSize
+                labelHaloPaint.textSize = size
+                labelHaloPaint.strokeWidth = 4f * density
+                canvas.drawText(line, label.x, y, labelHaloPaint)
+                labelPaint.textSize = size
+                labelPaint.color = if (index == 0) Color.WHITE else LABEL_SECONDARY
+                canvas.drawText(line, label.x, y, labelPaint)
+                y += lineGap
+            }
         }
     }
 
@@ -747,6 +953,12 @@ class CarMapRenderer(
         /** Travel already recorded: present, but never louder than the live line. */
         private const val SAVED_TRACK = 0xAAFFA270.toInt()
         private const val DROP_POINT = 0xFF64B5F6.toInt()
+        private const val LABEL_SECONDARY = 0xFFC8D6C0.toInt()
+        private const val CONTOUR = 0xCCC79A6B.toInt()
+        private const val CONTOUR_HALO = 0x66101408
+        private const val CONTOUR_SAMPLES = 192
+        private const val RETRACE_INTERVAL_MILLIS = 1_500L
+        private const val LABEL_HALO = 0xE0121712.toInt()
         private const val ACCURACY_FILL = 0x332E7D32
         private const val ACCURACY_RING = 0x882E7D32.toInt()
 

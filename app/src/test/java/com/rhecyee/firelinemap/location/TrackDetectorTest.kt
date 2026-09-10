@@ -348,6 +348,124 @@ class TrackDetectorTest {
             track.segments.count { it.endedAtDropPointId == "dp-190" }
         )
     }
+
+    // ---- pressing Record ----
+
+    @Test
+    fun `pressing record opens a track without waiting to be convinced`() {
+        // The confirmation window is thirty seconds of sustained movement. A
+        // person who pressed the button has already decided; making them hold
+        // a speed for half a minute first is how "I pressed record, drove,
+        // pressed stop" ends with nothing at all.
+        val detector = detector()
+        assertFalse(detector.isRecording)
+
+        val event = detector.begin(1_000L)
+
+        assertTrue("record did not open a track", event is TrackEvent.Started)
+        assertTrue(detector.isRecording)
+        assertTrue(detector.startedByRequest)
+    }
+
+    @Test
+    fun `a short drive that was asked for is kept`() {
+        // Eighty metres down a spur and back out. Under both floors, and
+        // exactly the thing that looked like the recording being deleted.
+        val detector = detector()
+        detector.begin(0L)
+        walk(detector, fromMillis = 0L, seconds = 20, speed = 4.0)
+
+        val ended = detector.finish()
+
+        assertTrue(ended is TrackEvent.Ended)
+        ended as TrackEvent.Ended
+        assertTrue("a drive someone asked for was thrown away", ended.kept)
+        assertTrue(ended.track.points.size >= 2)
+    }
+
+    @Test
+    fun `a short drive nobody asked for is still discarded`() {
+        // The floors are still doing their job for the detector's own guesses:
+        // a shunt around a turnaround is not a drive worth filing.
+        val detector = detector()
+        walk(detector, fromMillis = 0L, seconds = 40, speed = 4.0)
+        assertTrue("the detector should have opened this itself", detector.isRecording)
+        assertFalse(detector.startedByRequest)
+
+        // Barely moving from here on, so it stays under the distance floor.
+        val ended = detector.finish()
+
+        assertTrue(ended is TrackEvent.Ended)
+        assertFalse((ended as TrackEvent.Ended).kept)
+    }
+
+    @Test
+    fun `a requested drive records the ground it covers`() {
+        val detector = detector()
+        detector.begin(0L)
+        walk(detector, fromMillis = 0L, seconds = 300, speed = 12.0)
+
+        val ended = detector.finish() as TrackEvent.Ended
+
+        assertTrue(ended.kept)
+        assertTrue("no distance was accumulated", ended.track.distanceMeters > 1_000.0)
+        assertTrue(ended.track.points.size > 10)
+    }
+
+    @Test
+    fun `pressing record twice does not throw the first half away`() {
+        val detector = detector()
+        detector.begin(0L)
+        walk(detector, fromMillis = 0L, seconds = 120, speed = 12.0)
+        val soFar = detector.currentDistanceMeters
+        assertTrue(soFar > 100.0)
+
+        val again = detector.begin(200_000L)
+
+        assertEquals(TrackEvent.None, again)
+        assertEquals(soFar, detector.currentDistanceMeters, 0.001)
+    }
+
+    @Test
+    fun `stopping when nothing was ever open says so rather than nothing`() {
+        // The service turns this into a message on the car. What it must not
+        // be is an Ended that quietly files an empty track.
+        val detector = detector()
+        val ended = detector.finish()
+        assertEquals(TrackEvent.None, ended)
+    }
+
+    @Test
+    fun `a requested track that is finished can be started again`() {
+        val detector = detector()
+        detector.begin(0L)
+        walk(detector, fromMillis = 0L, seconds = 60, speed = 10.0)
+        detector.finish()
+
+        assertFalse(detector.isRecording)
+        assertFalse("the request flag outlived its track", detector.startedByRequest)
+
+        val second = detector.begin(500_000L)
+        assertTrue(second is TrackEvent.Started)
+        assertTrue(detector.startedByRequest)
+    }
+
+    @Test
+    fun `record picks up the fixes already in hand rather than starting blank`() {
+        // The receiver has been running since the app opened. Those fixes are
+        // where the vehicle actually was, so the line starts there instead of
+        // wherever it happened to be when a thumb found the button.
+        val detector = detector()
+        walk(detector, fromMillis = 0L, seconds = 40, speed = 0.2, stepSeconds = 10)
+
+        val started = detector.begin(41_000L) as TrackEvent.Started
+
+        assertTrue(
+            "the track began at the button press, not at the first fix",
+            started.atMillis <= 1_000L
+        )
+    }
+
 }
 
 class TrackDetectorSpeedTest {

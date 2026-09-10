@@ -144,4 +144,93 @@ class CarMapCameraTest {
             camera.browseLongitude!! in -180.0..180.0
         )
     }
+
+    // ---- north up on a sheet ----
+
+    @Test
+    fun `a sheet on screen keeps north up`() {
+        val camera = CarMapCamera()
+        assertTrue("terrain should still turn with the vehicle", camera.headingUp)
+
+        camera.setNorthLocked(true)
+
+        assertFalse("a sheet was turned to the heading", camera.headingUp)
+        assertEquals(0.0, camera.bearing(), 0.0)
+    }
+
+    @Test
+    fun `the map really is drawn square when a sheet is open`() {
+        val camera = CarMapCamera()
+        camera.setNorthLocked(true)
+        // A fix well off north, moving fast enough for the bearing to count.
+        val projection = camera.projection(
+            vehicleLatitude = 38.9,
+            vehicleLongitude = -120.1,
+            vehicleBearing = 137f,
+            vehicleMoving = true,
+            widthPixels = 800,
+            heightPixels = 480,
+            anchorX = 400f,
+            anchorY = 240f
+        )!!
+        assertEquals(0.0, projection.bearingDegrees, 0.0)
+    }
+
+    @Test
+    fun `putting the sheet away lets the map turn again`() {
+        val camera = CarMapCamera()
+        camera.setNorthLocked(true)
+        camera.setNorthLocked(false)
+        assertTrue(camera.headingUp)
+    }
+
+    @Test
+    fun `the driver can still override north up while a sheet is open`() {
+        val camera = CarMapCamera()
+        camera.setNorthLocked(true)
+        camera.toggleHeadingUp()
+        assertTrue("the override was ignored", camera.headingUp)
+    }
+
+    @Test
+    fun `an override does not follow a driver onto a different map`() {
+        // Turning the sheet to the heading is a decision about that sheet.
+        // Closing it and coming back should not carry the decision over.
+        val camera = CarMapCamera()
+        camera.setNorthLocked(true)
+        camera.toggleHeadingUp()
+        assertTrue(camera.headingUp)
+
+        camera.setNorthLocked(false)
+        camera.setNorthLocked(true)
+
+        assertFalse("a stale override survived the map change", camera.headingUp)
+    }
+
+    @Test
+    fun `saying nothing changed changes nothing`() {
+        val camera = CarMapCamera()
+        camera.setNorthLocked(true)
+        camera.toggleHeadingUp()
+        // The sheet is reloaded, reporting the same thing it reported before.
+        camera.setNorthLocked(true)
+        assertTrue("a redundant reload threw away the driver's choice", camera.headingUp)
+    }
+
+    @Test
+    fun `terrain still turns to the heading by default`() {
+        val camera = CarMapCamera()
+        camera.setNorthLocked(false)
+        camera.projection(
+            vehicleLatitude = 38.9,
+            vehicleLongitude = -120.1,
+            vehicleBearing = 137f,
+            vehicleMoving = true,
+            widthPixels = 800,
+            heightPixels = 480,
+            anchorX = 400f,
+            anchorY = 240f
+        )
+        assertEquals(137.0, camera.bearing(), 1e-9)
+    }
 }

@@ -118,7 +118,18 @@ class CarMapProjectionTest {
     @Test
     fun `the visible box covers every corner of the display`() {
         val subject = projection(bearing = 33.0)
-        val (south, west, north, east) = subject.visibleBounds().toList()
+        val bounds = subject.visibleBounds()
+        val (south, west, north, east) = bounds
+
+        // Named, and named right: read north-first this comes back inverted,
+        // every consumer refuses it, and the only symptom is that whatever was
+        // meant to fill the view silently draws nothing.
+        assertEquals(south, bounds.south, 0.0)
+        assertEquals(west, bounds.west, 0.0)
+        assertEquals(north, bounds.north, 0.0)
+        assertEquals(east, bounds.east, 0.0)
+        assertTrue("north must be north of south", bounds.north > bounds.south)
+        assertTrue("east must be east of west", bounds.east > bounds.west)
 
         assertTrue(south < subject.centerLatitude && north > subject.centerLatitude)
         assertTrue(west < subject.centerLongitude && east > subject.centerLongitude)

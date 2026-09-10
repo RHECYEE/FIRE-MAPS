@@ -188,6 +188,16 @@ class TrackDetector(
     val currentTrace: List<Pair<Double, Double>>
         get() = points.map { it.latitude to it.longitude }
 
+    /**
+     * Whether the open track was asked for rather than inferred.
+     *
+     * Kept because it changes what happens at the end: an inferred track has
+     * to clear a distance and a time to be worth filing, and a requested one
+     * was already judged worth filing by the person who requested it.
+     */
+    var startedByRequest: Boolean = false
+        private set
+
     /** True if the most recent fix counted as movement. */
     var lastFixWasMoving: Boolean = false
         private set
@@ -262,6 +272,25 @@ class TrackDetector(
 
     private fun movementBeganAt(): Long = window.first().timeMillis
 
+    /**
+     * Opens a track now, because someone asked for one.
+     *
+     * The thirty second confirmation below exists for a detector that is
+     * guessing: armed all shift, it must not open a track every time a truck
+     * rolls forward at a drop point. A person pressing Record is not guessing,
+     * and making them hold a speed for half a minute first means pressing
+     * Record, driving, pressing Stop and getting nothing -- with no way to
+     * tell that from the recording having been thrown away.
+     *
+     * Returns [TrackEvent.None] if a track is already open, so pressing it
+     * twice does not restart and lose the first half.
+     */
+    fun begin(now: Long): TrackEvent {
+        if (recording) return TrackEvent.None
+        val since = candidate.firstOrNull()?.timeMillis ?: now
+        return open(since, now, byRequest = true)
+    }
+
     private fun considerStarting(fix: Fix, moving: Boolean): TrackEvent {
         candidate += fix
         if (candidate.size > 64) candidate.removeAt(0)
@@ -274,10 +303,16 @@ class TrackDetector(
         val since = candidateMovingSince ?: movementBeganAt().also { candidateMovingSince = it }
         if (fix.timeMillis - since < settings.startSustainedMillis) return TrackEvent.None
 
+        return open(since, fix.timeMillis, byRequest = false)
+    }
+
+    /** Opens a track running from [since], taking in whatever the candidate buffer holds. */
+    private fun open(since: Long, now: Long, byRequest: Boolean): TrackEvent {
         recording = true
+        startedByRequest = byRequest
         paused = false
         startedAt = since
-        lastMovementAt = fix.timeMillis
+        lastMovementAt = now
         pausedMillis = 0L
         distanceMeters = 0.0
         movingMillis = 0L
@@ -401,7 +436,9 @@ class TrackDetector(
             segments = segments.toList()
         )
 
+        val byRequest = startedByRequest
         recording = false
+        startedByRequest = false
         points.clear()
         segments.clear()
         candidate.clear()
@@ -411,8 +448,14 @@ class TrackDetector(
         pausedMillis = 0L
         lastAnchorId = null
 
-        val worthKeeping = track.distanceMeters >= settings.minimumTrackDistanceMeters &&
-            track.elapsedMillis >= settings.minimumTrackMillis
+        // A track someone asked for is kept whatever its length. The distance
+        // and time floors are there to stop the detector filing a shunt around
+        // a turnaround as a drive; they have no business discarding a line a
+        // person pressed Record for and then Stop, which from the seat looks
+        // exactly like the recording being deleted.
+        val worthKeeping = byRequest ||
+            (track.distanceMeters >= settings.minimumTrackDistanceMeters &&
+                track.elapsedMillis >= settings.minimumTrackMillis)
         return TrackEvent.Ended(track, worthKeeping)
     }
 }

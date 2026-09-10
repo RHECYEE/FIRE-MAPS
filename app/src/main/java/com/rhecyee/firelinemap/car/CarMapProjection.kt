@@ -16,6 +16,21 @@ data class ScreenPoint(val x: Float, val y: Float)
 data class GroundPoint(val latitude: Double, val longitude: Double)
 
 /**
+ * The geographic box covering the surface.
+ *
+ * Named rather than a four-element array. The array it replaced ran south,
+ * west, north, east -- an order nothing about it announced -- and reading it
+ * as north-first is a silent failure: every edge comes out inverted and
+ * whatever consumed it simply draws nothing.
+ */
+data class VisibleBounds(
+    val south: Double,
+    val west: Double,
+    val north: Double,
+    val east: Double,
+)
+
+/**
  * The Web Mercator view drawn on the car surface.
  *
  * Deliberately free of Android types. Everything that decides *where a thing
@@ -55,13 +70,9 @@ class CarMapProjection(
     private val rotationCos = cos(rotationRadians)
     private val rotationSin = sin(rotationRadians)
 
-    fun worldX(longitude: Double): Double = (longitude + 180.0) / 360.0 * worldSize
+    fun worldX(longitude: Double): Double = unitX(longitude) * worldSize
 
-    fun worldY(latitude: Double): Double {
-        val clamped = latitude.coerceIn(-MAX_LATITUDE, MAX_LATITUDE)
-        val radians = Math.toRadians(clamped)
-        return (1.0 - ln(tan(radians) + 1.0 / cos(radians)) / PI) / 2.0 * worldSize
-    }
+    fun worldY(latitude: Double): Double = unitY(latitude) * worldSize
 
     fun longitudeAt(worldX: Double): Double = worldX / worldSize * 360.0 - 180.0
 
@@ -123,18 +134,18 @@ class CarMapProjection(
      * radius. Under rotation the view is a tilted rectangle, and its corners
      * are exactly the extremes of the box that has to be filled with tiles.
      */
-    fun visibleBounds(): DoubleArray {
+    fun visibleBounds(): VisibleBounds {
         val corners = listOf(
             toGround(0f, 0f),
             toGround(widthPixels.toFloat(), 0f),
             toGround(0f, heightPixels.toFloat()),
             toGround(widthPixels.toFloat(), heightPixels.toFloat())
         )
-        return doubleArrayOf(
-            corners.minOf { it.latitude },
-            corners.minOf { it.longitude },
-            corners.maxOf { it.latitude },
-            corners.maxOf { it.longitude }
+        return VisibleBounds(
+            south = corners.minOf { it.latitude },
+            west = corners.minOf { it.longitude },
+            north = corners.maxOf { it.latitude },
+            east = corners.maxOf { it.longitude }
         )
     }
 
@@ -146,6 +157,23 @@ class CarMapProjection(
         )
 
     companion object {
+
+        /**
+         * Web Mercator position as a fraction of the world, west to east.
+         *
+         * The same arithmetic as [worldX] with the zoom left out. Anything
+         * flattened once and drawn many times -- contours, most of all -- is
+         * held in these units and scaled to the view with a matrix, rather
+         * than reprojected vertex by vertex on every frame.
+         */
+        fun unitX(longitude: Double): Double = (longitude + 180.0) / 360.0
+
+        /** As [unitX], north to south. */
+        fun unitY(latitude: Double): Double {
+            val clamped = latitude.coerceIn(-MAX_LATITUDE, MAX_LATITUDE)
+            val radians = Math.toRadians(clamped)
+            return (1.0 - ln(tan(radians) + 1.0 / cos(radians)) / PI) / 2.0
+        }
         const val TILE_SIZE = 256.0
 
         /** Web Mercator cannot represent the poles. */

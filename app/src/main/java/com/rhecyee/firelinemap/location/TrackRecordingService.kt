@@ -70,10 +70,23 @@ class TrackRecordingService : Service() {
                 disarm()
             }
             else -> {
+                // Whatever the last recording had to say about itself, it is
+                // not news about this one.
+                TrackRecordingState.reportOutcome(null)
                 arm(intent?.getStringExtra(EXTRA_INCIDENT_ID))
                 // Re-read in case the sheet or the setting changed while armed.
                 detector.settings = settingsStore.settings()
                 detector.anchors = (application as FirelineApplication).dropPoints
+                // Two different things wear the same start action. The phone's
+                // button says AUTO RECORD TRAVEL and promises tracks that start
+                // themselves when you move, and that promise is kept. The car's
+                // says Record, which means record this drive, starting now --
+                // and making that one wait out the confirmation window is how
+                // pressing Record, driving, and pressing Stop ends with
+                // nothing to show for it.
+                if (intent?.getBooleanExtra(EXTRA_RECORD_NOW, false) == true) {
+                    openRequestedTrack()
+                }
             }
         }
         // Restarting after process death resumes watching; the open track is
@@ -175,9 +188,26 @@ class TrackRecordingService : Service() {
         }
     }
 
+    /** Opens a track because the operator asked, rather than waiting to be convinced. */
+    private fun openRequestedTrack() {
+        val event = detector.begin(System.currentTimeMillis())
+        if (event !is TrackEvent.Started) return
+        trackId = UUID.randomUUID().toString()
+        updateNotification("Travel recording — 0.0 km")
+        persist(event.atMillis, endedAt = null, isRecording = true)
+        publish(System.currentTimeMillis())
+    }
+
     private fun closeOpenTrack() {
-        val event = detector.finish()
-        if (event is TrackEvent.Ended) finalise(event)
+        when (val event = detector.finish()) {
+            is TrackEvent.Ended -> finalise(event)
+            // Nothing was open. Silence here is the worst answer available: the
+            // button goes back to Record, the line vanishes, and there is no
+            // way to tell that from a finished drive being thrown away.
+            else -> if (armed) TrackRecordingState.reportOutcome(
+                "Nothing recorded — no fix had arrived yet."
+            )
+        }
     }
 
     private fun finalise(event: TrackEvent.Ended) {
@@ -327,6 +357,13 @@ class TrackRecordingService : Service() {
     companion object {
         const val ACTION_START = "com.rhecyee.firelinemap.START_TRACK"
         const val ACTION_STOP = "com.rhecyee.firelinemap.STOP_TRACK"
+
+        /**
+         * Open a track immediately rather than waiting for movement to confirm
+         * itself. Set by the car's Record button; not by the phone's, which is
+         * an arm-and-watch and says so.
+         */
+        const val EXTRA_RECORD_NOW = "record_now"
         const val EXTRA_INCIDENT_ID = "incident_id"
         private const val CHANNEL_ID = "travel_recording"
         private const val NOTIFICATION_ID = 4102

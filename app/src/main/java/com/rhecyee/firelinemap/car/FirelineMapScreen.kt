@@ -149,6 +149,9 @@ class FirelineMapScreen(
                 action = if (armed) TrackRecordingService.ACTION_STOP
                 else TrackRecordingService.ACTION_START
                 putExtra(TrackRecordingService.EXTRA_INCIDENT_ID, incidentId)
+                // Record here means this drive, from now. Nobody presses a
+                // button in a moving vehicle and means "consider it".
+                putExtra(TrackRecordingService.EXTRA_RECORD_NOW, true)
             }
             val started = runCatching {
                 ContextCompat.startForegroundService(carContext, intent)
