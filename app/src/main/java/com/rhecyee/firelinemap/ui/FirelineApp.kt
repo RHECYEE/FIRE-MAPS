@@ -101,6 +101,7 @@ import com.rhecyee.firelinemap.location.TrackRecordingService
 import com.rhecyee.firelinemap.location.SegmentAnchor
 import com.rhecyee.firelinemap.location.TrackSettingsStore
 import com.rhecyee.firelinemap.map.BasemapTileCache
+import com.rhecyee.firelinemap.map.ElevationTiles
 import com.rhecyee.firelinemap.map.TileMath
 import com.rhecyee.firelinemap.measure.AreaUnit
 import com.rhecyee.firelinemap.measure.DistanceUnit
@@ -170,6 +171,7 @@ fun FirelineApp() {
     val repository = remember { MapDocumentRepository(context) }
     val urlImporter = remember { MapUrlImporter(context.cacheDir) }
     val basemap = remember { BasemapTileCache(context) }
+    val elevationTiles = remember { ElevationTiles(context) }
     val elevations = remember { ElevationService() }
     val resources = remember { ResourceRepository(app.database.dao()) }
     val medical = remember { MedicalRepository(app.database.dao()) }
@@ -187,6 +189,8 @@ fun FirelineApp() {
     var mapsLoaded by remember { mutableStateOf(false) }
     var topographyOn by remember { mutableStateOf(settings.topographyEnabled) }
     var landOwnershipOn by remember { mutableStateOf(settings.landOwnershipEnabled) }
+    var contoursOn by remember { mutableStateOf(settings.contourLinesEnabled) }
+    var contourInterval by remember { mutableIntStateOf(settings.contourIntervalFeet) }
     var autoRadius by remember { mutableIntStateOf(settings.autoDownloadRadiusMiles) }
     var wifiOnly by remember { mutableStateOf(settings.autoDownloadWifiOnly) }
     var cachedTerrain by remember { mutableStateOf(0L) }
@@ -809,6 +813,10 @@ fun FirelineApp() {
             onToggleTopography = { settings.topographyEnabled = it; topographyOn = it },
             landOwnershipOn = landOwnershipOn,
             onToggleLandOwnership = { settings.landOwnershipEnabled = it; landOwnershipOn = it },
+            contoursOn = contoursOn,
+            onToggleContours = { settings.contourLinesEnabled = it; contoursOn = it },
+            contourIntervalFeet = contourInterval,
+            onContourInterval = { settings.contourIntervalFeet = it; contourInterval = it },
             packages = layerPackages,
             onToggle = { layer, on ->
                 scope.launch { app.database.dao().upsertLayerPackage(layer.copy(enabled = on)) }
@@ -1210,6 +1218,9 @@ fun FirelineApp() {
                 positionIsSimulated = simulated != null,
                 dropPoints = if (segmentAtDropPoints) dropPoints else emptyList(),
                 basemap = if (topographyOn) basemap else null,
+                elevation = elevationTiles,
+                contoursEnabled = contoursOn,
+                contourIntervalFeet = contourInterval,
                 maxScale = if (onTerrain) TERRAIN_MAX_SCALE else SHEET_MAX_SCALE,
                 measurePoints = measurePoints,
                 measureMode = measureMode,

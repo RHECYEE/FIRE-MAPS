@@ -40,7 +40,19 @@ object ContourField {
             else (meters * ContourGenerator.FEET_PER_METER).toFloat()
         }
 
-        val interval = intervalFeet.toDouble()
+        // Zooming out puts more relief in the window than the asked-for band
+        // can draw, and the generator refuses rather than filling the screen
+        // with ink. Refusing quietly reads as the feature being broken, so
+        // step the band up until it fits instead: coarser lines when the view
+        // is wide, and exactly what was asked for when it is not.
+        val known = feet.filter { !it.isNaN() }
+        if (known.isEmpty()) return emptyList()
+        val interval = fittedInterval(
+            minimumFeet = known.min().toDouble(),
+            maximumFeet = known.max().toDouble(),
+            requestedFeet = intervalFeet
+        ).toDouble()
+
         return ContourGenerator.contours(feet, grid.width, grid.height, interval)
             .flatMap { line ->
                 val index = line.isIndex(interval)
@@ -76,8 +88,38 @@ object ContourField {
         } ?: DEFAULT_INTERVAL_FEET
     }
 
+    /**
+     * The finest interval at or above the one asked for that will actually
+     * draw across this much relief.
+     *
+     * Never finer than requested: an operator who asked for two hundred foot
+     * bands does not want twenty foot bands appearing because the view got
+     * small.
+     */
+    fun fittedInterval(minimumFeet: Double, maximumFeet: Double, requestedFeet: Int): Int {
+        if (requestedFeet <= 0) return requestedFeet
+        val coarser = ContourGenerator.INTERVALS_FEET.filter { it >= requestedFeet }.sorted()
+        for (candidate in coarser) {
+            if (ContourGenerator.levels(minimumFeet, maximumFeet, candidate.toDouble())
+                    .isNotEmpty()
+            ) return candidate
+        }
+        // Past the coarsest on the menu, keep doubling. A view spanning a
+        // whole range still gets lines rather than nothing at all.
+        var candidate = coarser.lastOrNull() ?: requestedFeet
+        repeat(MAX_DOUBLINGS) {
+            candidate *= 2
+            if (ContourGenerator.levels(minimumFeet, maximumFeet, candidate.toDouble())
+                    .isNotEmpty()
+            ) return candidate
+        }
+        return candidate
+    }
+
     /** The interval on a USGS quad over most of the mountain west. */
     const val DEFAULT_INTERVAL_FEET = 40
 
     private const val TARGET_LINES = 12.0
+
+    private const val MAX_DOUBLINGS = 8
 }

@@ -3,6 +3,8 @@ package com.rhecyee.firelinemap.data
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import com.rhecyee.firelinemap.terrain.ContourField
+import com.rhecyee.firelinemap.terrain.ContourGenerator
 
 /**
  * Settings that belong to the device rather than to an incident.
@@ -40,6 +42,31 @@ class AppSettings(context: Context) {
     var landOwnershipEnabled: Boolean
         get() = preferences.getBoolean(KEY_OWNERSHIP, true)
         set(value) = preferences.edit().putBoolean(KEY_OWNERSHIP, value).apply()
+
+    /**
+     * Whether contour lines are drawn over whatever map is open.
+     *
+     * Distinct from [topographyEnabled], which is the basemap picture. These
+     * are drawn from elevation data, so they go over an incident sheet as
+     * readily as over terrain -- which is the point of having them.
+     */
+    var contourLinesEnabled: Boolean
+        get() = preferences.getBoolean(KEY_CONTOURS, true)
+        set(value) = preferences.edit().putBoolean(KEY_CONTOURS, value).apply()
+
+    /**
+     * Vertical spacing between contour lines, in feet.
+     *
+     * Forty is what a USGS quad uses over most of the mountain west. Ground
+     * flatter or steeper than that wants a different band, and the operator is
+     * the one who can see which.
+     */
+    var contourIntervalFeet: Int
+        get() = preferences.getInt(KEY_CONTOUR_INTERVAL, DEFAULT_CONTOUR_INTERVAL_FEET)
+        set(value) = preferences.edit().putInt(
+            KEY_CONTOUR_INTERVAL,
+            if (value in CONTOUR_INTERVALS_FEET) value else DEFAULT_CONTOUR_INTERVAL_FEET
+        ).apply()
 
     /**
      * The sheet the operator has open.
@@ -82,6 +109,15 @@ class AppSettings(context: Context) {
         private const val KEY_TOPO = "topography_enabled"
         private const val KEY_OWNERSHIP = "land_ownership_enabled"
         private const val KEY_ACTIVE_MAP = "active_map_id"
+        private const val KEY_CONTOURS = "contour_lines_enabled"
+        private const val KEY_CONTOUR_INTERVAL = "contour_interval_feet"
+
+        // Aliased rather than restated: two lists of intervals is one list
+        // that will eventually disagree with the other.
+        const val DEFAULT_CONTOUR_INTERVAL_FEET = ContourField.DEFAULT_INTERVAL_FEET
+        val CONTOUR_INTERVALS_FEET = ContourGenerator.INTERVALS_FEET
+
+        fun describeInterval(feet: Int): String = "$feet ft"
 
         /**
          * Stored in place of a sheet id when terrain is the map on purpose.

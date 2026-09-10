@@ -51,6 +51,9 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.rhecyee.firelinemap.map.BasemapTileCache
+import com.rhecyee.firelinemap.map.ElevationTiles
+import com.rhecyee.firelinemap.terrain.ContourWindows
+import com.rhecyee.firelinemap.terrain.rememberContours
 import com.rhecyee.firelinemap.data.MarkerEntity
 import com.rhecyee.firelinemap.resources.ResourceSymbol
 import com.rhecyee.firelinemap.measure.MeasureMode
@@ -80,6 +83,16 @@ fun MapCanvas(
     positionIsSimulated: Boolean = false,
     dropPoints: List<DropPoint> = emptyList(),
     basemap: BasemapTileCache? = null,
+    /**
+     * Elevation behind the contour lines.
+     *
+     * Separate from [basemap] because contours are drawn from the data rather
+     * than copied out of a picture, which is what lets them sit over an
+     * incident sheet at an interval the operator chose.
+     */
+    elevation: ElevationTiles? = null,
+    contoursEnabled: Boolean = false,
+    contourIntervalFeet: Int = 40,
     measurePoints: List<MeasurePoint> = emptyList(),
     measureMode: MeasureMode = MeasureMode.DISTANCE,
     markers: List<MarkerEntity> = emptyList(),
@@ -292,6 +305,63 @@ fun MapCanvas(
             return geo.latitude to geo.longitude
         }
 
+        // Worked out here rather than while drawing, so the trace is keyed on
+        // the view and not on the frame clock. All four corners, because a
+        // georeferenced sheet is rotated against north by the convergence of
+        // its own grid: taking two would clip the contours off two edges.
+        val visibleGround = run {
+            if (viewport.width <= 0 || viewport.height <= 0) return@run null
+            val width = viewport.width.toFloat()
+            val height = viewport.height.toFloat()
+            val corners = listOfNotNull(
+                screenToGeoPoint(Offset(0f, 0f)),
+                screenToGeoPoint(Offset(width, 0f)),
+                screenToGeoPoint(Offset(0f, height)),
+                screenToGeoPoint(Offset(width, height))
+            )
+            if (corners.size < 4) return@run null
+            corners
+        }
+
+        val contourWindow = run {
+            if (!contoursEnabled || elevation == null) return@run null
+            val corners = visibleGround ?: return@run null
+            ContourWindows.of(
+                north = corners.maxOf { it.first },
+                south = corners.minOf { it.first },
+                west = corners.minOf { it.second },
+                east = corners.maxOf { it.second },
+                intervalFeet = contourIntervalFeet
+            )
+        }
+
+        // How much country is actually on screen, which is what decides
+        // whether an elevation figure fits between the lines.
+        val visibleMeters = run {
+            val corners = visibleGround ?: return@run 0.0
+            val north = corners.maxOf { it.first }
+            val south = corners.minOf { it.first }
+            val middle = (north + south) / 2.0
+            com.rhecyee.firelinemap.map.MapCoverage.distanceMeters(
+                middle, corners.minOf { it.second },
+                middle, corners.maxOf { it.second }
+            )
+        }
+
+        val contours = rememberContours(
+            tiles = elevation,
+            enabled = contoursEnabled,
+            window = contourWindow
+        )
+
+        // Flattened onto the page once a trace lands, not once a frame. See
+        // ContourOverlay: this is tens of thousands of inverse projections.
+        val contourOverlay = remember(contours, map.id, pageWidthPoints, pageHeightPoints) {
+            val frame = map.frame
+            if (frame == null) null
+            else buildContourOverlay(contours, frame, pageWidthPoints, pageHeightPoints)
+        }
+
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
@@ -434,6 +504,22 @@ fun MapCanvas(
                     drawHeight = drawHeight,
                     opacity = parcelOpacity,
                     showLabels = scale >= 4f
+                )
+            }
+
+            // Contours over everything that is a picture of the ground -- the
+            // sheet included -- and under everything the incident owns. Laid
+            // over the sheet on purpose: reading slope off the map someone is
+            // actually working from is the whole reason to draw these rather
+            // than take the ones printed on the basemap.
+            if (contourOverlay != null) {
+                drawContours(
+                    overlay = contourOverlay,
+                    originX = originX,
+                    originY = originY,
+                    drawWidth = drawWidth,
+                    drawHeight = drawHeight,
+                    labelsVisible = contourLabelsVisible(visibleMeters)
                 )
             }
 

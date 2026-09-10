@@ -31,6 +31,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.style.TextAlign
+import com.rhecyee.firelinemap.data.AppSettings
 import com.rhecyee.firelinemap.data.LayerPackageEntity
 import com.rhecyee.firelinemap.parcels.CountyRecord
 
@@ -51,6 +53,10 @@ fun LayersSheet(
     onToggleTopography: (Boolean) -> Unit,
     landOwnershipOn: Boolean,
     onToggleLandOwnership: (Boolean) -> Unit,
+    contoursOn: Boolean,
+    onToggleContours: (Boolean) -> Unit,
+    contourIntervalFeet: Int,
+    onContourInterval: (Int) -> Unit,
     packages: List<LayerPackageEntity>,
     onToggle: (LayerPackageEntity, Boolean) -> Unit,
     onOpacity: (LayerPackageEntity, Float) -> Unit,
@@ -168,6 +174,35 @@ fun LayersSheet(
                     checked = topographyOn,
                     onCheckedChange = onToggleTopography
                 )
+                ToggleRow(
+                    title = "Contour lines",
+                    subtitle = "Drawn from elevation data rather than taken off " +
+                        "the basemap, so they lie over an imported sheet as well " +
+                        "as over terrain, at whatever band the ground calls for.",
+                    checked = contoursOn,
+                    onCheckedChange = onToggleContours
+                )
+                if (contoursOn) {
+                    Text(
+                        "CONTOUR INTERVAL",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Black,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    IntervalChips(
+                        options = AppSettings.CONTOUR_INTERVALS_FEET,
+                        selected = contourIntervalFeet,
+                        label = { AppSettings.describeInterval(it) },
+                        onSelect = onContourInterval
+                    )
+                    Text(
+                        "Forty feet is what a USGS quad uses through most of the " +
+                            "mountain west. Tighten it on gentle ground, open it up " +
+                            "on a canyon wall.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 ToggleRow(
                     title = "Land ownership",
                     subtitle = "Tap bare ground for the administering agency. " +
@@ -497,4 +532,46 @@ fun LandOwnerDialog(
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } }
     )
+}
+
+/** A row of one-tap choices, sized so a gloved thumb can hit one. */
+@Composable
+private fun <T> IntervalChips(
+    options: List<T>,
+    selected: T,
+    label: (T) -> String,
+    onSelect: (T) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+        options.chunked(3).forEach { row ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                row.forEach { option ->
+                    val isSelected = option == selected
+                    Text(
+                        label(option),
+                        modifier = Modifier
+                            .weight(1f)
+                            .background(
+                                if (isSelected) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.surfaceVariant,
+                                RoundedCornerShape(6.dp)
+                            )
+                            .clickable { onSelect(option) }
+                            .padding(vertical = 9.dp),
+                        color = if (isSelected) Color.White
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
+                repeat(3 - row.size) {
+                    androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
+                }
+            }
+        }
+    }
 }

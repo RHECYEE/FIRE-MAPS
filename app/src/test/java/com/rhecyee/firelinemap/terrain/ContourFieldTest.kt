@@ -156,6 +156,78 @@ class ContourFieldTest {
         assertTrue(contours.isEmpty())
     }
 
+    // ---- fitting the interval to the relief ----
+
+    @Test
+    fun `a band that fits is used exactly as asked`() {
+        assertEquals(40, ContourField.fittedInterval(7380.0, 7620.0, 40))
+        assertEquals(20, ContourField.fittedInterval(7380.0, 7480.0, 20))
+        assertEquals(200, ContourField.fittedInterval(2000.0, 9000.0, 200))
+    }
+
+    @Test
+    fun `a view too wide for the band gets a coarser one rather than nothing`() {
+        // Sea level to the crest at twenty feet is seven hundred lines, which
+        // the generator refuses. Refusing quietly would read as contours being
+        // broken, so the band opens up instead.
+        val fitted = ContourField.fittedInterval(0.0, 14_000.0, 20)
+        assertTrue("still asking for an impossible band: $fitted", fitted > 20)
+        assertTrue(
+            ContourGenerator.levels(0.0, 14_000.0, fitted.toDouble()).isNotEmpty()
+        )
+    }
+
+    @Test
+    fun `the fitted band is never finer than the one asked for`() {
+        for (requested in ContourGenerator.INTERVALS_FEET) {
+            for (relief in listOf(50.0, 500.0, 5_000.0, 50_000.0)) {
+                val fitted = ContourField.fittedInterval(1000.0, 1000.0 + relief, requested)
+                assertTrue(
+                    "asked $requested over $relief feet and got $fitted",
+                    fitted >= requested
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `even a whole mountain range still gets lines`() {
+        val fitted = ContourField.fittedInterval(-300.0, 20_000.0, 20)
+        assertTrue(
+            ContourGenerator.levels(-300.0, 20_000.0, fitted.toDouble()).isNotEmpty()
+        )
+    }
+
+    @Test
+    fun `zooming out coarsens the band and zooming back in restores it`() {
+        val wide = ContourField.fittedInterval(4_000.0, 12_000.0, 40)
+        val close = ContourField.fittedInterval(7_380.0, 7_620.0, 40)
+        assertTrue(wide > close)
+        assertEquals(40, close)
+    }
+
+    @Test
+    fun `a wide window draws coarser lines instead of coming back empty`() {
+        // The whole path, not just the arithmetic: eight thousand feet of
+        // relief at a forty foot band.
+        val contours = ContourField.build(
+            grid(60, 20) { column, _ ->
+                (2000.0 + column * 140.0) / ContourGenerator.FEET_PER_METER
+            },
+            intervalFeet = 40
+        )
+        assertTrue("a wide view came back with no contours at all", contours.isNotEmpty())
+        val bands = contours.map { it.elevationFeet }.sorted().zipWithNext { a, b -> b - a }
+        assertTrue("bands are not evenly spaced: $bands", bands.distinct().size <= 1)
+        assertTrue("the band did not open up", bands.first() > 40.0)
+    }
+
+    @Test
+    fun `a nonsense band is passed through untouched rather than fitted`() {
+        assertEquals(0, ContourField.fittedInterval(0.0, 100.0, 0))
+        assertEquals(-40, ContourField.fittedInterval(0.0, 100.0, -40))
+    }
+
     // ---- interval suggestion ----
 
     @Test
