@@ -466,6 +466,289 @@ class TrackDetectorTest {
         )
     }
 
+
+    // ---- legs bounded by the vehicle shutting down ----
+
+    /**
+     * A vehicle whose position runs continuously across a whole shift.
+     *
+     * [walk] above restarts at the origin on every call, which is fine for a
+     * single run and wrong for anything with more than one leg: the second
+     * call teleports back, and the jump lands in the distance total. That
+     * inflated distance is enough to hide a segment boundary going missing.
+     */
+    private inner class Shift(val detector: TrackDetector) {
+        var clock = 0L
+            private set
+        private var meters = 0.0
+
+        fun drive(seconds: Int, speed: Double = 12.0) {
+            repeat(seconds / 5) {
+                clock += 5_000L
+                meters += speed * 5
+                detector.onFix(
+                    Fix(
+                        latitude = north(meters),
+                        longitude = startLon,
+                        timeMillis = clock,
+                        accuracyMeters = 8f
+                    )
+                )
+            }
+        }
+
+        /** Parked with the engine running, before the key turns. */
+        fun park(seconds: Int = 30) = drive(seconds, speed = 0.0)
+
+        fun wait(seconds: Int) {
+            clock += seconds * 1000L
+        }
+    }
+
+    /** Drives, parks, and reports what the last accepted fix's speed was. */
+    private fun driveAndPark(detector: TrackDetector, seconds: Int = 200): Long {
+        detector.begin(0L)
+        walk(detector, fromMillis = 0L, seconds = seconds, speed = 12.0)
+        // Two stationary fixes, which is what parking looks like before the key
+        // turns: the receiver reports no speed worth the name.
+        var t = seconds * 1000L
+        repeat(2) {
+            t += 5_000L
+            detector.onFix(
+                Fix(
+                    latitude = north(12.0 * seconds),
+                    longitude = startLon,
+                    timeMillis = t,
+                    accuracyMeters = 8f,
+                    speedMetersPerSecond = 0.0
+                )
+            )
+        }
+        return t
+    }
+
+    @Test
+    fun `losing the head unit ends the leg where the vehicle stopped`() {
+        val detector = detector()
+        val parkedAt = driveAndPark(detector)
+
+        val event = detector.vehicleStopped(parkedAt + 8_000L)
+
+        assertTrue("no leg was closed", event is TrackEvent.Segmented)
+        val segment = (event as TrackEvent.Segmented).segment
+        assertEquals(SegmentBoundary.VEHICLE_STOPPED, segment.endedBy)
+        assertTrue("the leg covered no ground", segment.distanceMeters > 1_000.0)
+        // Closed at the last real movement, not at the moment the key turned:
+        // the manoeuvring and idling in between belong to neither leg.
+        assertTrue(segment.endedAt <= parkedAt)
+        assertEquals(1, detector.currentSegmentCount)
+    }
+
+    @Test
+    fun `the track carries on across a vehicle stop rather than ending`() {
+        val detector = detector()
+        val parkedAt = driveAndPark(detector)
+        detector.vehicleStopped(parkedAt + 8_000L)
+
+        assertTrue("the track was closed instead of segmented", detector.isRecording)
+    }
+
+    @Test
+    fun `standing at a drop point is not counted into the next leg`() {
+        // Half an hour talking to people is not driving. Counted into the leg
+        // that follows, every leg after the first reads far slower than it was.
+        val detector = detector()
+        val parkedAt = driveAndPark(detector)
+        detector.vehicleStopped(parkedAt + 8_000L)
+
+        val backInTheTruck = parkedAt + 1_800_000L
+        detector.vehicleStarted(backInTheTruck)
+        walk(detector, fromMillis = backInTheTruck, seconds = 200, speed = 12.0)
+
+        val ended = detector.finish() as TrackEvent.Ended
+        val second = ended.track.segments.last()
+        assertTrue(
+            "the wait was billed to the drive: ${second.elapsedMillis} ms",
+            second.elapsedMillis < 600_000L
+        )
+    }
+
+    @Test
+    fun `a cable coming loose at road speed does not break the leg`() {
+        // USB in a truck is not a reliable connection. A lead that drops at
+        // forty miles an hour would otherwise cut a drive in half, silently.
+        val detector = detector()
+        detector.begin(0L)
+        walk(detector, fromMillis = 0L, seconds = 200, speed = 12.0)
+
+        val event = detector.vehicleStopped(201_000L)
+
+        assertEquals(TrackEvent.None, event)
+        assertEquals(0, detector.currentSegmentCount)
+    }
+
+    @Test
+    fun `a cable coming loose is not remembered as a stop`() {
+        // If it were, the reconnect a second later would move the leg's start
+        // forward and throw away everything driven up to that point.
+        val detector = detector()
+        detector.begin(0L)
+        val shift = Shift(detector)
+        shift.drive(seconds = 200)
+        val covered = detector.currentDistanceMeters
+        assertTrue(covered > 2_000.0)
+
+        detector.vehicleStopped(shift.clock)
+        detector.vehicleStarted(shift.clock + 1_000L)
+        shift.drive(seconds = 100)
+
+        val ended = detector.finish() as TrackEvent.Ended
+        assertEquals(1, ended.track.segments.size)
+        assertTrue(
+            "ground driven before the glitch was dropped: ${ended.track.segments}",
+            ended.track.segments.single().distanceMeters >= covered
+        )
+    }
+
+    @Test
+    fun `losing the head unit twice does not file an empty leg`() {
+        val detector = detector()
+        detector.begin(0L)
+        val shift = Shift(detector)
+        shift.drive(seconds = 200)
+        shift.park()
+
+        detector.vehicleStopped(shift.clock)
+        val again = detector.vehicleStopped(shift.clock + 12_000L)
+
+        assertEquals(TrackEvent.None, again)
+        assertEquals(1, detector.currentSegmentCount)
+    }
+
+    @Test
+    fun `a second disconnect with no reconnect between does not file another leg`() {
+        // Wireless Android Auto drops, comes back without a state change the
+        // phone sees, drops again -- with driving in between. One arrival
+        // happened, so one boundary belongs there.
+        val detector = detector()
+        detector.begin(0L)
+        val shift = Shift(detector)
+        shift.drive(seconds = 200)
+        shift.park()
+        detector.vehicleStopped(shift.clock)
+        assertEquals(1, detector.currentSegmentCount)
+
+        // Driving on without the vehicle ever being seen to start again.
+        shift.drive(seconds = 200)
+        shift.park()
+        val again = detector.vehicleStopped(shift.clock)
+
+        assertEquals(TrackEvent.None, again)
+        assertEquals("a leg was filed for a vehicle that never started", 1,
+            detector.currentSegmentCount)
+    }
+
+    @Test
+    fun `plugging a phone in partway through a drive does not carve up the leg`() {
+        val detector = detector()
+        detector.begin(0L)
+        val shift = Shift(detector)
+        shift.drive(seconds = 200)
+        val covered = detector.currentDistanceMeters
+
+        // No disconnect preceded this, so it is somebody plugging in, not a
+        // vehicle starting. It must not move the leg's start forward.
+        detector.vehicleStarted(shift.clock)
+        shift.drive(seconds = 200)
+
+        val ended = detector.finish() as TrackEvent.Ended
+        assertEquals(1, ended.track.segments.size)
+        val leg = ended.track.segments.single()
+        assertEquals("the leg lost its beginning", 0L, leg.startedAt)
+        assertTrue(
+            "the ground driven before plugging in was dropped: $leg",
+            leg.distanceMeters > covered * 1.8
+        )
+    }
+
+    @Test
+    fun `a head unit lost before anything was driven files nothing`() {
+        val detector = detector()
+        detector.begin(0L)
+
+        val event = detector.vehicleStopped(1_000L)
+
+        assertEquals(TrackEvent.None, event)
+        assertEquals(0, detector.currentSegmentCount)
+    }
+
+    @Test
+    fun `a head unit lost while nothing is recording does nothing`() {
+        val detector = detector()
+        assertEquals(TrackEvent.None, detector.vehicleStopped(1_000L))
+    }
+
+    @Test
+    fun `turning the split off leaves the track whole`() {
+        val detector = TrackDetector(
+            TrackDetectionSettings(segmentAtVehicleStops = false)
+        )
+        val parkedAt = driveAndPark(detector)
+
+        assertEquals(TrackEvent.None, detector.vehicleStopped(parkedAt + 8_000L))
+        assertEquals(0, detector.currentSegmentCount)
+    }
+
+    @Test
+    fun `a shift of drop point runs comes back as one track of many legs`() {
+        // What this is actually for: drive, park, talk, get back in, drive on.
+        // Positions have to run continuously across the whole shift -- a leg
+        // that restarts at the origin is a jump of tens of kilometres, which
+        // the cable-fault guard would rightly refuse to call an arrival.
+        val detector = detector()
+        var clock = 0L
+        var meters = 0.0
+
+        fun fix(speed: Double, seconds: Int) {
+            repeat(seconds / 5) {
+                clock += 5_000L
+                meters += speed * 5
+                detector.onFix(
+                    Fix(
+                        latitude = north(meters),
+                        longitude = startLon,
+                        timeMillis = clock,
+                        accuracyMeters = 8f
+                    )
+                )
+            }
+        }
+
+        detector.begin(0L)
+        repeat(3) {
+            fix(speed = 12.0, seconds = 200)   // the run out
+            fix(speed = 0.0, seconds = 30)     // parked, engine idling down
+            detector.vehicleStopped(clock)     // key off
+            clock += 900_000L                  // stood there talking
+            detector.vehicleStarted(clock)     // back in, engine on
+        }
+
+        val ended = detector.finish() as TrackEvent.Ended
+        val byVehicle = ended.track.segments.count {
+            it.endedBy == SegmentBoundary.VEHICLE_STOPPED
+        }
+        assertEquals("expected a leg a run: ${ended.track.segments}", 3, byVehicle)
+        ended.track.segments.filter { it.endedBy == SegmentBoundary.VEHICLE_STOPPED }
+            .forEach { segment ->
+                assertTrue("a leg covered no ground: $segment", segment.distanceMeters > 1_000.0)
+                // The standing around is outside the legs, not billed to them.
+                assertTrue("the wait was billed to a leg: $segment",
+                    segment.elapsedMillis < 600_000L)
+            }
+        // Still one track, not three.
+        assertTrue(ended.kept)
+    }
+
 }
 
 class TrackDetectorSpeedTest {

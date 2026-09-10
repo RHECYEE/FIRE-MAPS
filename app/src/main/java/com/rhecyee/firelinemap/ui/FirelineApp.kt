@@ -166,6 +166,9 @@ fun FirelineApp() {
     val liveTrack by TrackRecordingState.live.collectAsState()
     val trackOutcome by TrackRecordingState.lastOutcome.collectAsState()
     var segmentAtDropPoints by remember { mutableStateOf(trackSettings.segmentAtDropPoints) }
+    var segmentAtVehicleStops by remember {
+        mutableStateOf(trackSettings.segmentAtVehicleStops)
+    }
     var dropPoints by remember { mutableStateOf<List<DropPoint>>(emptyList()) }
 
     val repository = remember { MapDocumentRepository(context) }
@@ -916,6 +919,11 @@ fun FirelineApp() {
                 stopThreshold = trackSettings.stopThresholdSeconds
             },
             segmentAtDropPoints = segmentAtDropPoints,
+            segmentAtVehicleStops = segmentAtVehicleStops,
+            onToggleVehicleSegmenting = {
+                trackSettings.segmentAtVehicleStops = it
+                segmentAtVehicleStops = it
+            },
             onToggleSegmenting = {
                 trackSettings.segmentAtDropPoints = it
                 segmentAtDropPoints = it

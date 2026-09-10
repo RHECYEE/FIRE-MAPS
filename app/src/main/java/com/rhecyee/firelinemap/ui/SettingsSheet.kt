@@ -55,6 +55,8 @@ fun SettingsSheet(
     onStopThreshold: (Int) -> Unit,
     segmentAtDropPoints: Boolean,
     onToggleSegmenting: (Boolean) -> Unit,
+    segmentAtVehicleStops: Boolean,
+    onToggleVehicleSegmenting: (Boolean) -> Unit,
     dropPointsFound: Int,
     autoDownloadRadius: Int,
     onAutoDownloadRadius: (Int) -> Unit,
@@ -245,6 +247,25 @@ fun SettingsSheet(
                     color = MaterialTheme.colorScheme.primary,
                     fontWeight = FontWeight.Black
                 )
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Split legs when the vehicle stops", fontWeight = FontWeight.Bold)
+                        Text(
+                            "Android Auto goes away when the engine does, which is what " +
+                                "happens when you pull in at a drop point and get out. " +
+                                "The leg ends there and the next one starts when you turn " +
+                                "the key again, so the time spent standing around is not " +
+                                "counted as driving.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = segmentAtVehicleStops,
+                        onCheckedChange = onToggleVehicleSegmenting
+                    )
+                }
 
                 HorizontalDivider()
                 Heading("EXPERIMENTAL")

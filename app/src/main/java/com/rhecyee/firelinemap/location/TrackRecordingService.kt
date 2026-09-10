@@ -38,6 +38,15 @@ import java.util.UUID
 class TrackRecordingService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    /**
+     * Watched for the whole life of the service, armed or not.
+     *
+     * The connection has to be known before a leg can be closed by losing it,
+     * and the first reading arrives when the observer is registered rather
+     * than when the vehicle next changes state.
+     */
+    private val vehicle = VehicleConnection(this)
+
     private lateinit var settingsStore: TrackSettingsStore
     private val detector by lazy { TrackDetector(settingsStore.settings()) }
 
@@ -61,6 +70,29 @@ class TrackRecordingService : Service() {
         super.onCreate()
         settingsStore = TrackSettingsStore(this)
         createNotificationChannel()
+        vehicle.watch { connected ->
+            if (connected) onVehicleStarted() else onVehicleStopped()
+        }
+    }
+
+    /**
+     * The head unit went away, so the engine did, so this leg ended here.
+     *
+     * The detector decides whether that is really an arrival -- a lead coming
+     * loose at road speed is not -- and whether there is a leg to close.
+     */
+    private fun onVehicleStopped() {
+        val event = detector.vehicleStopped(System.currentTimeMillis())
+        if (event is TrackEvent.Segmented) {
+            persist(detector.currentStartedAt, endedAt = null, isRecording = true)
+            updateNotification(
+                "Leg %d ended — vehicle stopped".format(detector.currentSegmentCount)
+            )
+        }
+    }
+
+    private fun onVehicleStarted() {
+        detector.vehicleStarted(System.currentTimeMillis())
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -349,6 +381,7 @@ class TrackRecordingService : Service() {
 
     override fun onDestroy() {
         closeOpenTrack()
+        vehicle.stop()
         super.onDestroy()
     }
 

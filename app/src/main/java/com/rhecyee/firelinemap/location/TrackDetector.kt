@@ -71,7 +71,25 @@ data class TrackDetectionSettings(
     val segmentAtDropPoints: Boolean = false,
 
     /** How close counts as passing through a drop point. */
-    val dropPointRadiusMeters: Double = 60.0
+    val dropPointRadiusMeters: Double = 60.0,
+
+    /**
+     * End a leg when the vehicle shuts down.
+     *
+     * On by default, unlike the drop point test above, because it is not
+     * guessing at anything: the head unit goes away when the engine does.
+     */
+    val segmentAtVehicleStops: Boolean = true,
+
+    /**
+     * Speed above which a head unit dropping out is a cable, not an arrival.
+     *
+     * USB in a truck is not a reliable connection, and a lead that drops at
+     * forty miles an hour would otherwise break a leg in half in the middle of
+     * a drive -- silently, and in a way nobody would think to check. About
+     * seven miles an hour: faster than anyone parks.
+     */
+    val vehicleStillMovingMetersPerSecond: Double = 3.0
 )
 
 /** A drop point the detector may segment on. */
@@ -81,13 +99,34 @@ data class SegmentAnchor(
     val longitude: Double
 )
 
-/** One leg of a track, bounded by drop points or by the track's own ends. */
+/** What brought a leg to an end. */
+enum class SegmentBoundary {
+    /** Travel passed through a drop point read off the sheet. */
+    DROP_POINT,
+
+    /**
+     * The head unit went away, which means the engine did.
+     *
+     * The most honest arrival signal available. A drop point has to have been
+     * read off a sheet, and read correctly, to be there at all; a stop
+     * threshold cannot tell arriving from waiting at a gate. Turning the key
+     * off is unambiguous and it is what people actually do when they get
+     * somewhere and get out to talk to somebody.
+     */
+    VEHICLE_STOPPED,
+
+    /** The track itself finished. */
+    TRACK_END,
+}
+
+/** One leg of a track, bounded by drop points, by vehicle stops, or by the track's own ends. */
 data class TrackSegment(
     val startedAt: Long,
     val endedAt: Long,
     val distanceMeters: Double,
     /** The drop point that closed this segment, if one did. */
-    val endedAtDropPointId: String? = null
+    val endedAtDropPointId: String? = null,
+    val endedBy: SegmentBoundary = SegmentBoundary.TRACK_END
 ) {
     val elapsedMillis: Long get() = (endedAt - startedAt).coerceAtLeast(0)
 }
@@ -166,6 +205,18 @@ class TrackDetector(
     private var segmentDistanceAtStart = 0.0
     private var lastAnchorId: String? = null
 
+    /** When the vehicle last shut down under us, or null while it is running. */
+    private var vehicleParkedAt: Long? = null
+
+    /**
+     * Ground speed between the last two accepted fixes.
+     *
+     * Kept because a receiver's own speed field is optional and plenty of them
+     * leave it out. Anything that has to know whether the vehicle is moving
+     * right now -- rather than over a window -- needs an answer either way.
+     */
+    private var lastStepMetersPerSecond: Double = 0.0
+
     /** Drop points travel may be segmented on. Empty disables segmenting. */
     var anchors: List<SegmentAnchor> = emptyList()
 
@@ -236,6 +287,7 @@ class TrackDetector(
             previous.latitude, previous.longitude, fix.latitude, fix.longitude
         )
         val deltaMillis = (fix.timeMillis - previous.timeMillis).coerceAtLeast(0)
+        lastStepMetersPerSecond = if (deltaMillis > 0) step / (deltaMillis / 1000.0) else 0.0
         val moving = isMoving(fix)
         lastFixWasMoving = moving
 
@@ -321,6 +373,9 @@ class TrackDetector(
         segmentStartedAt = since
         segmentDistanceAtStart = 0.0
         lastAnchorId = null
+        vehicleParkedAt = null
+        lastStepMetersPerSecond = 0.0
+        lastStepMetersPerSecond = 0.0
         points += candidate.filter { it.timeMillis >= since }
         candidate.clear()
         candidateMovingSince = null
@@ -365,7 +420,9 @@ class TrackDetector(
             anchorAt(fix)?.let { anchor ->
                 if (anchor.id != lastAnchorId) {
                     lastAnchorId = anchor.id
-                    return closeSegment(fix.timeMillis, anchor.id)
+                    return closeSegment(
+                        fix.timeMillis, anchor.id, SegmentBoundary.DROP_POINT
+                    )
                 }
             }
             return TrackEvent.Extended(distanceMeters, points.size)
@@ -379,6 +436,54 @@ class TrackDetector(
         return TrackEvent.Extended(distanceMeters, points.size)
     }
 
+    /**
+     * The vehicle shut down: this leg ended where it stopped.
+     *
+     * Closed at the last real movement rather than at the moment the head unit
+     * went away, because between parking and the key turning there is a minute
+     * of manoeuvring and idling that belongs to neither leg.
+     *
+     * Returns [TrackEvent.None] when there is nothing to close -- not
+     * recording, no ground covered since the last boundary, already parked, or
+     * still doing road speed, which means a lead came loose rather than
+     * anybody arriving anywhere.
+     */
+    fun vehicleStopped(atMillis: Long): TrackEvent {
+        if (!settings.segmentAtVehicleStops) return TrackEvent.None
+        if (!recording) return TrackEvent.None
+        if (vehicleParkedAt != null) return TrackEvent.None
+
+        // Whichever of the two says faster. A false "still moving" costs a
+        // boundary nobody will miss; a false "stopped" cuts a drive in half.
+        val speed = maxOf(
+            lastAccepted?.speedMetersPerSecond ?: 0.0,
+            lastStepMetersPerSecond
+        )
+        if (speed >= settings.vehicleStillMovingMetersPerSecond) return TrackEvent.None
+
+        vehicleParkedAt = atMillis
+        if (lastMovementAt <= segmentStartedAt) return TrackEvent.None
+        return closeSegment(lastMovementAt, null, SegmentBoundary.VEHICLE_STOPPED)
+    }
+
+    /**
+     * The vehicle started again: the next leg begins here.
+     *
+     * Not back when it shut down. The half hour spent standing at a drop point
+     * talking to people is not driving, and counting it into the next leg
+     * would make every leg after the first read as far slower than it was.
+     *
+     * Does nothing unless the vehicle was seen to stop, so plugging a phone in
+     * partway through a drive does not carve the leg up.
+     */
+    fun vehicleStarted(atMillis: Long) {
+        vehicleParkedAt ?: return
+        vehicleParkedAt = null
+        if (!recording) return
+        segmentStartedAt = atMillis
+        segmentDistanceAtStart = distanceMeters
+    }
+
     /** The drop point this fix is passing through, if segmenting is enabled. */
     private fun anchorAt(fix: Fix): SegmentAnchor? {
         if (!settings.segmentAtDropPoints || anchors.isEmpty()) return null
@@ -389,12 +494,17 @@ class TrackDetector(
         }
     }
 
-    private fun closeSegment(atMillis: Long, anchorId: String?): TrackEvent {
+    private fun closeSegment(
+        atMillis: Long,
+        anchorId: String?,
+        boundary: SegmentBoundary
+    ): TrackEvent {
         val segment = TrackSegment(
             startedAt = segmentStartedAt,
             endedAt = atMillis,
             distanceMeters = distanceMeters - segmentDistanceAtStart,
-            endedAtDropPointId = anchorId
+            endedAtDropPointId = anchorId,
+            endedBy = boundary
         )
         segments += segment
         segmentStartedAt = atMillis
@@ -421,7 +531,8 @@ class TrackDetector(
                 startedAt = segmentStartedAt,
                 endedAt = lastMovementAt,
                 distanceMeters = distanceMeters - segmentDistanceAtStart,
-                endedAtDropPointId = null
+                endedAtDropPointId = null,
+                endedBy = SegmentBoundary.TRACK_END
             )
         }
 
@@ -447,6 +558,7 @@ class TrackDetector(
         movingMillis = 0L
         pausedMillis = 0L
         lastAnchorId = null
+        vehicleParkedAt = null
 
         // A track someone asked for is kept whatever its length. The distance
         // and time floors are there to stop the detector filing a shunt around
