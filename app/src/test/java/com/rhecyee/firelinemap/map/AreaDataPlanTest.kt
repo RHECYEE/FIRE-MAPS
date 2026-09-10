@@ -8,6 +8,52 @@ import org.junit.Test
 
 class TileMathTest {
 
+    @Test
+    fun worldCoordinateWholePartNamesTheTile() {
+        for (zoom in listOf(8, 12, 15)) {
+            for (longitude in listOf(-124.4, -120.05, -97.0, 0.0, 12.5, 179.9)) {
+                assertEquals(
+                    TileMath.tileX(longitude, zoom),
+                    kotlin.math.floor(TileMath.worldX(longitude, zoom)).toInt()
+                )
+            }
+            for (latitude in listOf(-60.0, -0.1, 0.0, 38.9, 49.0, 71.3)) {
+                assertEquals(
+                    TileMath.tileY(latitude, zoom),
+                    kotlin.math.floor(TileMath.worldY(latitude, zoom)).toInt()
+                )
+            }
+        }
+    }
+
+    @Test
+    fun worldCoordinateFractionSaysHowFarAcrossTheTile() {
+        val zoom = 10
+        // The exact west edge of a tile is nought across it.
+        val west = -180.0 + 360.0 * 300 / (1 shl zoom)
+        assertEquals(300.0, TileMath.worldX(west, zoom), 1e-9)
+        // Half a tile east is halfway across.
+        val middle = west + 360.0 / (1 shl zoom) / 2.0
+        assertEquals(300.5, TileMath.worldX(middle, zoom), 1e-9)
+    }
+
+    @Test
+    fun worldCoordinatesRunNorthToSouthAndWestToEast() {
+        val zoom = 12
+        assertTrue(TileMath.worldX(-120.1, zoom) < TileMath.worldX(-120.0, zoom))
+        assertTrue(TileMath.worldY(39.0, zoom) < TileMath.worldY(38.9, zoom))
+    }
+
+    @Test
+    fun worldCoordinatesStayInsideTheGridAtThePoles() {
+        val zoom = 6
+        val span = (1 shl zoom).toDouble()
+        assertTrue(TileMath.worldY(90.0, zoom) in 0.0..span)
+        assertTrue(TileMath.worldY(-90.0, zoom) in 0.0..span)
+        assertTrue(TileMath.worldX(180.0, zoom) in 0.0..span)
+        assertTrue(TileMath.worldX(-180.0, zoom) in 0.0..span)
+    }
+
     private val incidentMap = GeoBounds(45.10, -117.75, 45.32, -117.50)
 
     @Test

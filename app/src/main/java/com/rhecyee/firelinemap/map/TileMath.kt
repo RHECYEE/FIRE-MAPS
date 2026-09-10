@@ -22,18 +22,36 @@ object TileMath {
     /** Shared with [MapCoverage] so buffers and distances agree. See [Earth]. */
     const val METERS_PER_DEGREE_LATITUDE = Earth.METERS_PER_DEGREE
 
-    fun tileX(longitude: Double, zoom: Int): Int {
+    /**
+     * Tile column as a real number: the whole part is the tile, the fraction
+     * is how far across it the longitude falls.
+     *
+     * Counting tiles only ever needs the whole part, but reading a particular
+     * sample out of one needs the fraction as well.
+     */
+    fun worldX(longitude: Double, zoom: Int): Double {
         val scale = 1 shl zoom
         val normalized = (longitude + 180.0) / 360.0
-        return floor(normalized * scale).toInt().coerceIn(0, scale - 1)
+        return (normalized * scale).coerceIn(0.0, scale.toDouble())
     }
 
-    fun tileY(latitude: Double, zoom: Int): Int {
+    /** Tile row as a real number. See [worldX]. */
+    fun worldY(latitude: Double, zoom: Int): Double {
         val scale = 1 shl zoom
         val clamped = latitude.coerceIn(-MAX_LATITUDE, MAX_LATITUDE)
         val radians = Math.toRadians(clamped)
         val normalized = (1.0 - asinh(tan(radians)) / PI) / 2.0
-        return floor(normalized * scale).toInt().coerceIn(0, scale - 1)
+        return (normalized * scale).coerceIn(0.0, scale.toDouble())
+    }
+
+    fun tileX(longitude: Double, zoom: Int): Int {
+        val scale = 1 shl zoom
+        return floor(worldX(longitude, zoom)).toInt().coerceIn(0, scale - 1)
+    }
+
+    fun tileY(latitude: Double, zoom: Int): Int {
+        val scale = 1 shl zoom
+        return floor(worldY(latitude, zoom)).toInt().coerceIn(0, scale - 1)
     }
 
     /** Number of tiles covering [bounds] at a single zoom level. */
