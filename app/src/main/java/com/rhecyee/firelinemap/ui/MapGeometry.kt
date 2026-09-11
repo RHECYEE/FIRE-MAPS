@@ -1,6 +1,9 @@
 package com.rhecyee.firelinemap.ui
 
 import com.rhecyee.firelinemap.geopdf.MapFrame
+import com.rhecyee.firelinemap.map.BasemapTileCache
+import com.rhecyee.firelinemap.map.GeoBounds
+import com.rhecyee.firelinemap.map.TileMath
 import kotlin.math.hypot
 
 /**
@@ -121,3 +124,93 @@ internal fun zoomedOffset(
     return (offsetX * ratio + focusX * (1f - ratio)) to
         (offsetY * ratio + focusY * (1f - ratio))
 }
+
+/**
+ * The ground actually on screen, as a latitude and longitude box.
+ *
+ * All four corners of the view, not two. Page space and true north are not
+ * aligned: a sheet drawn in UTM is turned by its own grid convergence, and a
+ * cartographer will turn it further to fit a fire's long axis onto the paper.
+ * The view is then a rotated rectangle on the ground, and the box through two
+ * opposite corners of it is not the box that contains it -- it is short by the
+ * view's other dimension times the sine of that angle, along two opposite
+ * edges. That shortfall is what terrain gets asked for, so that is what gets
+ * drawn: bare strips down two sides of the map. A degree of convergence leaves
+ * about forty pixels of them; a sheet turned thirty degrees on the page leaves
+ * something closer to a quarter of the screen at the top and the bottom.
+ *
+ * Null when the frame cannot place a corner, or when the result is degenerate.
+ */
+internal fun visibleGeoBounds(
+    frame: MapFrame,
+    pageWidthPoints: Int,
+    pageHeightPoints: Int,
+    originX: Float,
+    originY: Float,
+    drawWidth: Float,
+    drawHeight: Float,
+    viewWidth: Float,
+    viewHeight: Float
+): GeoBounds? {
+    if (pageWidthPoints <= 0 || pageHeightPoints <= 0) return null
+    if (drawWidth <= 0f || drawHeight <= 0f) return null
+    if (viewWidth <= 0f || viewHeight <= 0f) return null
+
+    var north = -Double.MAX_VALUE
+    var south = Double.MAX_VALUE
+    var west = Double.MAX_VALUE
+    var east = -Double.MAX_VALUE
+
+    for (corner in CORNERS) {
+        val screenX = corner.first * viewWidth
+        val screenY = corner.second * viewHeight
+        val fx = (screenX - originX) / drawWidth
+        val fy = (screenY - originY) / drawHeight
+        val geo = frame.pageToGeo(
+            fx * pageWidthPoints.toDouble(),
+            (1f - fy) * pageHeightPoints.toDouble()
+        ) ?: return null
+        if (!geo.latitude.isFinite() || !geo.longitude.isFinite()) return null
+        north = maxOf(north, geo.latitude)
+        south = minOf(south, geo.latitude)
+        west = minOf(west, geo.longitude)
+        east = maxOf(east, geo.longitude)
+    }
+
+    if (north <= south || east <= west) return null
+    return GeoBounds(south = south, west = west, north = north, east = east)
+}
+
+private val CORNERS = listOf(0f to 0f, 1f to 0f, 0f to 1f, 1f to 1f)
+
+/**
+ * The deepest zoom whose tiles will cover [bounds] within a frame's budget.
+ *
+ * Covering a wide view at full detail can run to thousands of tiles, which is
+ * more fetching and more drawing than a frame can carry. The answer to that is
+ * coarser terrain, not no terrain: stepping the zoom down keeps the map filled
+ * while an early return leaves the operator looking at the background colour
+ * and no way to tell that apart from the app being broken.
+ *
+ * Null only when even the coarsest zoom is too much, which a real view cannot
+ * reach.
+ */
+internal fun basemapZoom(
+    bounds: GeoBounds,
+    targetMetersPerPixel: Double,
+    budget: Long = MAX_TILES_PER_FRAME,
+    minZoom: Int = MIN_BASEMAP_ZOOM,
+    maxZoom: Int = MAX_BASEMAP_ZOOM
+): Int? {
+    val centre = (bounds.north + bounds.south) / 2.0
+    var zoom = BasemapTileCache.zoomFor(centre, targetMetersPerPixel, maxZoom)
+        .coerceIn(minZoom, maxZoom)
+    while (zoom > minZoom && TileMath.tileCount(bounds, zoom) > budget) zoom--
+    if (TileMath.tileCount(bounds, zoom) > budget) return null
+    return zoom
+}
+
+internal const val MIN_BASEMAP_ZOOM = 4
+
+/** Tiles one frame may draw. Beyond this the zoom steps down instead. */
+internal const val MAX_TILES_PER_FRAME = 200L

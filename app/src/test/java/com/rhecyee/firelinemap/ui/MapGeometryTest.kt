@@ -227,4 +227,172 @@ class MapGeometryTest {
         assertEquals(-17_708f, x, 0f)
         assertEquals(940f, y, 0f)
     }
+
+    // ---- terrain filling the whole view ----
+
+    private val viewWidth = 1080f
+    private val viewHeight = 1200f
+
+    /** The two-corner box the canvas used to ask terrain for. */
+    private fun twoCornerBounds(frame: MapFrame, view: View): List<Double> {
+        fun geo(x: Float, y: Float) = frame.pageToGeo(
+            ((x - view.originX) / view.w) * pageWidth.toDouble(),
+            (1f - (y - view.originY) / view.h) * pageHeight.toDouble()
+        )!!
+        val topLeft = geo(0f, 0f)
+        val bottomRight = geo(viewWidth, viewHeight)
+        return listOf(
+            minOf(topLeft.latitude, bottomRight.latitude),
+            minOf(topLeft.longitude, bottomRight.longitude),
+            maxOf(topLeft.latitude, bottomRight.latitude),
+            maxOf(topLeft.longitude, bottomRight.longitude)
+        )
+    }
+
+    private fun bounds(frame: MapFrame, view: View) = visibleGeoBounds(
+        frame = frame,
+        pageWidthPoints = pageWidth,
+        pageHeightPoints = pageHeight,
+        originX = view.originX,
+        originY = view.originY,
+        drawWidth = view.w,
+        drawHeight = view.h,
+        viewWidth = viewWidth,
+        viewHeight = viewHeight
+    )
+
+    @Test
+    fun `the terrain box covers every corner of the view`() {
+        // The one that leaves bare strips down the map. Page space and true
+        // north are not aligned, so the view is a rotated rectangle on the
+        // ground and two opposite corners do not bound it.
+        val frame = frame()
+        for (scale in listOf(1f, 3f, 8f)) {
+            val view = viewOn(frame, scale)
+            val box = bounds(frame, view)
+            assertNotNull("no bounds at ${scale}x", box)
+            box!!
+
+            for (x in listOf(0f, viewWidth / 2f, viewWidth)) {
+                for (y in listOf(0f, viewHeight / 2f, viewHeight)) {
+                    val geo = frame.pageToGeo(
+                        ((x - view.originX) / view.w) * pageWidth.toDouble(),
+                        (1f - (y - view.originY) / view.h) * pageHeight.toDouble()
+                    )!!
+                    assertTrue(
+                        "($x,$y) at ${scale}x falls outside the terrain box",
+                        geo.latitude in box.south..box.north &&
+                            geo.longitude in box.west..box.east
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `the four corner box is wider than the two corner box it replaced`() {
+        // Pins the defect rather than only the fix: on this real sheet the old
+        // box genuinely fell short, so a future change back to two corners
+        // fails here instead of quietly stranding strips of background.
+        val frame = frame()
+        val view = viewOn(frame, 1f)
+        val box = bounds(frame, view)!!
+        val (oldSouth, oldWest, oldNorth, oldEast) = twoCornerBounds(frame, view)
+
+        val shortfall = maxOf(
+            oldSouth - box.south, box.north - oldNorth,
+            oldWest - box.west, box.east - oldEast
+        )
+        assertTrue(
+            "the old box already covered the view, so this test proves nothing",
+            shortfall > 0.0
+        )
+        assertTrue(box.south <= oldSouth && box.north >= oldNorth)
+        assertTrue(box.west <= oldWest && box.east >= oldEast)
+    }
+
+    @Test
+    fun `the shortfall is a visible band, not a rounding error`() {
+        // Worth measuring: if it were a metre of ground nobody would see it.
+        // On this sheet it is tens of pixels, and on a sheet turned to fit a
+        // fire's long axis it is a quarter of the screen.
+        val frame = frame()
+        val view = viewOn(frame, 1f)
+        val box = bounds(frame, view)!!
+        val (oldSouth, oldWest, oldNorth, oldEast) = twoCornerBounds(frame, view)
+
+        fun pixelsX(fromLon: Double, toLon: Double, atLat: Double): Float {
+            val a = frame.geoToPage(atLat, fromLon)!!
+            val b = frame.geoToPage(atLat, toLon)!!
+            return abs((b.first - a.first)).toFloat() / pageWidth * view.w
+        }
+        fun pixelsY(fromLat: Double, toLat: Double, atLon: Double): Float {
+            val a = frame.geoToPage(fromLat, atLon)!!
+            val b = frame.geoToPage(toLat, atLon)!!
+            return abs((b.second - a.second)).toFloat() / pageHeight * view.h
+        }
+
+        val middleLat = (box.north + box.south) / 2
+        val middleLon = (box.west + box.east) / 2
+        val widest = maxOf(
+            pixelsX(box.west, oldWest, middleLat),
+            pixelsX(oldEast, box.east, middleLat),
+            pixelsY(oldNorth, box.north, middleLon),
+            pixelsY(box.south, oldSouth, middleLon)
+        )
+        assertTrue("bare band was only $widest px", widest > 10f)
+    }
+
+    @Test
+    fun `a view with no size asks for no terrain`() {
+        val frame = frame()
+        val view = viewOn(frame, 1f)
+        assertEquals(null, bounds(frame, View(view.originX, view.originY, 0f, view.h)))
+        assertEquals(null, bounds(frame, View(view.originX, view.originY, view.w, 0f)))
+    }
+
+    // ---- covering a wide view rather than giving up on it ----
+
+    @Test
+    fun `a wide view gets coarser terrain rather than none`() {
+        // The old guard returned early past two hundred tiles, which left the
+        // operator looking at background colour with nothing to tell that from
+        // the app being broken.
+        val wide = com.rhecyee.firelinemap.map.GeoBounds(
+            south = 32.0, west = -124.0, north = 42.0, east = -114.0
+        )
+        val zoom = basemapZoom(wide, targetMetersPerPixel = 2.0)
+        assertNotNull("a wide view came back with no terrain at all", zoom)
+        assertTrue(
+            "the chosen zoom still needs more tiles than a frame can draw",
+            com.rhecyee.firelinemap.map.TileMath.tileCount(wide, zoom!!) <= MAX_TILES_PER_FRAME
+        )
+    }
+
+    @Test
+    fun `a close view still gets the detail it asked for`() {
+        // Stepping down must only happen when it has to.
+        val close = com.rhecyee.firelinemap.map.GeoBounds(
+            south = 35.995, west = -106.070, north = 36.002, east = -106.060
+        )
+        val zoom = basemapZoom(close, targetMetersPerPixel = 2.0)
+        assertEquals(MAX_BASEMAP_ZOOM, zoom)
+    }
+
+    @Test
+    fun `the chosen zoom never exceeds what the tile service serves`() {
+        val close = com.rhecyee.firelinemap.map.GeoBounds(
+            south = 35.999, west = -106.065, north = 36.000, east = -106.063
+        )
+        assertEquals(MAX_BASEMAP_ZOOM, basemapZoom(close, targetMetersPerPixel = 0.01))
+    }
+
+    @Test
+    fun `stepping down stops at the coarsest zoom worth drawing`() {
+        val whole = com.rhecyee.firelinemap.map.GeoBounds(
+            south = -80.0, west = -179.0, north = 80.0, east = 179.0
+        )
+        val zoom = basemapZoom(whole, targetMetersPerPixel = 1.0)
+        assertTrue(zoom == null || zoom >= MIN_BASEMAP_ZOOM)
+    }
 }

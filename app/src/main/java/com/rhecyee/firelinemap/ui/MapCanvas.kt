@@ -309,28 +309,33 @@ fun MapCanvas(
         // the view and not on the frame clock. All four corners, because a
         // georeferenced sheet is rotated against north by the convergence of
         // its own grid: taking two would clip the contours off two edges.
+        // The ground on screen, from all four corners. Shared with the terrain
+        // fill, which needs the same box for the same reason.
         val visibleGround = run {
+            val currentFrame = map.frame ?: return@run null
             if (viewport.width <= 0 || viewport.height <= 0) return@run null
-            val width = viewport.width.toFloat()
-            val height = viewport.height.toFloat()
-            val corners = listOfNotNull(
-                screenToGeoPoint(Offset(0f, 0f)),
-                screenToGeoPoint(Offset(width, 0f)),
-                screenToGeoPoint(Offset(0f, height)),
-                screenToGeoPoint(Offset(width, height))
+            val fitted = fitScale()
+            visibleGeoBounds(
+                frame = currentFrame,
+                pageWidthPoints = pageWidthPoints,
+                pageHeightPoints = pageHeightPoints,
+                originX = (viewport.width - image.width * fitted * scale) / 2f + offset.x,
+                originY = (viewport.height - image.height * fitted * scale) / 2f + offset.y,
+                drawWidth = image.width * fitted * scale,
+                drawHeight = image.height * fitted * scale,
+                viewWidth = viewport.width.toFloat(),
+                viewHeight = viewport.height.toFloat()
             )
-            if (corners.size < 4) return@run null
-            corners
         }
 
         val contourWindow = run {
             if (!contoursEnabled || elevation == null) return@run null
-            val corners = visibleGround ?: return@run null
+            val ground = visibleGround ?: return@run null
             ContourWindows.of(
-                north = corners.maxOf { it.first },
-                south = corners.minOf { it.first },
-                west = corners.minOf { it.second },
-                east = corners.maxOf { it.second },
+                north = ground.north,
+                south = ground.south,
+                west = ground.west,
+                east = ground.east,
                 intervalFeet = contourIntervalFeet
             )
         }
@@ -338,13 +343,10 @@ fun MapCanvas(
         // How much country is actually on screen, which is what decides
         // whether an elevation figure fits between the lines.
         val visibleMeters = run {
-            val corners = visibleGround ?: return@run 0.0
-            val north = corners.maxOf { it.first }
-            val south = corners.minOf { it.first }
-            val middle = (north + south) / 2.0
+            val ground = visibleGround ?: return@run 0.0
+            val middle = (ground.north + ground.south) / 2.0
             com.rhecyee.firelinemap.map.MapCoverage.distanceMeters(
-                middle, corners.minOf { it.second },
-                middle, corners.maxOf { it.second }
+                middle, ground.west, middle, ground.east
             )
         }
 
@@ -929,23 +931,26 @@ private fun DrawScope.drawBasemap(
     drawWidth: Float,
     drawHeight: Float
 ) {
-    fun screenToGeo(x: Float, y: Float): com.rhecyee.firelinemap.geopdf.GeoPoint? {
-        val fx = (x - originX) / drawWidth
-        val fy = (y - originY) / drawHeight
-        return frame.pageToGeo(
-            fx * pageWidthPoints.toDouble(),
-            (1f - fy) * pageHeightPoints.toDouble()
-        )
-    }
+    // All four corners of the view. A sheet is turned against true north by
+    // its own grid convergence, and often further by whoever laid it out, so
+    // the ground on screen is a rotated rectangle and a box through two
+    // opposite corners does not contain it. See visibleGeoBounds.
+    val bounds = visibleGeoBounds(
+        frame = frame,
+        pageWidthPoints = pageWidthPoints,
+        pageHeightPoints = pageHeightPoints,
+        originX = originX,
+        originY = originY,
+        drawWidth = drawWidth,
+        drawHeight = drawHeight,
+        viewWidth = size.width,
+        viewHeight = size.height
+    ) ?: return
 
-    val topLeft = screenToGeo(0f, 0f) ?: return
-    val bottomRight = screenToGeo(size.width, size.height) ?: return
-
-    val north = maxOf(topLeft.latitude, bottomRight.latitude)
-    val south = minOf(topLeft.latitude, bottomRight.latitude)
-    val west = minOf(topLeft.longitude, bottomRight.longitude)
-    val east = maxOf(topLeft.longitude, bottomRight.longitude)
-    if (north <= south || east <= west) return
+    val north = bounds.north
+    val south = bounds.south
+    val west = bounds.west
+    val east = bounds.east
 
     val centreLatitude = (north + south) / 2.0
     // Match tile resolution to what is actually on screen.
@@ -956,17 +961,16 @@ private fun DrawScope.drawBasemap(
     // The National Map serves USGS topo to zoom 16 and 404s at 17. Sixteen is
     // where the contour lines and their elevation labels are legible, so
     // stopping at fifteen was throwing away the level the map is read at.
-    val zoom = BasemapTileCache.zoomFor(centreLatitude, spanMeters / size.width)
-        .coerceIn(4, MAX_BASEMAP_ZOOM)
+    //
+    // A view too wide to cover at that zoom gets coarser terrain rather than
+    // none: an early return here leaves the operator looking at background
+    // colour with no way to tell it from the app having broken.
+    val zoom = basemapZoom(bounds, spanMeters / size.width) ?: return
 
     val minX = BasemapTileCache.tileX(west, zoom)
     val maxX = BasemapTileCache.tileX(east, zoom)
     val minY = BasemapTileCache.tileY(north, zoom)
     val maxY = BasemapTileCache.tileY(south, zoom)
-
-    // A viewport this wide means something is wrong with the transform;
-    // fetching thousands of tiles would be worse than drawing nothing.
-    if ((maxX - minX + 1).toLong() * (maxY - minY + 1).toLong() > 200) return
 
     val canvas = drawContext.canvas.nativeCanvas
     val matrix = android.graphics.Matrix()
