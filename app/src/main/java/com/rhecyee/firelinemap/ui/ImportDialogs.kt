@@ -22,6 +22,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.rhecyee.firelinemap.geopdf.IncidentProduct
 import com.rhecyee.firelinemap.geopdf.RemotePdf
 
 /** Prompts for a URL: either a product or the folder holding a day's products. */
@@ -103,17 +104,34 @@ fun RemoteListingDialog(
                     }
                 }
             } else {
+                // Same treatment the imported list gets. A published folder is
+                // two dozen names that agree for their first sixty characters
+                // and differ at the end, so shown raw they are a wall of
+                // identical text with the division letter off the edge.
+                val described = remember(entries) {
+                    entries
+                        .map { it to IncidentProduct.parse(it.name) }
+                        .sortedBy { it.second.sortKey }
+                }
                 LazyColumn(Modifier.heightIn(max = 340.dp)) {
-                    items(entries) { entry ->
-                        Text(
-                            entry.name,
+                    items(described) { (entry, product) ->
+                        Column(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable { onSelect(entry) }
-                                .padding(vertical = 10.dp),
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = FontWeight.Medium
-                        )
+                                .padding(vertical = 9.dp)
+                        ) {
+                            Text(
+                                product.title,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                product.detail,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                         HorizontalDivider()
                     }
                 }

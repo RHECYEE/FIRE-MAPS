@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddLocationAlt
@@ -56,6 +57,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -77,6 +79,7 @@ import com.rhecyee.firelinemap.resources.ResourceSymbol
 import com.rhecyee.firelinemap.geopdf.DropPoint
 import com.rhecyee.firelinemap.geopdf.DropPointDetector
 import com.rhecyee.firelinemap.geopdf.ImportedMap
+import com.rhecyee.firelinemap.geopdf.IncidentProduct
 import com.rhecyee.firelinemap.geopdf.MapDocumentRepository
 import com.rhecyee.firelinemap.geopdf.MapUrlImporter
 import com.rhecyee.firelinemap.geopdf.PdfKind
@@ -228,9 +231,23 @@ fun FirelineApp() {
     var areaUnit by remember { mutableStateOf(AreaUnit.ACRES) }
     var elevationPending by remember { mutableStateOf(false) }
     var activeMap by remember { mutableStateOf<ImportedMap?>(null) }
-    var bitmap by remember { mutableStateOf<Bitmap?>(null) }
-    var pageWidth by remember { mutableIntStateOf(0) }
-    var pageHeight by remember { mutableIntStateOf(0) }
+
+    /**
+     * The sheet currently drawable, page and georeferencing together.
+     *
+     * They have to move as one. Choosing a map changed the frame straight away
+     * while the page raster caught up seconds later, so in between, the canvas
+     * drew the previous sheet's image through the newly chosen sheet's
+     * projection -- the old map warped, with the new map's position and pins on
+     * it. Two maps at once, which is exactly what it looked like.
+     */
+    var sheet by remember { mutableStateOf<RenderedSheet?>(null) }
+    val bitmap = sheet?.bitmap
+    val pageWidth = sheet?.pageWidth ?: 0
+    val pageHeight = sheet?.pageHeight ?: 0
+
+    /** True while a chosen map is still being rendered. */
+    val sheetLoading = activeMap != null && sheet?.mapId != activeMap?.id
     var statusMessage by remember { mutableStateOf<String?>(null) }
 
     // What became of the last recording. Shown once and then cleared, so a
@@ -427,16 +444,24 @@ fun FirelineApp() {
     LaunchedEffect(activeMap?.id) {
         val map = activeMap
         if (map == null) {
-            bitmap = null
+            sheet = null
             return@LaunchedEffect
         }
         val rendered = withContext(Dispatchers.IO) {
             MapDocumentRepository.pageSize(map.file) to
                 MapDocumentRepository.renderPage(map.file, targetWidth = 2048)
         }
-        pageWidth = rendered.first?.first ?: 0
-        pageHeight = rendered.first?.second ?: 0
-        bitmap = rendered.second
+        // Published in one go, tagged with the map it came from. Until this
+        // lands the canvas keeps drawing the previous sheet whole.
+        sheet = rendered.second?.let {
+            RenderedSheet(
+                mapId = map.id,
+                map = map,
+                bitmap = it,
+                pageWidth = rendered.first?.first ?: 0,
+                pageHeight = rendered.first?.second ?: 0
+            )
+        }
 
         // Read drop points off the freshly rendered sheet. Provisional: they
         // come from matching symbol colour, so they are drawn on the map for
@@ -491,7 +516,9 @@ fun FirelineApp() {
     // operator chose to look at it, and swapping it for terrain would take away
     // the document rather than add a map.
     val onTerrain = activeMap == null && terrainMap != null
-    val canvasMap = if (onTerrain) terrainMap else activeMap
+    // The map drawn is the one whose page is in hand, never the one merely
+    // chosen. See RenderedSheet.
+    val canvasMap = if (onTerrain) terrainMap else sheet?.map
     val canvasPage = if (onTerrain) terrainPage else bitmap
     val canvasPageWidth = if (onTerrain) TerrainSheet.PAGE_POINTS else pageWidth
     val canvasPageHeight = if (onTerrain) TerrainSheet.PAGE_POINTS else pageHeight
@@ -812,6 +839,35 @@ fun FirelineApp() {
             activeMapId = activeMap?.id,
             onSelectMap = { activeMap = it; showLayers = false },
             onSelectTerrain = { activeMap = null; showLayers = false },
+            onDeleteMap = { map ->
+                scope.launch {
+                    // Cleared first, so the canvas is never left holding a
+                    // sheet whose file has just gone.
+                    if (activeMap?.id == map.id) activeMap = null
+                    withContext(Dispatchers.IO) { repository.delete(map.id) }
+                    importedMaps = withContext(Dispatchers.IO) { repository.imported() }
+                    statusMessage = "Removed ${IncidentProduct.parse(map.displayName).title}"
+                }
+            },
+            onDeleteOlderPeriods = {
+                scope.launch {
+                    val described = importedMaps.map { it to IncidentProduct.parse(it.displayName) }
+                    val newest = described.mapNotNull { it.second.period }.minOrNull()
+                    if (newest != null) {
+                        val stale = described.filter {
+                            it.second.period != null && it.second.period != newest
+                        }
+                        if (activeMap?.id in stale.map { it.first.id }) activeMap = null
+                        withContext(Dispatchers.IO) {
+                            stale.forEach { repository.delete(it.first.id) }
+                        }
+                        importedMaps = withContext(Dispatchers.IO) { repository.imported() }
+                        statusMessage = "Removed ${stale.size} sheet" +
+                            (if (stale.size == 1) "" else "s") +
+                            " from earlier periods"
+                    }
+                }
+            },
             topographyOn = topographyOn,
             onToggleTopography = { settings.topographyEnabled = it; topographyOn = it },
             landOwnershipOn = landOwnershipOn,
@@ -1216,6 +1272,28 @@ fun FirelineApp() {
             }
 
             Box(modifier = Modifier.weight(1f)) {
+                // Said out loud, because the canvas deliberately keeps showing
+                // the previous sheet until the chosen one is ready, and an arch
+                // E plot takes seconds. Without this the tap reads as ignored.
+                if (sheetLoading) {
+                    Text(
+                        "Opening ${
+                            IncidentProduct.parse(activeMap?.displayName.orEmpty()).title
+                        }\u2026",
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 10.dp)
+                            .background(
+                                MaterialTheme.colorScheme.primary,
+                                RoundedCornerShape(8.dp)
+                            )
+                            .padding(horizontal = 14.dp, vertical = 7.dp)
+                            .zIndex(2f),
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
                 MapCanvas(
                     map = canvasMap,
                     bitmap = canvasPage,
@@ -1586,3 +1664,21 @@ private fun ToolButton(
         }
     }
 }
+
+/**
+ * A sheet that can actually be drawn: its page, its size, and the map it came
+ * from, carried together.
+ *
+ * The three used to be separate pieces of state updated as each became
+ * available. Rendering an arch E plot takes seconds, so choosing a map left a
+ * window where the georeferencing had already switched and the page had not,
+ * and the canvas drew one sheet's image through another sheet's projection.
+ * Bundling them makes that window impossible to express.
+ */
+data class RenderedSheet(
+    val mapId: String,
+    val map: com.rhecyee.firelinemap.geopdf.ImportedMap,
+    val bitmap: android.graphics.Bitmap,
+    val pageWidth: Int,
+    val pageHeight: Int
+)

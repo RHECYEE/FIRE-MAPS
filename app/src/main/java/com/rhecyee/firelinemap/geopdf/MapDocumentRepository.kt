@@ -75,15 +75,57 @@ class MapDocumentRepository(private val context: Context) {
         return ImportedMap(id, displayName, target, document)
     }
 
-    fun imported(): List<ImportedMap> =
-        mapsDir.listFiles { f -> f.extension.equals("pdf", ignoreCase = true) }
+    /**
+     * Everything imported, newest first.
+     *
+     * Georeferencing is read once a file and then held. It means opening and
+     * scanning the whole PDF, and a fortnight of published products is several
+     * hundred sheets at four megabytes each -- re-reading all of it every time
+     * the list is shown is most of a gigabyte of work to draw a menu, which is
+     * felt as the app locking up each time a map is chosen.
+     *
+     * Keyed on length and modification time as well as the path, so a file
+     * replaced under the same name is read again.
+     */
+    fun imported(): List<ImportedMap> {
+        val files = mapsDir.listFiles { f -> f.extension.equals("pdf", ignoreCase = true) }
             ?.sortedByDescending { it.lastModified() }
-            ?.mapNotNull { file ->
-                runCatching {
-                    ImportedMap(file.nameWithoutExtension, file.name, file, GeoPdfReader.read(file))
-                }.getOrNull()
-            }
-            ?: emptyList()
+            ?: return emptyList()
+
+        val live = files.map { it.absolutePath }.toSet()
+        synchronized(cache) { cache.keys.retainAll { it.substringBefore('\n') in live } }
+
+        return files.mapNotNull { file ->
+            val key = "${file.absolutePath}\n${file.length()}\n${file.lastModified()}"
+            val document = synchronized(cache) { cache[key] }
+                ?: runCatching { GeoPdfReader.read(file) }.getOrNull()?.also {
+                    synchronized(cache) { cache[key] = it }
+                }
+                ?: return@mapNotNull null
+            ImportedMap(file.nameWithoutExtension, file.name, file, document)
+        }
+    }
+
+    /**
+     * Removes an imported map from the device.
+     *
+     * Published products pile up fast: a single operational period is two
+     * dozen sheets and they are posted again every day, so a fortnight of a
+     * fire is several hundred of them. Without a way to throw one away the
+     * list becomes unusable long before the assignment ends.
+     *
+     * Returns false when the file was already gone, which is not an error --
+     * the map is absent either way.
+     */
+    fun delete(id: String): Boolean {
+        val target = File(mapsDir, "$id.pdf")
+        synchronized(cache) {
+            cache.keys.retainAll { !it.startsWith(target.absolutePath + "\n") }
+        }
+        return runCatching { target.delete() }.getOrDefault(false)
+    }
+
+    private val cache = mutableMapOf<String, GeoPdfDocument>()
 
     private fun displayNameOf(uri: Uri): String? = runCatching {
         context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->

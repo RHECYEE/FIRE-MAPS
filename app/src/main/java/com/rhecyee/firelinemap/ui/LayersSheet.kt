@@ -33,6 +33,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.style.TextAlign
 import com.rhecyee.firelinemap.data.AppSettings
+import com.rhecyee.firelinemap.geopdf.IncidentProduct
 import com.rhecyee.firelinemap.data.LayerPackageEntity
 import com.rhecyee.firelinemap.parcels.CountyRecord
 
@@ -49,6 +50,8 @@ fun LayersSheet(
     activeMapId: String?,
     onSelectMap: (com.rhecyee.firelinemap.geopdf.ImportedMap) -> Unit,
     onSelectTerrain: () -> Unit,
+    onDeleteMap: (com.rhecyee.firelinemap.geopdf.ImportedMap) -> Unit,
+    onDeleteOlderPeriods: () -> Unit,
     topographyOn: Boolean,
     onToggleTopography: (Boolean) -> Unit,
     landOwnershipOn: Boolean,
@@ -122,43 +125,109 @@ fun LayersSheet(
                         style = MaterialTheme.typography.bodySmall
                     )
                 } else {
-                    importedMaps.forEach { map ->
+                    // Sorted by what they are rather than when they landed on
+                    // the device: newest operational period first, then by kind,
+                    // then division in order, which is how a packet is read.
+                    val described = importedMaps
+                        .map { it to IncidentProduct.parse(it.displayName) }
+                        .sortedBy { it.second.sortKey }
+
+                    val periods = described.mapNotNull { it.second.period }.distinct()
+                    if (periods.size > 1) {
+                        val newest = periods.min()
+                        val stale = described.count {
+                            it.second.period != null && it.second.period != newest
+                        }
+                        Text(
+                            "REMOVE $stale SHEET${if (stale == 1) "" else "S"} FROM " +
+                                "EARLIER PERIODS",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(
+                                    MaterialTheme.colorScheme.errorContainer,
+                                    RoundedCornerShape(6.dp)
+                                )
+                                .clickable { onDeleteOlderPeriods() }
+                                .padding(vertical = 9.dp),
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            fontWeight = FontWeight.Black,
+                            textAlign = TextAlign.Center,
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                        Text(
+                            "Keeps ${IncidentProduct.describePeriod(newest)}. " +
+                                "A fire posts two dozen sheets a period, every " +
+                                "period, so this is how the list stays usable to " +
+                                "the end of an assignment.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    described.forEach { (map, product) ->
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { onSelectMap(map) }
-                                .padding(vertical = 7.dp),
+                                .padding(vertical = 3.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                if (map.id == activeMapId) "●" else "○",
-                                color = if (map.id == activeMapId) {
-                                    MaterialTheme.colorScheme.primary
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                },
-                                fontWeight = FontWeight.Black
-                            )
-                            Column(Modifier.padding(start = 10.dp)) {
+                            Row(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable { onSelectMap(map) }
+                                    .padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
                                 Text(
-                                    map.displayName.take(40),
-                                    fontWeight = if (map.id == activeMapId) {
-                                        FontWeight.Bold
+                                    if (map.id == activeMapId) "\u25cf" else "\u25cb",
+                                    color = if (map.id == activeMapId) {
+                                        MaterialTheme.colorScheme.primary
                                     } else {
-                                        FontWeight.Normal
+                                        MaterialTheme.colorScheme.onSurfaceVariant
                                     },
-                                    style = MaterialTheme.typography.bodySmall
+                                    fontWeight = FontWeight.Black
                                 )
-                                Text(
-                                    map.kindLabel,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = if (map.document.isGeoreferenced) {
-                                        Color(0xFF2E7D32)
-                                    } else {
-                                        Color(0xFF8A6D00)
-                                    }
-                                )
+                                Column(Modifier.padding(start = 10.dp)) {
+                                    // What it is and which piece of the fire,
+                                    // first. The filenames are sixty characters
+                                    // of identical prefix with the division
+                                    // letter on the end, so a list showing the
+                                    // start of the name showed a dozen rows that
+                                    // read exactly alike.
+                                    Text(
+                                        product.title,
+                                        fontWeight = if (map.id == activeMapId) {
+                                            FontWeight.Black
+                                        } else {
+                                            FontWeight.Bold
+                                        },
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                    Text(
+                                        product.detail,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Text(
+                                        map.kindLabel,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (map.document.isGeoreferenced) {
+                                            Color(0xFF2E7D32)
+                                        } else {
+                                            Color(0xFF8A6D00)
+                                        }
+                                    )
+                                }
                             }
+                            Text(
+                                "REMOVE",
+                                modifier = Modifier
+                                    .clickable { onDeleteMap(map) }
+                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                color = MaterialTheme.colorScheme.error,
+                                fontWeight = FontWeight.Black,
+                                style = MaterialTheme.typography.labelSmall
+                            )
                         }
                     }
                 }

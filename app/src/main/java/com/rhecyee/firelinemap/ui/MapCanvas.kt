@@ -419,7 +419,7 @@ fun MapCanvas(
 
                             if (travelled > viewConfiguration.touchSlop) {
                                 val previous = scale
-                                val next = (scale * zoomChange).coerceIn(1f, maxScale)
+                                val next = (scale * zoomChange).coerceIn(MIN_SCALE, maxScale)
                                 // The applied ratio, not the requested one: at
                                 // the ends of the range the pinch is refused
                                 // and the offset must not be moved for it.
@@ -714,11 +714,31 @@ fun MapCanvas(
 
 private const val OFF_SHEET_PAN_ALLOWANCE = 1.5f
 
+/**
+ * How far out the view may pull back from a fitted sheet.
+ *
+ * One was the floor, which meant the page always filled the view and nothing
+ * around it could be seen at once. A division sheet is a few miles across and
+ * the drive to it is not, so pulling back until the sheet is a quarter of the
+ * screen -- with terrain filling the rest -- is how the relationship between
+ * the two is read.
+ */
+private const val MIN_SCALE = 0.25f
+
 /** Deepest zoom The National Map serves; 17 returns 404. */
 internal const val MAX_BASEMAP_ZOOM = 16
 
-/** Far enough into a fixed raster before it is only bigger pixels. */
-const val SHEET_MAX_SCALE = 12f
+/**
+ * Far into a fixed raster before it is only bigger pixels.
+ *
+ * An arch E plot is rendered two thousand pixels wide from a page nearly four
+ * thousand points across, so its own ink runs out somewhere around this. Past
+ * that the sheet is soft -- but a soft sheet with the terrain and contours
+ * underneath it still reading sharply is worth having, because at that zoom
+ * the question is usually which side of a spur a line sits on rather than what
+ * the sheet printed.
+ */
+const val SHEET_MAX_SCALE = 30f
 
 /**
  * Terrain keeps resolving, so it is allowed much further in.
@@ -728,7 +748,7 @@ const val SHEET_MAX_SCALE = 12f
  * junction rather than a smudge, and is roughly where basemap zoom 16 runs out
  * of its own detail.
  */
-const val TERRAIN_MAX_SCALE = 40f
+const val TERRAIN_MAX_SCALE = 80f
 
 /**
  * Widest a single tile may draw before it is skipped.
