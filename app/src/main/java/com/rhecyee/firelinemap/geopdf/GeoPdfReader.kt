@@ -116,23 +116,77 @@ object GeoPdfReader {
         output.toByteArray().takeIf { it.isNotEmpty() }
     }.getOrNull()
 
+    /**
+     * Finds the viewports by looking for the coordinates, not for the label.
+     *
+     * The obvious way round is to search for `/Type /Viewport` and take the
+     * dictionary it sits in. Finding that dictionary means walking backwards
+     * to an opening `<<`, and which one that is depends on where `/Type` was
+     * written -- which is a thing the PDF specification explicitly does not
+     * fix. Dictionary keys are unordered.
+     *
+     * Two real incident products put it in opposite places. The Forest Service
+     * transportation sheet writes `<</Type /Viewport/BBox ...`, where walking
+     * back one step lands on the viewport. A CAL FIRE operations sheet writes
+     * `<</BBox[...]/Measure<<...>>/Type/Viewport>>`, where walking back lands
+     * inside the coordinate system dictionary buried in `/Measure` -- which
+     * has no `/BBox` and no `/GPTS`, so every viewport on the sheet read as
+     * unusable and a properly georeferenced map was shown as a plain PDF with
+     * no position on it and no terrain under it.
+     *
+     * So anchor on `/GPTS`, which is the thing actually needed, and take the
+     * innermost enclosing dictionary that also carries a `/BBox`. That is the
+     * viewport whatever order it was written in.
+     */
     private fun parseViewports(text: String): List<MapFrame> {
         val frames = mutableListOf<MapFrame>()
         var searchFrom = 0
         while (true) {
-            val marker = text.indexOf("/Viewport", searchFrom)
+            val marker = text.indexOf("/GPTS", searchFrom)
             if (marker < 0) break
-            searchFrom = marker + "/Viewport".length
+            searchFrom = marker + "/GPTS".length
 
-            val dictStart = text.lastIndexOf("<<", marker)
-            if (dictStart < 0) continue
-            val dictEnd = findDictionaryEnd(text, dictStart) ?: continue
-            val dict = text.substring(dictStart, dictEnd)
-
-            parseFrame(dict)?.let { frames += it }
+            enclosingViewport(text, marker)?.let { dict ->
+                parseFrame(dict)?.let { frames += it }
+            }
         }
         return frames
     }
+
+    /**
+     * The dictionary around [marker] that looks like a viewport.
+     *
+     * Candidates are tried innermost first. A dictionary qualifies only if it
+     * actually encloses the marker -- the nearest `<<` going backwards is
+     * usually a sibling that has already closed -- and if it carries a
+     * `/BBox`, which is what separates the viewport from the `/Measure` and
+     * `/GCS` dictionaries nested inside it.
+     */
+    private fun enclosingViewport(text: String, marker: Int): String? {
+        var candidate = text.lastIndexOf("<<", marker)
+        var tried = 0
+        while (candidate >= 0 && tried < MAX_ENCLOSING_CANDIDATES) {
+            tried++
+            val end = findDictionaryEnd(text, candidate)
+            if (end != null && end > marker) {
+                val dict = text.substring(candidate, end)
+                if (dict.contains("/BBox")) return dict
+            }
+            if (candidate == 0) break
+            candidate = text.lastIndexOf("<<", candidate - 1)
+        }
+        return null
+    }
+
+    /**
+     * How far out to look for the enclosing viewport.
+     *
+     * A viewport nests two dictionaries deep, so three or four candidates is
+     * the real answer; the rest is slack for a producer that nests further.
+     * Bounded so a file where the search finds nothing cannot walk the whole
+     * document back from every `/GPTS` on it.
+     */
+    private const val MAX_ENCLOSING_CANDIDATES = 12
 
     private fun parseFrame(dict: String): MapFrame? {
         val box = readNumberArray(dict, "/BBox")?.takeIf { it.size >= 4 } ?: return null
