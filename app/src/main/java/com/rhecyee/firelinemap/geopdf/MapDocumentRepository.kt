@@ -41,8 +41,8 @@ class MapDocumentRepository(private val context: Context) {
 
     fun importFrom(uri: Uri): ImportedMap? {
         val name = displayNameOf(uri) ?: "map-${System.currentTimeMillis()}.pdf"
-        val id = "${System.currentTimeMillis()}-${name.hashCode().toUInt().toString(16)}"
-        val target = File(mapsDir, "$id.pdf")
+        val target = storageFileFor(name)
+        val id = target.nameWithoutExtension
 
         val copied = runCatching {
             context.contentResolver.openInputStream(uri)?.use { input ->
@@ -65,8 +65,8 @@ class MapDocumentRepository(private val context: Context) {
     /** Takes a file already on disk, such as one fetched from a URL. */
     fun importFromFile(source: File, displayName: String): ImportedMap? {
         if (!source.exists() || source.length() == 0L) return null
-        val id = "${System.currentTimeMillis()}-${displayName.hashCode().toUInt().toString(16)}"
-        val target = File(mapsDir, "$id.pdf")
+        val target = storageFileFor(displayName)
+        val id = target.nameWithoutExtension
         val copied = runCatching { source.copyTo(target, overwrite = true) }.isSuccess
         if (!copied) return null
 
@@ -102,7 +102,7 @@ class MapDocumentRepository(private val context: Context) {
                     synchronized(cache) { cache[key] = it }
                 }
                 ?: return@mapNotNull null
-            ImportedMap(file.nameWithoutExtension, file.name, file, document)
+            ImportedMap(file.nameWithoutExtension, displayNameFrom(file.name), file, document)
         }
     }
 
@@ -127,6 +127,31 @@ class MapDocumentRepository(private val context: Context) {
 
     private val cache = mutableMapOf<String, GeoPdfDocument>()
 
+    /**
+     * Where a newly imported map is written.
+     *
+     * The name goes in the filename because the filename is the only thing
+     * that survives. Products were stored as `<millis>-<hash>.pdf` and listed
+     * back by reading the directory, so what an operator saw was the hash: the
+     * import picker showed "Operations — DIV B-X" and the imported list showed
+     * `1789102940988-a701ea76.pdf`, because the real name was never written
+     * down anywhere.
+     *
+     * A timestamp still leads, so two sheets published under the same name on
+     * different days stay separate files.
+     */
+    private fun storageFileFor(displayName: String): File {
+        var stamp = System.currentTimeMillis()
+        var candidate = File(mapsDir, storageName(displayName, stamp))
+        // A second import in the same millisecond is not realistic, but
+        // silently overwriting the first would be a map going missing.
+        while (candidate.exists()) {
+            stamp++
+            candidate = File(mapsDir, storageName(displayName, stamp))
+        }
+        return candidate
+    }
+
     private fun displayNameOf(uri: Uri): String? = runCatching {
         context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
             val index = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
@@ -135,6 +160,47 @@ class MapDocumentRepository(private val context: Context) {
     }.getOrNull()
 
     companion object {
+
+        /**
+         * Separates the timestamp from the name it was imported under.
+         *
+         * Two underscores, because the scheme it replaces used a single
+         * hyphen. A name that has one is one of these; a name that does not is
+         * from before and is left exactly as it was rather than having a
+         * meaningless fragment of it presented as a title.
+         */
+        private const val SEPARATOR = "__"
+
+        /** Longest a stored name may be, leaving room for the stamp and suffix. */
+        private const val MAX_NAME = 180
+
+        /**
+         * Characters no filesystem Android runs on will take.
+         *
+         * Spaces are kept: the division sheets are published with them, and
+         * replacing them would make the stored name differ from the published
+         * one for no reason.
+         */
+        private val ILLEGAL = Regex("""[/\\:*?"<>|\u0000-\u001f]""")
+
+        /** The filename a map imported as [displayName] is stored under. */
+        fun storageName(displayName: String, stamp: Long): String {
+            val stem = displayName.substringBeforeLast('.')
+                .let { ILLEGAL.replace(it, "_") }
+                .trim()
+                .take(MAX_NAME)
+                .trim()
+            return if (stem.isEmpty()) "$stamp.pdf" else "$stamp$SEPARATOR$stem.pdf"
+        }
+
+        /** The name a stored file was imported under, as far as it can be recovered. */
+        fun displayNameFrom(storageName: String): String {
+            val marker = storageName.indexOf(SEPARATOR)
+            if (marker < 0) return storageName
+            val name = storageName.substring(marker + SEPARATOR.length)
+            return name.ifEmpty { storageName }
+        }
+
         /**
          * Renders page one to a bitmap.
          *

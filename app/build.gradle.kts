@@ -38,8 +38,8 @@ android {
         targetSdk = 36
         // Bumped for the first store upload. versionCode has to climb with
         // every upload; versionName is what a crew reads in the listing.
-        versionCode = 9
-        versionName = "0.5.0"
+        versionCode = 10
+        versionName = "0.5.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
