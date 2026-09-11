@@ -20,9 +20,25 @@ import androidx.lifecycle.Observer
  * about the car library, and so the states it cares about are two rather than
  * three.
  */
-class VehicleConnection(context: Context) {
+class VehicleConnection(private val contextSource: () -> Context) {
 
-    private val app = context.applicationContext
+    constructor(context: Context) : this({ context })
+
+    /**
+     * Resolved when watching starts, never when this is constructed.
+     *
+     * A Service's fields are initialised before the system attaches its base
+     * context, so anything that reaches for the context while they run is
+     * dereferencing a null. This class was a plain field on the recording
+     * service and asked for `applicationContext` in its constructor, which
+     * meant the service could not be created at all: every attempt to record
+     * threw before onCreate, on the phone and on the car alike.
+     *
+     * The location client next to it is `by lazy` for exactly this reason.
+     * Doing it here as well makes the class safe to hold whichever way it is
+     * held, which is the part that can be tested.
+     */
+    private val app: Context by lazy { contextSource().applicationContext }
     private var source: LiveData<Int>? = null
     private var observer: Observer<Int>? = null
 

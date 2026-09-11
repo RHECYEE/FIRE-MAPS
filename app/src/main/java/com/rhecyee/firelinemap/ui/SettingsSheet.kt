@@ -18,6 +18,15 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import android.content.ClipData
+import android.content.ClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
+import com.rhecyee.firelinemap.util.CrashLog
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -228,6 +237,65 @@ fun SettingsSheet(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+
+                HorizontalDivider()
+                Heading("LAST CRASH")
+                val crashContext = LocalContext.current
+                var crash by remember { mutableStateOf(CrashLog.latest(crashContext)) }
+                if (crash == null) {
+                    Text(
+                        "Nothing recorded. If the app closes itself, come back here " +
+                            "afterwards: what threw will be waiting, and it is the one " +
+                            "thing that says why.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    Text(
+                        (crash ?: "").trim().lineSequence().take(14).joinToString("\n"),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(
+                                MaterialTheme.colorScheme.surfaceVariant,
+                                RoundedCornerShape(6.dp)
+                            )
+                            .padding(8.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            "COPY",
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable {
+                                    val clipboard = crashContext.getSystemService(
+                                        ClipboardManager::class.java
+                                    )
+                                    clipboard?.setPrimaryClip(
+                                        ClipData.newPlainText("Fireline crash", crash)
+                                    )
+                                }
+                                .padding(vertical = 8.dp),
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Black,
+                            textAlign = TextAlign.Center
+                        )
+                        Text(
+                            "CLEAR",
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable {
+                                    CrashLog.clear(crashContext)
+                                    crash = null
+                                }
+                                .padding(vertical = 8.dp),
+                            color = MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.Black,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
 
                 HorizontalDivider()
                 Heading("ANDROID AUTO")

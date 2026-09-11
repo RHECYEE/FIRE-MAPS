@@ -4,8 +4,18 @@ import android.app.Application
 import com.rhecyee.firelinemap.data.FirelineDatabase
 import com.rhecyee.firelinemap.location.LocationRepository
 import com.rhecyee.firelinemap.location.SegmentAnchor
+import com.rhecyee.firelinemap.util.CrashLog
 
 class FirelineApplication : Application() {
+
+    override fun onCreate() {
+        super.onCreate()
+        // Before anything else, so a crash while the rest is being set up is
+        // still written down. See CrashLog: there is no terminal on a phone in
+        // a truck, and "it crashes" is a whole round trip short of a cause.
+        CrashLog.install(this, BuildConfig.VERSION_NAME)
+    }
+
     val database: FirelineDatabase by lazy { FirelineDatabase.create(this) }
 
     /**
