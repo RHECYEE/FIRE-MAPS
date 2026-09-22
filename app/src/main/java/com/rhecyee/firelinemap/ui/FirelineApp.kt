@@ -27,10 +27,12 @@ import androidx.compose.material.icons.filled.Draw
 import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.MedicalServices
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.People
+import androidx.compose.material.icons.filled.PinDrop
 import androidx.compose.material.icons.filled.Straighten
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Timer
@@ -76,7 +78,13 @@ import com.rhecyee.firelinemap.geopdf.DropPoint
 import com.rhecyee.firelinemap.geopdf.DropPointDetector
 import com.rhecyee.firelinemap.geopdf.ImportedMap
 import com.rhecyee.firelinemap.geopdf.MapDocumentRepository
+import com.rhecyee.firelinemap.geopdf.MapSheetRenderer
 import com.rhecyee.firelinemap.geopdf.MapUrlImporter
+import com.rhecyee.firelinemap.fireline.FirelineKind
+import com.rhecyee.firelinemap.fireline.FirelineSession
+import com.rhecyee.firelinemap.fireline.FirelineFeature
+import com.rhecyee.firelinemap.fireline.InferredPerimeter
+import com.rhecyee.firelinemap.fireline.PerimeterInference
 import com.rhecyee.firelinemap.geopdf.PdfKind
 import com.rhecyee.firelinemap.geopdf.RemotePdf
 import com.rhecyee.firelinemap.geopdf.UrlProbe
@@ -163,6 +171,7 @@ fun FirelineApp() {
     val elevations = remember { ElevationService() }
     val resources = remember { ResourceRepository(app.database.dao()) }
     val medical = remember { MedicalRepository(app.database.dao()) }
+    val fireline = remember { com.rhecyee.firelinemap.fireline.FirelineRepository(app.database.dao()) }
     val reporter = remember { ReporterProfile(context) }
     var reporterName by remember { mutableStateOf(reporter.name) }
     var reporterQualification by remember { mutableStateOf(reporter.qualification) }
@@ -210,9 +219,25 @@ fun FirelineApp() {
     var elevationPending by remember { mutableStateOf(false) }
     var activeMap by remember { mutableStateOf<ImportedMap?>(null) }
     var bitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var sheetRenderer by remember { mutableStateOf<MapSheetRenderer?>(null) }
     var pageWidth by remember { mutableIntStateOf(0) }
     var pageHeight by remember { mutableIntStateOf(0) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
+
+    // Where is this: a tap asks the ground what it is, and the answer is
+    // something that can be read out or pasted somewhere else.
+    var asking by remember { mutableStateOf(false) }
+    var queried by remember { mutableStateOf<QueriedPosition?>(null) }
+
+    // The perimeter tool.
+    val firelineSession = remember { FirelineSession() }
+    var drawingFireline by remember { mutableStateOf(false) }
+    var firelineFeatures by remember { mutableStateOf<List<FirelineFeature>>(emptyList()) }
+    var firelineKind by remember { mutableStateOf(FirelineKind.FIRE) }
+    var firelineLinking by remember { mutableStateOf(false) }
+    var firelineReach by remember { mutableStateOf<Double?>(null) }
+    var perimeter by remember { mutableStateOf(InferredPerimeter.empty()) }
+    var inferring by remember { mutableStateOf(false) }
 
     var showUrlDialog by remember { mutableStateOf(false) }
     var urlBusy by remember { mutableStateOf(false) }
@@ -389,15 +414,29 @@ fun FirelineApp() {
         importedMaps = withContext(Dispatchers.IO) { repository.imported() }
     }
 
+    // Closed when the screen goes away; the open descriptor belongs to it.
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose { sheetRenderer?.close() }
+    }
+
     LaunchedEffect(activeMap?.id) {
         val map = activeMap
+        // A sheet being swapped out takes its renderer with it. close() waits
+        // for any render still running on the old one before letting go of the
+        // descriptor.
+        withContext(Dispatchers.IO) { sheetRenderer?.close() }
+        sheetRenderer = null
         if (map == null) {
             bitmap = null
             return@LaunchedEffect
         }
+        // Assigned before the first suspension point, so that a map switched
+        // again mid-render is still the next pass's job to close.
+        val renderer = MapSheetRenderer(map.file)
+        sheetRenderer = renderer
+
         val rendered = withContext(Dispatchers.IO) {
-            MapDocumentRepository.pageSize(map.file) to
-                MapDocumentRepository.renderPage(map.file, targetWidth = 2048)
+            renderer.pageSize() to renderer.renderOverview()
         }
         pageWidth = rendered.first?.first ?: 0
         pageHeight = rendered.first?.second ?: 0
@@ -582,7 +621,48 @@ fun FirelineApp() {
         }
     }
 
-    val toolArmed = measuring || placingResources || simMode || showSearch
+    // Observations saved against this incident come back when it is opened.
+    // Keyed on the incident's id, so it reloads when the incident changes and
+    // at no other time -- an operator mid-sketch is never overwritten by a
+    // recomposition.
+    LaunchedEffect(activeIncident?.id) {
+        val incident = activeIncident?.id ?: return@LaunchedEffect
+        val saved = withContext(Dispatchers.IO) { fireline.load(incident) }
+        firelineSession.load(saved)
+        firelineSession.kind = firelineKind
+        firelineSession.linking = firelineLinking
+        firelineFeatures = firelineSession.current
+    }
+
+    // The reach actually in force. Taken from the last inference rather than
+    // recomputed here: working it out is a pass over every dropped point, and
+    // this is read on every recomposition.
+    val effectiveReach = firelineReach
+        ?: perimeter.reachMeters.takeIf { it > 0.0 }
+        ?: PerimeterInference.MIN_REACH_METERS
+
+    // Re-inferred from scratch whenever the evidence or the reach changes, and
+    // off the main thread: the field is tens of thousands of samples. From
+    // scratch rather than patched, so undoing a point takes its influence away
+    // with it instead of leaving a dent where it used to be.
+    LaunchedEffect(firelineFeatures, firelineReach) {
+        if (firelineFeatures.none { it.kind == FirelineKind.FIRE && it.vertices.isNotEmpty() }) {
+            perimeter = InferredPerimeter.empty(effectiveReach)
+            inferring = false
+            return@LaunchedEffect
+        }
+        inferring = true
+        // Settles between drops, so walking a line and tapping as you go costs
+        // one inference rather than one per step.
+        kotlinx.coroutines.delay(140)
+        perimeter = withContext(Dispatchers.Default) {
+            PerimeterInference.infer(firelineFeatures, firelineReach)
+        }
+        inferring = false
+    }
+
+    val toolArmed = measuring || placingResources || simMode || showSearch ||
+        asking || drawingFireline
     LaunchedEffect(lastInteraction, toolArmed, chromeVisible) {
         // An armed tool holds the controls open; nothing is more irritating
         // than a panel vanishing mid-measurement.
@@ -803,6 +883,31 @@ fun FirelineApp() {
 
     tappedParcel?.let { parcel ->
         ParcelDetailDialog(parcel = parcel, onDismiss = { tappedParcel = null })
+    }
+
+    queried?.let { spot ->
+        WhereIsThisDialog(
+            position = spot,
+            fromLatitude = displayLatitude,
+            fromLongitude = displayLongitude,
+            projection = activeMap?.frame?.projection,
+            distanceUnit = distanceUnit,
+            onCopy = { text ->
+                val clipboard =
+                    context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("Position", text))
+                statusMessage = "Copied."
+            },
+            onCycleDistanceUnit = { distanceUnit = distanceUnit.next() },
+            onKeep = {
+                // Hand it to the resource placement path rather than inventing
+                // a second kind of pin that only this tool knows about.
+                selectedSymbol = ResourceSymbol.OTHER
+                pendingPlacement = spot.latitude to spot.longitude
+                queried = null
+            },
+            onDismiss = { queried = null }
+        )
     }
 
     if (showTrackSettings) {
@@ -1062,6 +1167,66 @@ fun FirelineApp() {
                 )
             }
 
+            if (chromeVisible && !showSearch && drawingFireline) {
+                FirelinePanel(
+                    perimeter = perimeter,
+                    kind = firelineKind,
+                    linking = firelineLinking,
+                    firePoints = firelineFeatures
+                        .filter { it.kind == FirelineKind.FIRE }
+                        .sumOf { it.vertices.size },
+                    cleanPoints = firelineFeatures
+                        .filter { it.kind == FirelineKind.NOT_FIRE }
+                        .sumOf { it.vertices.size },
+                    reachMeters = effectiveReach,
+                    reachIsAutomatic = firelineReach == null,
+                    working = inferring,
+                    distanceUnit = distanceUnit,
+                    areaUnit = areaUnit,
+                    onSelectKind = { chosen ->
+                        firelineKind = chosen
+                        firelineSession.kind = chosen
+                        // A change of kind always starts a new run. Chaining a
+                        // clean point onto the end of a fire line would say
+                        // something nobody meant.
+                        firelineSession.breakRun()
+                    },
+                    onToggleLinking = {
+                        firelineLinking = !firelineLinking
+                        firelineSession.linking = firelineLinking
+                        firelineSession.breakRun()
+                    },
+                    onBreakRun = { firelineSession.breakRun() },
+                    onReach = { firelineReach = it },
+                    onAutoReach = { firelineReach = null },
+                    onCycleAreaUnit = { areaUnit = areaUnit.next() },
+                    onCycleDistanceUnit = { distanceUnit = distanceUnit.next() },
+                    onUndo = {
+                        firelineSession.undo()
+                        firelineFeatures = firelineSession.current
+                    },
+                    onClear = {
+                        firelineSession.clear()
+                        firelineFeatures = emptyList()
+                        firelineReach = null
+                    },
+                    onSave = {
+                        val incident = activeIncident?.id
+                        if (incident == null) {
+                            statusMessage = "No incident to save these against."
+                        } else {
+                            val toSave = firelineFeatures
+                            scope.launch {
+                                withContext(Dispatchers.IO) { fireline.save(incident, toSave) }
+                                statusMessage =
+                                    "Saved ${toSave.size} observations to " +
+                                        (activeIncident?.name ?: "this incident") + "."
+                            }
+                        }
+                    }
+                )
+            }
+
             Box(modifier = Modifier.weight(1f)) {
                 MapCanvas(
                     map = activeMap,
@@ -1071,6 +1236,10 @@ fun FirelineApp() {
                 latitude = displayLatitude,
                 longitude = displayLongitude,
                 positionIsSimulated = simulated != null,
+                sheetRenderer = sheetRenderer,
+                firelineFeatures = firelineFeatures,
+                perimeter = perimeter,
+                queriedPosition = queried?.let { it.latitude to it.longitude },
                 dropPoints = if (segmentAtDropPoints) dropPoints else emptyList(),
                 basemap = basemap,
                 measurePoints = measurePoints,
@@ -1092,7 +1261,29 @@ fun FirelineApp() {
                     scope.launch { resources.move(marker, lat, lon) }
                 },
                 onMapTap = { lat, lon ->
-                    if (placingResources && selectedSymbol != null) {
+                    if (drawingFireline) {
+                        firelineSession.drop(lat, lon)
+                        firelineFeatures = firelineSession.current
+                    } else if (asking) {
+                        queried = QueriedPosition(lat, lon, elevationPending = true)
+                        scope.launch {
+                            val elevation = withContext(Dispatchers.IO) {
+                                elevations.elevationMeters(lat, lon)
+                            }
+                            // Only if it is still the same spot. A second tap
+                            // while the lookup was out must not have the first
+                            // one's elevation land on it.
+                            val current = queried
+                            if (current != null &&
+                                current.latitude == lat && current.longitude == lon
+                            ) {
+                                queried = current.copy(
+                                    elevationMeters = elevation,
+                                    elevationPending = false
+                                )
+                            }
+                        }
+                    } else if (placingResources && selectedSymbol != null) {
                         pendingPlacement = lat to lon
                     } else if (simMode) {
                         simulated = lat to lon
@@ -1154,6 +1345,7 @@ fun FirelineApp() {
                         hasParcels = parcels.isNotEmpty(),
                         hasDropPoints = segmentAtDropPoints && dropPoints.isNotEmpty(),
                         hasSearch = searchRegion != null,
+                        hasFireline = firelineFeatures.isNotEmpty(),
                         simulated = simulated != null,
                         onDismiss = { showLegend = false },
                         modifier = Modifier.align(Alignment.TopStart).padding(6.dp)
@@ -1209,56 +1401,96 @@ fun FirelineApp() {
                 }
             }
 
-            if (chromeVisible && !showSearch) Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                ToolButton(
-                    "Measure",
-                    Icons.Default.Straighten,
-                    Modifier.weight(1f),
-                    active = measuring
+            // Two rows of three rather than one row of six. Six across a phone
+            // leaves about forty-nine density-independent pixels each, which
+            // is under a fingertip and well under a gloved one, and the labels
+            // would have to be abbreviated to fit. The chrome folds away after
+            // twenty seconds anyway, so the second row costs the map nothing
+            // for most of a shift.
+            if (chromeVisible && !showSearch) {
+                /** Arming one tool disarms the others; only one reading of a tap can be right. */
+                fun armOnly(
+                    measure: Boolean = false,
+                    resources: Boolean = false,
+                    where: Boolean = false,
+                    perimeterTool: Boolean = false
                 ) {
-                    touched()
-                    measuring = !measuring
-                    if (measuring) { placingResources = false; simMode = false }
-                    if (!measuring) {
+                    if (measuring && !measure) {
                         measureSession.clear()
                         measurePoints = emptyList()
                     }
+                    if (placingResources && !resources) selectedSymbol = null
+                    measuring = measure
+                    placingResources = resources
+                    asking = where
+                    drawingFireline = perimeterTool
+                    if (measure || resources || where || perimeterTool) simMode = false
                 }
-                ToolButton(
-                    "Resources",
-                    Icons.Default.People,
-                    Modifier.weight(1f),
-                    active = placingResources
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    touched()
-                    placingResources = !placingResources
-                    if (placingResources) {
-                        measuring = false
-                        simMode = false
-                    } else {
-                        selectedSymbol = null
+                    ToolButton(
+                        "Measure",
+                        Icons.Default.Straighten,
+                        Modifier.weight(1f),
+                        active = measuring
+                    ) {
+                        touched()
+                        armOnly(measure = !measuring)
+                    }
+                    ToolButton(
+                        "Where",
+                        Icons.Default.PinDrop,
+                        Modifier.weight(1f),
+                        active = asking
+                    ) {
+                        touched()
+                        armOnly(where = !asking)
+                    }
+                    ToolButton(
+                        "Fireline",
+                        Icons.Default.LocalFireDepartment,
+                        Modifier.weight(1f),
+                        active = drawingFireline
+                    ) {
+                        touched()
+                        armOnly(perimeterTool = !drawingFireline)
                     }
                 }
-                ToolButton(
-                    "MED",
-                    Icons.Default.MedicalServices,
-                    Modifier.weight(1f),
-                    active = medicalReport != null
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    touched()
-                    openMedicalReport()
-                }
-                ToolButton(
-                    "Layers",
-                    Icons.Default.Layers,
-                    Modifier.weight(1f),
-                    active = showLayers
-                ) {
-                    touched()
-                    showLayers = true
+                    ToolButton(
+                        "Resources",
+                        Icons.Default.People,
+                        Modifier.weight(1f),
+                        active = placingResources
+                    ) {
+                        touched()
+                        armOnly(resources = !placingResources)
+                    }
+                    ToolButton(
+                        "MED",
+                        Icons.Default.MedicalServices,
+                        Modifier.weight(1f),
+                        active = medicalReport != null
+                    ) {
+                        touched()
+                        openMedicalReport()
+                    }
+                    ToolButton(
+                        "Layers",
+                        Icons.Default.Layers,
+                        Modifier.weight(1f),
+                        active = showLayers
+                    ) {
+                        touched()
+                        showLayers = true
+                    }
                 }
             }
 

@@ -55,8 +55,17 @@ import com.rhecyee.firelinemap.measure.MeasureMode
 import com.rhecyee.firelinemap.measure.MeasurePoint
 import com.rhecyee.firelinemap.geopdf.DropPoint
 import com.rhecyee.firelinemap.geopdf.ImportedMap
+import com.rhecyee.firelinemap.geopdf.MapSheetRenderer
+import com.rhecyee.firelinemap.geopdf.SheetDetail
+import com.rhecyee.firelinemap.fireline.FirelineFeature
+import com.rhecyee.firelinemap.fireline.FirelineKind
+import com.rhecyee.firelinemap.fireline.InferredPerimeter
+import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.positionChanged
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.roundToInt
@@ -76,6 +85,14 @@ fun MapCanvas(
     latitude: Double?,
     longitude: Double?,
     positionIsSimulated: Boolean = false,
+    /**
+     * Supplies a sharp render of whatever is on screen. Without one the sheet
+     * is drawn from the overview alone, which is legible only at fit.
+     */
+    sheetRenderer: MapSheetRenderer? = null,
+    firelineFeatures: List<FirelineFeature> = emptyList(),
+    perimeter: InferredPerimeter? = null,
+    queriedPosition: Pair<Double, Double>? = null,
     dropPoints: List<DropPoint> = emptyList(),
     basemap: BasemapTileCache? = null,
     measurePoints: List<MeasurePoint> = emptyList(),
@@ -178,6 +195,63 @@ fun MapCanvas(
             } else {
                 1f
             }
+
+        // A sharp render of exactly the window being looked at, laid over the
+        // overview. The overview is a whole Arch E sheet squeezed into 2048
+        // pixels, which is 43 DPI; zoomed in, the screen is asking for several
+        // hundred and every extra one of those is already in the PDF. Nothing
+        // is cropped or thrown away here -- the overview still covers the
+        // whole sheet underneath, so a pan is never looking at a hole.
+        var detail by remember(map.id) { mutableStateOf<SheetDetail?>(null) }
+        val detailImage = remember(detail) { detail?.bitmap?.asImageBitmap() }
+
+        androidx.compose.runtime.LaunchedEffect(
+            map.id, bitmap, sheetRenderer, viewport, scale, offset
+        ) {
+            val renderer = sheetRenderer
+            if (renderer == null || viewport.width <= 0 || viewport.height <= 0 ||
+                pageWidthPoints <= 0 || pageHeightPoints <= 0
+            ) {
+                return@LaunchedEffect
+            }
+
+            // Let the gesture settle first. Keyed on the pan and the zoom, so
+            // every frame of a pinch cancels the one before it and only the
+            // window actually arrived at is ever rendered.
+            delay(DETAIL_SETTLE_MILLIS)
+
+            val drawWidth = image.width * fitScale() * scale
+            val drawHeight = image.height * fitScale() * scale
+            // Below this the overview already carries more pixels than the
+            // screen can show, and rendering again would buy nothing.
+            if (drawWidth <= image.width * 1.05f) {
+                detail = null
+                return@LaunchedEffect
+            }
+
+            val originX = (viewport.width - drawWidth) / 2f + offset.x
+            val originY = (viewport.height - drawHeight) / 2f + offset.y
+            val fromX = ((0f - originX) / drawWidth).coerceIn(0f, 1f)
+            val toX = ((viewport.width - originX) / drawWidth).coerceIn(0f, 1f)
+            val fromY = ((0f - originY) / drawHeight).coerceIn(0f, 1f)
+            val toY = ((viewport.height - originY) / drawHeight).coerceIn(0f, 1f)
+            // Panned right off the sheet: there is nothing of it to render.
+            if (toX - fromX <= 0f || toY - fromY <= 0f) return@LaunchedEffect
+
+            val rendered = withContext(Dispatchers.IO) {
+                renderer.renderWindow(
+                    left = fromX.toDouble() * pageWidthPoints,
+                    top = fromY.toDouble() * pageHeightPoints,
+                    right = toX.toDouble() * pageWidthPoints,
+                    bottom = toY.toDouble() * pageHeightPoints,
+                    outWidth = ((toX - fromX) * drawWidth).roundToInt(),
+                    outHeight = ((toY - fromY) * drawHeight).roundToInt()
+                )
+            }
+            // A failed render leaves the previous window in place rather than
+            // dropping back to the blurred overview.
+            if (rendered != null) detail = rendered
+        }
 
         // The sheet may be panned until its edge reaches the view, plus an
         // allowance for travelling off it. Being off the sheet is normal --
@@ -334,7 +408,7 @@ fun MapCanvas(
                             travelled += panChange.getDistance() + abs(1f - zoomChange) * 200f
 
                             if (travelled > viewConfiguration.touchSlop) {
-                                val next = (scale * zoomChange).coerceIn(1f, 12f)
+                                val next = (scale * zoomChange).coerceIn(1f, MAX_SHEET_ZOOM)
                                 scale = next
                                 offset = clamp(offset + panChange, next)
                                 event.changes.forEach { if (it.positionChanged()) it.consume() }
@@ -381,6 +455,31 @@ fun MapCanvas(
                 dstSize = IntSize(drawWidth.roundToInt(), drawHeight.roundToInt())
             )
 
+            // The sharp window over the top, placed by the page rectangle it
+            // was rendered from. Keying it to page space rather than to screen
+            // space means a stale tile stays registered to the ground while a
+            // new one is on its way: it grows and slides with the sheet, going
+            // soft rather than going wrong.
+            val tile = detail
+            val tileImage = detailImage
+            if (tile != null && tileImage != null &&
+                pageWidthPoints > 0 && pageHeightPoints > 0
+            ) {
+                val tileLeft = originX + (tile.left / pageWidthPoints).toFloat() * drawWidth
+                val tileTop = originY + (tile.top / pageHeightPoints).toFloat() * drawHeight
+                val tileRight = originX + (tile.right / pageWidthPoints).toFloat() * drawWidth
+                val tileBottom = originY + (tile.bottom / pageHeightPoints).toFloat() * drawHeight
+                val tileWidth = (tileRight - tileLeft).roundToInt()
+                val tileHeight = (tileBottom - tileTop).roundToInt()
+                if (tileWidth > 0 && tileHeight > 0) {
+                    drawImage(
+                        image = tileImage,
+                        dstOffset = IntOffset(tileLeft.roundToInt(), tileTop.roundToInt()),
+                        dstSize = IntSize(tileWidth, tileHeight)
+                    )
+                }
+            }
+
             val frame = map.frame
 
             // Parcels sit above terrain and below everything the incident owns.
@@ -408,6 +507,42 @@ fun MapCanvas(
                     if (dx !in 0f..1f || dy !in 0f..1f) continue
                     drawDropPointMarker(
                         Offset(originX + dx * drawWidth, originY + dy * drawHeight)
+                    )
+                }
+            }
+
+            // Drawn ahead of the position check below. The perimeter tool is
+            // for fires with no product yet, and it has to keep working when
+            // the receiver has nothing -- under canopy, or in the back of a
+            // vehicle. What was dropped does not stop being true because the
+            // GPS dropped out.
+            if (frame != null && pageWidthPoints > 0 && pageHeightPoints > 0 &&
+                (firelineFeatures.isNotEmpty() || perimeter?.isEmpty == false)
+            ) {
+                drawFireline(
+                    features = firelineFeatures,
+                    perimeter = perimeter,
+                    frame = frame,
+                    pageWidthPoints = pageWidthPoints,
+                    pageHeightPoints = pageHeightPoints,
+                    originX = originX,
+                    originY = originY,
+                    drawWidth = drawWidth,
+                    drawHeight = drawHeight
+                )
+            }
+
+            if (queriedPosition != null && frame != null &&
+                pageWidthPoints > 0 && pageHeightPoints > 0
+            ) {
+                val page = frame.geoToPage(queriedPosition.first, queriedPosition.second)
+                if (page != null) {
+                    drawQueryCrosshair(
+                        Offset(
+                            originX + (page.first / pageWidthPoints).toFloat() * drawWidth,
+                            originY +
+                                (1f - (page.second / pageHeightPoints).toFloat()) * drawHeight
+                        )
                     )
                 }
             }
@@ -589,6 +724,28 @@ fun MapCanvas(
 }
 
 private const val OFF_SHEET_PAN_ALLOWANCE = 1.5f
+
+/**
+ * How far in the sheet may be zoomed.
+ *
+ * This used to be twelve, which was not a judgement about how closely anyone
+ * needs to read a map -- it was the point past which the whole-page overview
+ * stopped being able to pretend. Now that the window on screen is rendered
+ * from the PDF at the resolution it is being viewed at, the limit can be what
+ * the product actually holds: at twenty-four the sheet is being drawn at
+ * around 540 DPI, where its lettering, section lines and drop points are all
+ * still crisp, and past which only the hillshade underneath them is being
+ * magnified.
+ */
+private const val MAX_SHEET_ZOOM = 24f
+
+/**
+ * How long a gesture has to be still before the window is re-rendered.
+ *
+ * Long enough that a pinch does not queue a render per frame, short enough
+ * that letting go and reading the sheet feels immediate.
+ */
+private const val DETAIL_SETTLE_MILLIS = 110L
 
 /** Where a searched position could be: a point, a line, or a box. */
 data class SearchRegion(
@@ -1049,4 +1206,104 @@ fun MedicalButton(active: Boolean, onClick: () -> Unit, modifier: Modifier = Mod
         fontWeight = FontWeight.Black,
         fontSize = androidx.compose.ui.unit.TextUnit(17f, androidx.compose.ui.unit.TextUnitType.Sp)
     )
+}
+
+/**
+ * Draws the inferred perimeter and the observations behind it.
+ *
+ * The polygon is deliberately not drawn like a published fire perimeter. It
+ * is filled thinly and outlined in a dashed line, because a solid red edge on
+ * a fire map means somebody flew it or walked it, and this one was worked out
+ * from a handful of points. What it was worked out from is drawn on top of it
+ * at all times, so the evidence and the conclusion are never separated: a
+ * perimeter resting on four points cannot be mistaken for one resting on
+ * forty.
+ */
+private fun DrawScope.drawFireline(
+    features: List<FirelineFeature>,
+    perimeter: InferredPerimeter?,
+    frame: com.rhecyee.firelinemap.geopdf.MapFrame,
+    pageWidthPoints: Int,
+    pageHeightPoints: Int,
+    originX: Float,
+    originY: Float,
+    drawWidth: Float,
+    drawHeight: Float
+) {
+    fun toScreen(latitude: Double, longitude: Double): Offset? {
+        val page = frame.geoToPage(latitude, longitude) ?: return null
+        return Offset(
+            originX + (page.first / pageWidthPoints).toFloat() * drawWidth,
+            originY + (1f - (page.second / pageHeightPoints).toFloat()) * drawHeight
+        )
+    }
+
+    if (perimeter != null && !perimeter.isEmpty) {
+        // Every ring into one path under an even-odd rule, so an unburnt
+        // island inside the fire reads as a hole rather than as more fire.
+        val path = Path().apply { fillType = PathFillType.EvenOdd }
+        var drewAnything = false
+        for (ring in perimeter.rings) {
+            var started = false
+            for (vertex in ring.points) {
+                val point = toScreen(vertex.latitude, vertex.longitude) ?: continue
+                if (started) path.lineTo(point.x, point.y)
+                else { path.moveTo(point.x, point.y); started = true }
+            }
+            if (started) { path.close(); drewAnything = true }
+        }
+        if (drewAnything) {
+            drawPath(path, FIRE_RED, alpha = 0.22f)
+            drawPath(path, Color.Black, alpha = 0.45f, style = Stroke(width = 8f))
+            drawPath(
+                path,
+                FIRE_RED,
+                style = Stroke(
+                    width = 4f,
+                    pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(
+                        floatArrayOf(18f, 10f)
+                    )
+                )
+            )
+        }
+    }
+
+    for (feature in features) {
+        val colour = if (feature.kind == FirelineKind.FIRE) FIRE_RED else NOT_FIRE_BLUE
+        val screen = feature.vertices.mapNotNull { toScreen(it.latitude, it.longitude) }
+        if (screen.isEmpty()) continue
+
+        if (screen.size >= 2) {
+            val line = Path().apply {
+                moveTo(screen.first().x, screen.first().y)
+                screen.drop(1).forEach { lineTo(it.x, it.y) }
+            }
+            drawPath(line, Color.Black, alpha = 0.55f, style = Stroke(width = 10f))
+            drawPath(line, colour, style = Stroke(width = 5.5f))
+        }
+
+        for (point in screen) {
+            drawCircle(Color.Black, radius = 9f, center = point, alpha = 0.55f)
+            if (feature.kind == FirelineKind.FIRE) {
+                drawCircle(colour, radius = 6.5f, center = point)
+            } else {
+                // Hollow, so a negative can never be misread as a positive at
+                // a glance or through a cracked screen protector.
+                drawCircle(Color.White, radius = 6.5f, center = point)
+                drawCircle(colour, radius = 6.5f, center = point, style = Stroke(width = 3f))
+            }
+        }
+    }
+}
+
+/** Marks the spot a position was asked about. */
+private fun DrawScope.drawQueryCrosshair(centre: Offset) {
+    val accent = Color(0xFF00E5FF)
+    drawCircle(Color.Black, radius = 17f, center = centre, alpha = 0.5f)
+    drawCircle(accent, radius = 15f, center = centre, style = Stroke(width = 3.5f))
+    drawLine(accent, Offset(centre.x - 24f, centre.y), Offset(centre.x - 8f, centre.y), 3.5f)
+    drawLine(accent, Offset(centre.x + 8f, centre.y), Offset(centre.x + 24f, centre.y), 3.5f)
+    drawLine(accent, Offset(centre.x, centre.y - 24f), Offset(centre.x, centre.y - 8f), 3.5f)
+    drawLine(accent, Offset(centre.x, centre.y + 8f), Offset(centre.x, centre.y + 24f), 3.5f)
+    drawCircle(accent, radius = 2.5f, center = centre)
 }

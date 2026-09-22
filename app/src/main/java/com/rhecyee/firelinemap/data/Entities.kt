@@ -276,3 +276,36 @@ data class ResourcePositionHistoryEntity(
     val longitude: Double,
     val recordedAt: Long
 )
+
+/**
+ * One thing somebody observed about the fire, held against its incident.
+ *
+ * The observations are stored, not the perimeter drawn from them. A perimeter
+ * is a conclusion: it moves when the reach is changed, when a point is
+ * corrected, and when somebody walks another mile of line. What is worth
+ * keeping is what was actually seen and where, so the conclusion is recomputed
+ * on load rather than frozen at whatever it happened to be when the phone was
+ * last put away.
+ *
+ * [kind] is FIRE or NOT_FIRE. [geometryGeoJson] is a LineString in the form
+ * tracks are already written in -- longitude first -- and holds a single
+ * coordinate for an observation made from one spot.
+ */
+@Entity(
+    tableName = "fireline_observations",
+    foreignKeys = [ForeignKey(
+        entity = IncidentEntity::class,
+        parentColumns = ["id"],
+        childColumns = ["incidentId"],
+        onDelete = ForeignKey.CASCADE
+    )],
+    indices = [Index("incidentId")]
+)
+data class FirelineObservationEntity(
+    @PrimaryKey val id: String,
+    val incidentId: String,
+    val kind: String,
+    val geometryGeoJson: String,
+    val recordedAt: Long,
+    val note: String? = null
+)

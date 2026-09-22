@@ -132,4 +132,31 @@ interface FirelineDao {
 
     @Query("DELETE FROM basemap_regions WHERE id = :regionId")
     suspend fun deleteBasemapRegion(regionId: String)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertFirelineObservations(observations: List<FirelineObservationEntity>)
+
+    @Query("SELECT * FROM fireline_observations WHERE incidentId = :incidentId ORDER BY recordedAt")
+    fun observeFirelineObservations(incidentId: String): Flow<List<FirelineObservationEntity>>
+
+    @Query("SELECT * FROM fireline_observations WHERE incidentId = :incidentId ORDER BY recordedAt")
+    suspend fun firelineObservations(incidentId: String): List<FirelineObservationEntity>
+
+    @Query("DELETE FROM fireline_observations WHERE incidentId = :incidentId")
+    suspend fun deleteFirelineObservations(incidentId: String)
+
+    /**
+     * Replaces an incident's observations with what is on screen.
+     *
+     * One transaction, because a save that deleted the old set and then failed
+     * to write the new one would take a shift's worth of ground truth with it.
+     */
+    @Transaction
+    suspend fun replaceFirelineObservations(
+        incidentId: String,
+        observations: List<FirelineObservationEntity>
+    ) {
+        deleteFirelineObservations(incidentId)
+        if (observations.isNotEmpty()) upsertFirelineObservations(observations)
+    }
 }

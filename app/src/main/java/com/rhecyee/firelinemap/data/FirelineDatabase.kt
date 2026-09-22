@@ -18,9 +18,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         MedicalReportEntity::class,
         MedicalReportUpdateEntity::class,
         LayerPackageEntity::class,
-        OfflineRegionEntity::class
+        OfflineRegionEntity::class,
+        FirelineObservationEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = true
 )
 abstract class FirelineDatabase : RoomDatabase() {
@@ -178,6 +179,36 @@ abstract class FirelineDatabase : RoomDatabase() {
         }
 
         /**
+         * Adds the perimeter tool's observations.
+         *
+         * A new table only. Nothing existing is touched, so an incident that
+         * predates the tool opens with an empty set rather than a conversion.
+         */
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `fireline_observations` (
+                        `id` TEXT NOT NULL,
+                        `incidentId` TEXT NOT NULL,
+                        `kind` TEXT NOT NULL,
+                        `geometryGeoJson` TEXT NOT NULL,
+                        `recordedAt` INTEGER NOT NULL,
+                        `note` TEXT,
+                        PRIMARY KEY(`id`),
+                        FOREIGN KEY(`incidentId`) REFERENCES `incidents`(`id`)
+                            ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_fireline_observations_incidentId` " +
+                        "ON `fireline_observations` (`incidentId`)"
+                )
+            }
+        }
+
+        /**
          * SQLite has no ADD COLUMN IF NOT EXISTS, and a migration must not
          * take the app down for having already been applied.
          */
@@ -203,7 +234,9 @@ abstract class FirelineDatabase : RoomDatabase() {
                 context.applicationContext,
                 FirelineDatabase::class.java,
                 "fireline-map.db"
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+            ).addMigrations(
+                MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6
+            )
                 .build()
     }
 }

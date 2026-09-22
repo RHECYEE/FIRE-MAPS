@@ -42,6 +42,7 @@ fun MapLegend(
     hasParcels: Boolean,
     hasDropPoints: Boolean,
     hasSearch: Boolean,
+    hasFireline: Boolean,
     simulated: Boolean,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
@@ -57,6 +58,11 @@ fun MapLegend(
         if (hasTrack) add(LegendEntry(Color(0xFFE91E63), "Recording now"))
         if (hasSavedTracks) add(LegendEntry(Color(0xFF9C27B0), "Saved track"))
         add(LegendEntry(Color(0xFFFFC400), "Measurement"))
+        if (hasFireline) {
+            add(LegendEntry(FIRE_RED, "Fire — observed", round = true))
+            add(LegendEntry(NOT_FIRE_BLUE, "Not fire — observed", round = true))
+            add(LegendEntry(FIRE_RED, "Inferred perimeter"))
+        }
         if (hasSearch) add(LegendEntry(Color(0xFF40C4FF), "Search area"))
         if (hasDropPoints) add(LegendEntry(Color(0xFF00E5FF), "Drop point read off sheet", true))
         if (hasParcels) add(LegendEntry(Color(0xFF8D6E63), "Property boundary"))

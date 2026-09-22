@@ -1,8 +1,6 @@
 package com.rhecyee.firelinemap.geopdf
 
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.Color
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.ParcelFileDescriptor
@@ -93,33 +91,15 @@ class MapDocumentRepository(private val context: Context) {
     }.getOrNull()
 
     companion object {
-        /**
-         * Renders page one to a bitmap.
-         *
-         * Deliberately a whole-page render rather than a tile pyramid. It is
-         * enough to prove registration on a real product and to be carried
-         * into the field, and it removes the tiling pipeline from the path to
-         * a testable build. Large sheets will want tiling before this is fast
-         * enough to pan comfortably.
-         */
-        fun renderPage(file: File, targetWidth: Int): Bitmap? = runCatching {
-            ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { descriptor ->
-                PdfRenderer(descriptor).use { renderer ->
-                    if (renderer.pageCount == 0) return null
-                    renderer.openPage(0).use { page ->
-                        val scale = targetWidth.toFloat() / page.width
-                        val width = targetWidth.coerceAtLeast(1)
-                        val height = (page.height * scale).toInt().coerceAtLeast(1)
-                        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-                        bitmap.eraseColor(Color.WHITE)
-                        page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                        bitmap
-                    }
-                }
-            }
-        }.getOrNull()
+        // Drawing a sheet is MapSheetRenderer's job, not this class's. There
+        // used to be a whole-page render here, taken at a fixed 2048 pixels
+        // across. On the Arch E sheets incidents actually publish, that is 43
+        // DPI, so every imported map was unreadable the moment it was zoomed,
+        // whatever detail was in the file. It is gone rather than tuned
+        // because no one fixed width can be right: the renderer draws the
+        // window being looked at, at the resolution it is being looked at.
 
-        /** Page height in PDF points, needed to flip into bitmap coordinates. */
+        /** Page size in PDF points, needed to flip into bitmap coordinates. */
         fun pageSize(file: File): Pair<Int, Int>? = runCatching {
             ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { descriptor ->
                 PdfRenderer(descriptor).use { renderer ->

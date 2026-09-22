@@ -5,6 +5,8 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.rhecyee.firelinemap.fireline.FirelineKind
+import com.rhecyee.firelinemap.fireline.InferredPerimeter
 import com.rhecyee.firelinemap.location.LiveTrack
 import com.rhecyee.firelinemap.measure.AreaUnit
 import com.rhecyee.firelinemap.measure.DistanceUnit
@@ -113,6 +115,91 @@ class ToolPanelTest {
         // A hazard is a mark on the ground, not an assigned resource.
         compose.onNodeWithText("Hazard").performClick()
         assertEquals(ResourceSymbol.HAZARD, picked)
+    }
+
+    /**
+     * The one control on the perimeter tool that must never be ambiguous.
+     *
+     * Everything the tool produces rests on which of the two kinds a tap
+     * drops. Wired backwards, it would report clean ground as fire and the
+     * polygon would still look perfectly plausible, so both choices being on
+     * screen and reporting themselves correctly is worth asserting rather
+     * than assuming.
+     */
+    @Test
+    fun theFirelineToolOffersFireAndNotFireAsSeparateChoices() {
+        var chosen: FirelineKind? = null
+        compose.setContent {
+            FirelinePanel(
+                perimeter = InferredPerimeter.empty(),
+                kind = FirelineKind.FIRE,
+                linking = false,
+                firePoints = 0,
+                cleanPoints = 0,
+                reachMeters = 300.0,
+                reachIsAutomatic = true,
+                working = false,
+                distanceUnit = DistanceUnit.FEET,
+                areaUnit = AreaUnit.ACRES,
+                onSelectKind = { chosen = it },
+                onToggleLinking = {},
+                onBreakRun = {},
+                onReach = {},
+                onAutoReach = {},
+                onCycleAreaUnit = {},
+                onCycleDistanceUnit = {},
+                onUndo = {},
+                onClear = {},
+                onSave = {}
+            )
+        }
+
+        compose.onNodeWithText("FIRE").assertIsDisplayed()
+        compose.onNodeWithText("NOT FIRE").assertIsDisplayed()
+
+        compose.onNodeWithText("NOT FIRE").performClick()
+        assertEquals(FirelineKind.NOT_FIRE, chosen)
+
+        compose.onNodeWithText("FIRE").performClick()
+        assertEquals(FirelineKind.FIRE, chosen)
+    }
+
+    /**
+     * An acreage with nothing said about where it came from is the failure
+     * mode this tool has to avoid. It is an inference, and it has to read as
+     * one on the same screen as the number.
+     */
+    @Test
+    fun theInferredAcreageSaysWhatItWasInferredFrom() {
+        compose.setContent {
+            FirelinePanel(
+                perimeter = InferredPerimeter.empty(300.0),
+                kind = FirelineKind.FIRE,
+                linking = false,
+                firePoints = 4,
+                cleanPoints = 2,
+                reachMeters = 300.0,
+                reachIsAutomatic = true,
+                working = false,
+                distanceUnit = DistanceUnit.FEET,
+                areaUnit = AreaUnit.ACRES,
+                onSelectKind = {},
+                onToggleLinking = {},
+                onBreakRun = {},
+                onReach = {},
+                onAutoReach = {},
+                onCycleAreaUnit = {},
+                onCycleDistanceUnit = {},
+                onUndo = {},
+                onClear = {},
+                onSave = {}
+            )
+        }
+
+        compose.onNodeWithText("4 fire · 2 clean").assertIsDisplayed()
+        compose.onNodeWithText(
+            "INFERRED from 4 fire and 2 clean observations — not a surveyed perimeter"
+        ).assertIsDisplayed()
     }
 
     @Test
