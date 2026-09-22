@@ -23,6 +23,8 @@ import com.rhecyee.firelinemap.data.MarkerEntity
 import com.rhecyee.firelinemap.data.parseLineString
 import com.rhecyee.firelinemap.geopdf.MapDocumentRepository
 import com.rhecyee.firelinemap.geopdf.MapFrame
+import com.rhecyee.firelinemap.geopdf.MapSheetRenderer
+import com.rhecyee.firelinemap.geopdf.SheetDetail
 import com.rhecyee.firelinemap.location.TrackRecordingState
 import com.rhecyee.firelinemap.map.BasemapTileCache
 import com.rhecyee.firelinemap.resources.ResourceSymbol
@@ -40,6 +42,9 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
+import kotlin.math.hypot
+import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
@@ -85,9 +90,26 @@ class CarMapRenderer(
     private var savedTracks: List<List<Pair<Double, Double>>> = emptyList()
     private val dropPoints get() = application.dropPoints
 
-    /** The imported sheet, rendered once and held while the car screen is up. */
+    /** The imported sheet as a whole page: the backdrop, always present. */
     private var sheetBitmap: Bitmap? = null
     private var sheetFrame: MapFrame? = null
+
+    /**
+     * Draws the part of the sheet on screen at the resolution it is shown at.
+     *
+     * The whole-page raster above is 43 DPI across an arch E plot at best, and
+     * this used to render it narrower still on the grounds that a car display
+     * is smaller. That reasoning does not survive contact with a fire road:
+     * the display being smaller is why it is zoomed in, and zoomed in is
+     * exactly where a whole-page raster has nothing left to give. So the page
+     * stays as the backdrop and the window being driven through is redrawn
+     * over it from the PDF.
+     */
+    private var sheetRenderer: MapSheetRenderer? = null
+    private var sheetDetail: SheetDetail? = null
+    private var sheetDetailJob: Job? = null
+    private var sheetDetailWindow: PageWindow? = null
+    private var lastSheetDetailAt = 0L
 
     private val elevation = ElevationTiles(carContext)
 
@@ -235,11 +257,25 @@ class CarMapRenderer(
             val map = available.firstOrNull { it.id == wanted }
                 ?: available.firstOrNull()
                 ?: return@withContext null
-            val size = MapDocumentRepository.pageSize(map.file) ?: return@withContext null
-            val bitmap = MapDocumentRepository.renderPage(map.file, targetWidth = SHEET_WIDTH)
-                ?: return@withContext null
-            SheetLoad(map.id, map.displayName, map.frame, bitmap, size.first, size.second)
+            val renderer = MapSheetRenderer(map.file)
+            val size = renderer.pageSize()
+            val bitmap = renderer.renderOverview(SHEET_OVERVIEW_WIDTH)
+            if (size == null || bitmap == null) {
+                renderer.close()
+                return@withContext null
+            }
+            SheetLoad(
+                map.id, map.displayName, map.frame, renderer, bitmap, size.first, size.second
+            )
         }
+
+        // The outgoing sheet's renderer holds the PDF open; it goes with it.
+        val outgoing = sheetRenderer
+        sheetRenderer = loaded?.renderer
+        sheetDetail = null
+        sheetDetailWindow = null
+        sheetDetailJob?.cancel()
+        withContext(Dispatchers.IO) { outgoing?.close() }
 
         sheetBitmap = loaded?.bitmap
         sheetFrame = loaded?.frame
@@ -257,6 +293,7 @@ class CarMapRenderer(
         val id: String,
         val name: String,
         val frame: MapFrame?,
+        val renderer: MapSheetRenderer,
         val bitmap: Bitmap,
         val pageWidth: Int,
         val pageHeight: Int
@@ -267,6 +304,10 @@ class CarMapRenderer(
         renderJob = null
         surfaceContainer = null
         sheetBitmap = null
+        sheetDetailJob?.cancel()
+        sheetDetail = null
+        sheetRenderer?.close()
+        sheetRenderer = null
     }
 
     // --------------------------------------------------------- surface hooks
@@ -401,6 +442,7 @@ class CarMapRenderer(
             return
         }
         requestContours(projection)
+        requestSheetDetail(projection)
 
         canvas.save()
         canvas.rotate(
@@ -507,7 +549,166 @@ class CarMapRenderer(
         canvas.save()
         canvas.clipPath(clip)
         canvas.drawBitmap(bitmap, matrix, sheetPaint)
+        drawSheetDetail(canvas, projection, frame)
         canvas.restore()
+    }
+
+    /**
+     * Lays the sharp window over the backdrop, placed by the page rectangle it
+     * was rendered from rather than by where the screen was at the time.
+     *
+     * That is what lets a window that is a second old still be honest: the
+     * ground it covers has not moved, so it slides and scales with the map and
+     * goes soft at the edges of a fast pan rather than going wrong.
+     */
+    private fun drawSheetDetail(
+        canvas: Canvas,
+        projection: CarMapProjection,
+        frame: MapFrame
+    ) {
+        val detail = sheetDetail ?: return
+        if (detail.bitmap.isRecycled || pageHeightPoints <= 0) return
+
+        // Page space counts up from the bottom of the page; a rendered window
+        // counts down from the top of it.
+        val topPageY = pageHeightPoints - detail.top
+        val bottomPageY = pageHeightPoints - detail.bottom
+        val corners = listOf(
+            detail.left to topPageY,
+            detail.right to topPageY,
+            detail.right to bottomPageY,
+            detail.left to bottomPageY
+        )
+        val source = floatArrayOf(
+            0f, 0f,
+            detail.bitmap.width.toFloat(), 0f,
+            detail.bitmap.width.toFloat(), detail.bitmap.height.toFloat(),
+            0f, detail.bitmap.height.toFloat()
+        )
+        val destination = FloatArray(8)
+        corners.forEachIndexed { index, (pageX, pageY) ->
+            val ground = frame.pageToGeo(pageX, pageY) ?: return
+            val point = projection.toUnrotated(ground.latitude, ground.longitude)
+            if (!point.x.isFinite() || !point.y.isFinite()) return
+            destination[index * 2] = point.x
+            destination[index * 2 + 1] = point.y
+        }
+
+        val matrix = Matrix()
+        if (!matrix.setPolyToPoly(source, 0, destination, 0, 4)) return
+        canvas.drawBitmap(detail.bitmap, matrix, sheetPaint)
+    }
+
+    /**
+     * A rectangle of the page, with the scale it is currently shown at.
+     *
+     * [bottom] and [top] run upward from the bottom-left, as page space does.
+     */
+    private data class PageWindow(
+        val left: Double,
+        val bottom: Double,
+        val right: Double,
+        val top: Double,
+        val pixelsPerPoint: Double
+    ) {
+        /** Whether [other] is near enough that redrawing for it would buy nothing. */
+        fun closeTo(other: PageWindow): Boolean {
+            val slack = (right - left) * 0.12
+            return abs(left - other.left) < slack && abs(right - other.right) < slack &&
+                abs(bottom - other.bottom) < slack && abs(top - other.top) < slack &&
+                other.pixelsPerPoint > pixelsPerPoint * 0.8 &&
+                other.pixelsPerPoint < pixelsPerPoint * 1.25
+        }
+    }
+
+    /** The page rectangle currently on screen, and how big it is drawn. */
+    private fun visiblePageWindow(
+        frame: MapFrame,
+        projection: CarMapProjection
+    ): PageWindow? {
+        if (pageWidthPoints <= 0 || pageHeightPoints <= 0) return null
+        val bounds = projection.visibleBounds()
+
+        // Taken from the corners of the visible ground rather than of the
+        // screen: under a heading-up camera the map is rotated, so the two are
+        // not the same shape, and the ground is the one the page is fixed to.
+        var left = Double.MAX_VALUE
+        var right = -Double.MAX_VALUE
+        var bottom = Double.MAX_VALUE
+        var top = -Double.MAX_VALUE
+        val ground = listOf(
+            bounds.south to bounds.west, bounds.north to bounds.west,
+            bounds.north to bounds.east, bounds.south to bounds.east
+        )
+        for ((latitude, longitude) in ground) {
+            val page = frame.geoToPage(latitude, longitude) ?: return null
+            left = min(left, page.first)
+            right = max(right, page.first)
+            bottom = min(bottom, page.second)
+            top = max(top, page.second)
+        }
+        left = left.coerceIn(0.0, pageWidthPoints.toDouble())
+        right = right.coerceIn(0.0, pageWidthPoints.toDouble())
+        bottom = bottom.coerceIn(0.0, pageHeightPoints.toDouble())
+        top = top.coerceIn(0.0, pageHeightPoints.toDouble())
+        if (right - left < 1.0 || top - bottom < 1.0) return null
+
+        // How many screen pixels a page point is worth, measured across the
+        // sheet through the same projection everything else is drawn with.
+        val west = frame.pageToGeo(0.0, pageHeightPoints / 2.0) ?: return null
+        val east = frame.pageToGeo(pageWidthPoints.toDouble(), pageHeightPoints / 2.0)
+            ?: return null
+        val a = projection.toUnrotated(west.latitude, west.longitude)
+        val b = projection.toUnrotated(east.latitude, east.longitude)
+        if (!a.x.isFinite() || !a.y.isFinite() || !b.x.isFinite() || !b.y.isFinite()) return null
+        val pixelsPerPoint = hypot(b.x - a.x, b.y - a.y).toDouble() / pageWidthPoints
+        if (!pixelsPerPoint.isFinite() || pixelsPerPoint <= 0.0) return null
+
+        return PageWindow(left, bottom, right, top, pixelsPerPoint)
+    }
+
+    /**
+     * Redraws the window when the ground on screen has moved enough to warrant
+     * it, at a pace a PDF can actually be rasterised at.
+     */
+    private fun requestSheetDetail(projection: CarMapProjection) {
+        val renderer = sheetRenderer ?: return
+        val frame = sheetFrame ?: return
+        val backdrop = sheetBitmap ?: return
+        val owner = lifecycleOwner ?: return
+
+        val wanted = visiblePageWindow(frame, projection) ?: return
+        // Pulled far enough back that the backdrop already holds more pixels
+        // than the screen can show. A second raster would be the same picture.
+        if (wanted.pixelsPerPoint * pageWidthPoints < backdrop.width * SHEET_DETAIL_MIN_GAIN) {
+            return
+        }
+        if (sheetDetailWindow?.closeTo(wanted) == true) return
+        if (sheetDetailJob?.isActive == true) return
+        val now = System.currentTimeMillis()
+        if (now - lastSheetDetailAt < SHEET_DETAIL_INTERVAL_MILLIS) return
+
+        lastSheetDetailAt = now
+        sheetDetailWindow = wanted
+        sheetDetailJob = owner.lifecycleScope.launch {
+            val drawn = withContext(Dispatchers.IO) {
+                renderer.renderWindow(
+                    left = wanted.left,
+                    top = pageHeightPoints - wanted.top,
+                    right = wanted.right,
+                    bottom = pageHeightPoints - wanted.bottom,
+                    outWidth = ((wanted.right - wanted.left) * wanted.pixelsPerPoint).roundToInt(),
+                    outHeight = ((wanted.top - wanted.bottom) * wanted.pixelsPerPoint).roundToInt()
+                )
+            }
+            if (drawn == null) {
+                // Cleared so the next frame tries again rather than treating a
+                // failed render as the window that is up.
+                sheetDetailWindow = null
+            } else {
+                sheetDetail = drawn
+            }
+        }
     }
 
     // -------------------------------------------------------------- contours
@@ -970,8 +1171,27 @@ class CarMapRenderer(
 
         private const val FRAME_INTERVAL_MILLIS = 250L
 
-        /** Rendered narrower than the phone's 2048: a car display is smaller and further away. */
-        private const val SHEET_WIDTH = 1536
+        /**
+         * The whole-page backdrop, deliberately cheap.
+         *
+         * It is never what is read: the detail window over it is. This only
+         * has to cover the parts of the sheet the window does not, which is
+         * the ground the driver is not currently looking at.
+         */
+        private const val SHEET_OVERVIEW_WIDTH = 1536
+
+        /**
+         * Slowest the detail window is allowed to be redrawn.
+         *
+         * The frame loop runs four times a second and rasterising a PDF is not
+         * a four-times-a-second job. Between redraws the previous window keeps
+         * being drawn through the current projection, so it stays over the
+         * right ground and simply goes soft at the edges of a fast pan.
+         */
+        private const val SHEET_DETAIL_INTERVAL_MILLIS = 700L
+
+        /** Below this the backdrop already has more pixels than the screen shows. */
+        private const val SHEET_DETAIL_MIN_GAIN = 1.25
 
         private const val MAX_TILE_ZOOM = 16
         private const val MAX_TILES_PER_FRAME = 240L
