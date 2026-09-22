@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculateCentroidSize
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
@@ -35,6 +36,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.isUnspecified
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
@@ -49,6 +51,9 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.rhecyee.firelinemap.map.BasemapTileCache
+import com.rhecyee.firelinemap.map.ElevationTiles
+import com.rhecyee.firelinemap.terrain.ContourWindows
+import com.rhecyee.firelinemap.terrain.rememberContours
 import com.rhecyee.firelinemap.data.MarkerEntity
 import com.rhecyee.firelinemap.resources.ResourceSymbol
 import com.rhecyee.firelinemap.measure.MeasureMode
@@ -95,6 +100,16 @@ fun MapCanvas(
     queriedPosition: Pair<Double, Double>? = null,
     dropPoints: List<DropPoint> = emptyList(),
     basemap: BasemapTileCache? = null,
+    /**
+     * Elevation behind the contour lines.
+     *
+     * Separate from [basemap] because contours are drawn from the data rather
+     * than copied out of a picture, which is what lets them sit over an
+     * incident sheet at an interval the operator chose.
+     */
+    elevation: ElevationTiles? = null,
+    contoursEnabled: Boolean = false,
+    contourIntervalFeet: Int = 40,
     measurePoints: List<MeasurePoint> = emptyList(),
     measureMode: MeasureMode = MeasureMode.DISTANCE,
     markers: List<MarkerEntity> = emptyList(),
@@ -103,6 +118,16 @@ fun MapCanvas(
     searchRegion: SearchRegion? = null,
     parcels: List<com.rhecyee.firelinemap.parcels.Parcel> = emptyList(),
     parcelOpacity: Float = 0.65f,
+    /**
+     * How far in the map may be pinched, as a multiple of the fitted view.
+     *
+     * A sheet is a fixed raster: past a point, zooming only magnifies its
+     * pixels, so the useful limit is low. Terrain is re-tiled from the basemap
+     * at whatever zoom the view asks for, so it keeps resolving detail long
+     * after a sheet has stopped, and the ceiling that suits one starves the
+     * other.
+     */
+    maxScale: Float = SHEET_MAX_SCALE,
     centreOn: Pair<Double, Double>? = null,
     onCentred: () -> Unit = {},
     onInteraction: () -> Unit = {},
@@ -266,7 +291,7 @@ fun MapCanvas(
          * which read as the map teleporting. Being outside is allowed; going
          * further out is not, and moving back in always is.
          */
-        fun clamp(candidate: Offset, atScale: Float): Offset {
+        fun clamp(candidate: Offset, atScale: Float, from: Offset = offset): Offset {
             val drawWidth = image.width * fitScale() * atScale
             val drawHeight = image.height * fitScale() * atScale
             val slackX = viewport.width * OFF_SHEET_PAN_ALLOWANCE
@@ -280,8 +305,8 @@ fun MapCanvas(
                 else -> current
             }
             return Offset(
-                axis(candidate.x, offset.x, maxX),
-                axis(candidate.y, offset.y, maxY)
+                axis(candidate.x, from.x, maxX),
+                axis(candidate.y, from.y, maxY)
             )
         }
 
@@ -354,6 +379,65 @@ fun MapCanvas(
             return geo.latitude to geo.longitude
         }
 
+        // Worked out here rather than while drawing, so the trace is keyed on
+        // the view and not on the frame clock. All four corners, because a
+        // georeferenced sheet is rotated against north by the convergence of
+        // its own grid: taking two would clip the contours off two edges.
+        // The ground on screen, from all four corners. Shared with the terrain
+        // fill, which needs the same box for the same reason.
+        val visibleGround = run {
+            val currentFrame = map.frame ?: return@run null
+            if (viewport.width <= 0 || viewport.height <= 0) return@run null
+            val fitted = fitScale()
+            visibleGeoBounds(
+                frame = currentFrame,
+                pageWidthPoints = pageWidthPoints,
+                pageHeightPoints = pageHeightPoints,
+                originX = (viewport.width - image.width * fitted * scale) / 2f + offset.x,
+                originY = (viewport.height - image.height * fitted * scale) / 2f + offset.y,
+                drawWidth = image.width * fitted * scale,
+                drawHeight = image.height * fitted * scale,
+                viewWidth = viewport.width.toFloat(),
+                viewHeight = viewport.height.toFloat()
+            )
+        }
+
+        val contourWindow = run {
+            if (!contoursEnabled || elevation == null) return@run null
+            val ground = visibleGround ?: return@run null
+            ContourWindows.of(
+                north = ground.north,
+                south = ground.south,
+                west = ground.west,
+                east = ground.east,
+                intervalFeet = contourIntervalFeet
+            )
+        }
+
+        // How much country is actually on screen, which is what decides
+        // whether an elevation figure fits between the lines.
+        val visibleMeters = run {
+            val ground = visibleGround ?: return@run 0.0
+            val middle = (ground.north + ground.south) / 2.0
+            com.rhecyee.firelinemap.map.MapCoverage.distanceMeters(
+                middle, ground.west, middle, ground.east
+            )
+        }
+
+        val contours = rememberContours(
+            tiles = elevation,
+            enabled = contoursEnabled,
+            window = contourWindow
+        )
+
+        // Flattened onto the page once a trace lands, not once a frame. See
+        // ContourOverlay: this is tens of thousands of inverse projections.
+        val contourOverlay = remember(contours, map.id, pageWidthPoints, pageHeightPoints) {
+            val frame = map.frame
+            if (frame == null) null
+            else buildContourOverlay(contours, frame, pageWidthPoints, pageHeightPoints)
+        }
+
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
@@ -408,9 +492,33 @@ fun MapCanvas(
                             travelled += panChange.getDistance() + abs(1f - zoomChange) * 200f
 
                             if (travelled > viewConfiguration.touchSlop) {
-                                val next = (scale * zoomChange).coerceIn(1f, MAX_SHEET_ZOOM)
+                                val previous = scale
+                                val next = (scale * zoomChange).coerceIn(MIN_SCALE, maxScale)
+                                // The applied ratio, not the requested one: at
+                                // the ends of the range the pinch is refused
+                                // and the offset must not be moved for it.
+                                val ratio = if (previous > 0f) next / previous else 1f
+                                val centroid = event.calculateCentroid(useCurrent = true)
+                                val focus = if (centroid.isUnspecified) {
+                                    Offset.Zero
+                                } else {
+                                    Offset(
+                                        centroid.x - viewport.width / 2f,
+                                        centroid.y - viewport.height / 2f
+                                    )
+                                }
+                                val (zoomedX, zoomedY) = zoomedOffset(
+                                    offset.x, offset.y, focus.x, focus.y, ratio
+                                )
+                                val zoomed = Offset(zoomedX, zoomedY)
                                 scale = next
-                                offset = clamp(offset + panChange, next)
+                                // Clamped against the zoomed offset rather than
+                                // the old one. Zooming in off the sheet
+                                // legitimately increases the offset, and
+                                // measuring that against where the view was
+                                // before the zoom made the clamp reject its own
+                                // correction and hand back the teleport.
+                                offset = clamp(zoomed + panChange, next, zoomed)
                                 event.changes.forEach { if (it.positionChanged()) it.consume() }
                             }
                         } while (event.changes.any { it.pressed })
@@ -497,6 +605,22 @@ fun MapCanvas(
                     drawHeight = drawHeight,
                     opacity = parcelOpacity,
                     showLabels = scale >= 4f
+                )
+            }
+
+            // Contours over everything that is a picture of the ground -- the
+            // sheet included -- and under everything the incident owns. Laid
+            // over the sheet on purpose: reading slope off the map someone is
+            // actually working from is the whole reason to draw these rather
+            // than take the ones printed on the basemap.
+            if (contourOverlay != null) {
+                drawContours(
+                    overlay = contourOverlay,
+                    originX = originX,
+                    originY = originY,
+                    drawWidth = drawWidth,
+                    drawHeight = drawHeight,
+                    labelsVisible = contourLabelsVisible(visibleMeters)
                 )
             }
 
@@ -726,18 +850,32 @@ fun MapCanvas(
 private const val OFF_SHEET_PAN_ALLOWANCE = 1.5f
 
 /**
- * How far in the sheet may be zoomed.
+ * How far out the view may pull back from a fitted sheet.
  *
- * This used to be twelve, which was not a judgement about how closely anyone
- * needs to read a map -- it was the point past which the whole-page overview
- * stopped being able to pretend. Now that the window on screen is rendered
- * from the PDF at the resolution it is being viewed at, the limit can be what
- * the product actually holds: at twenty-four the sheet is being drawn at
- * around 540 DPI, where its lettering, section lines and drop points are all
- * still crisp, and past which only the hillshade underneath them is being
- * magnified.
+ * One was the floor, which meant the page always filled the view and nothing
+ * around it could be seen at once. A division sheet is a few miles across and
+ * the drive to it is not, so pulling back until the sheet is a quarter of the
+ * screen -- with terrain filling the rest -- is how the relationship between
+ * the two is read.
  */
-private const val MAX_SHEET_ZOOM = 24f
+private const val MIN_SCALE = 0.25f
+
+/** Deepest zoom The National Map serves; 17 returns 404. */
+internal const val MAX_BASEMAP_ZOOM = 16
+
+/**
+ * Far into a sheet before there is nothing left to resolve.
+ *
+ * This used to be bounded by the whole-page raster the sheet was drawn from:
+ * two thousand pixels across a page of nearly four thousand points, so its
+ * ink ran out somewhere around here and past it the sheet went soft. That is
+ * no longer what limits it -- the window on screen is rendered from the PDF
+ * at the resolution it is being looked at, and an incident product's
+ * lettering and section lines are vector, so they stay crisp the whole way.
+ * Thirty is about 540 DPI on an arch E plot. Past that only the hillshade
+ * underneath the linework is being magnified.
+ */
+const val SHEET_MAX_SCALE = 30f
 
 /**
  * How long a gesture has to be still before the window is re-rendered.
@@ -746,6 +884,30 @@ private const val MAX_SHEET_ZOOM = 24f
  * that letting go and reading the sheet feels immediate.
  */
 private const val DETAIL_SETTLE_MILLIS = 110L
+
+/**
+ * Terrain keeps resolving, so it is allowed much further in.
+ *
+ * At the fitted view the terrain sheet spans forty kilometres; this brings that
+ * down to about a kilometre across, which is where a road junction is a road
+ * junction rather than a smudge, and is roughly where basemap zoom 16 runs out
+ * of its own detail.
+ */
+const val TERRAIN_MAX_SCALE = 80f
+
+/**
+ * Widest a single tile may draw before it is skipped.
+ *
+ * A frame pushed far outside its fitted region can produce a transform that
+ * blows up; painting a bitmap across a million pixels would drop the frame
+ * without putting anything useful on screen.
+ */
+private const val MAX_TILE_EXTENT = 20_000f
+
+/** Shared by every tile draw. Compose runs the draw pass on one thread. */
+private val TILE_PAINT = android.graphics.Paint(
+    android.graphics.Paint.FILTER_BITMAP_FLAG or android.graphics.Paint.ANTI_ALIAS_FLAG
+)
 
 /** Where a searched position could be: a point, a line, or a box. */
 data class SearchRegion(
@@ -934,23 +1096,26 @@ private fun DrawScope.drawBasemap(
     drawWidth: Float,
     drawHeight: Float
 ) {
-    fun screenToGeo(x: Float, y: Float): com.rhecyee.firelinemap.geopdf.GeoPoint? {
-        val fx = (x - originX) / drawWidth
-        val fy = (y - originY) / drawHeight
-        return frame.pageToGeo(
-            fx * pageWidthPoints.toDouble(),
-            (1f - fy) * pageHeightPoints.toDouble()
-        )
-    }
+    // All four corners of the view. A sheet is turned against true north by
+    // its own grid convergence, and often further by whoever laid it out, so
+    // the ground on screen is a rotated rectangle and a box through two
+    // opposite corners does not contain it. See visibleGeoBounds.
+    val bounds = visibleGeoBounds(
+        frame = frame,
+        pageWidthPoints = pageWidthPoints,
+        pageHeightPoints = pageHeightPoints,
+        originX = originX,
+        originY = originY,
+        drawWidth = drawWidth,
+        drawHeight = drawHeight,
+        viewWidth = size.width,
+        viewHeight = size.height
+    ) ?: return
 
-    val topLeft = screenToGeo(0f, 0f) ?: return
-    val bottomRight = screenToGeo(size.width, size.height) ?: return
-
-    val north = maxOf(topLeft.latitude, bottomRight.latitude)
-    val south = minOf(topLeft.latitude, bottomRight.latitude)
-    val west = minOf(topLeft.longitude, bottomRight.longitude)
-    val east = maxOf(topLeft.longitude, bottomRight.longitude)
-    if (north <= south || east <= west) return
+    val north = bounds.north
+    val south = bounds.south
+    val west = bounds.west
+    val east = bounds.east
 
     val centreLatitude = (north + south) / 2.0
     // Match tile resolution to what is actually on screen.
@@ -958,49 +1123,73 @@ private fun DrawScope.drawBasemap(
         centreLatitude, west, centreLatitude, east
     )
     if (spanMeters <= 0.0 || size.width <= 0f) return
-    val zoom = BasemapTileCache.zoomFor(centreLatitude, spanMeters / size.width)
-        .coerceIn(4, 15)
+    // The National Map serves USGS topo to zoom 16 and 404s at 17. Sixteen is
+    // where the contour lines and their elevation labels are legible, so
+    // stopping at fifteen was throwing away the level the map is read at.
+    //
+    // A view too wide to cover at that zoom gets coarser terrain rather than
+    // none: an early return here leaves the operator looking at background
+    // colour with no way to tell it from the app having broken.
+    val zoom = basemapZoom(bounds, spanMeters / size.width) ?: return
 
     val minX = BasemapTileCache.tileX(west, zoom)
     val maxX = BasemapTileCache.tileX(east, zoom)
     val minY = BasemapTileCache.tileY(north, zoom)
     val maxY = BasemapTileCache.tileY(south, zoom)
 
-    // A viewport this wide means something is wrong with the transform;
-    // fetching thousands of tiles would be worse than drawing nothing.
-    if ((maxX - minX + 1).toLong() * (maxY - minY + 1).toLong() > 200) return
+    val canvas = drawContext.canvas.nativeCanvas
+    val matrix = android.graphics.Matrix()
+    val clip = android.graphics.Path()
+    val source = FloatArray(8)
 
     for (x in minX..maxX) {
         for (y in minY..maxY) {
             val sample = basemap.sample(zoom, x, y) ?: continue
-            val tileNorth = BasemapTileCache.tileNorth(y, zoom)
-            val tileSouth = BasemapTileCache.tileNorth(y + 1, zoom)
-            val tileWest = BasemapTileCache.tileWest(x, zoom)
-            val tileEast = BasemapTileCache.tileWest(x + 1, zoom)
+            val quad = tileQuad(
+                frame = frame,
+                north = BasemapTileCache.tileNorth(y, zoom),
+                south = BasemapTileCache.tileNorth(y + 1, zoom),
+                west = BasemapTileCache.tileWest(x, zoom),
+                east = BasemapTileCache.tileWest(x + 1, zoom),
+                pageWidthPoints = pageWidthPoints,
+                pageHeightPoints = pageHeightPoints,
+                originX = originX,
+                originY = originY,
+                drawWidth = drawWidth,
+                drawHeight = drawHeight
+            ) ?: continue
 
-            val topLeftPage = frame.geoToPage(tileNorth, tileWest) ?: continue
-            val bottomRightPage = frame.geoToPage(tileSouth, tileEast) ?: continue
+            val extent = quadExtent(quad)
+            // Sub-pixel is not worth a draw call; enormous means the transform
+            // has run away and drawing it would stall the frame.
+            if (extent < 1f || extent > MAX_TILE_EXTENT) continue
+            val grown = growQuad(quad)
 
-            val left = originX + (topLeftPage.first / pageWidthPoints).toFloat() * drawWidth
-            val top = originY +
-                (1f - (topLeftPage.second / pageHeightPoints).toFloat()) * drawHeight
-            val right = originX + (bottomRightPage.first / pageWidthPoints).toFloat() * drawWidth
-            val bottom = originY +
-                (1f - (bottomRightPage.second / pageHeightPoints).toFloat()) * drawHeight
+            // Mapped corner to corner rather than fitted into a rectangle, so
+            // the tile lands rotated exactly as the sheet's projection puts it
+            // and shares its edges with its neighbours.
+            val left = sample.sourceLeft.toFloat()
+            val top = sample.sourceTop.toFloat()
+            val size = sample.sourceSize.toFloat()
+            source[0] = left; source[1] = top
+            source[2] = left + size; source[3] = top
+            source[4] = left + size; source[5] = top + size
+            source[6] = left; source[7] = top + size
 
-            val width = (right - left).roundToInt()
-            val height = (bottom - top).roundToInt()
-            if (width <= 0 || height <= 0) continue
+            matrix.reset()
+            if (!matrix.setPolyToPoly(source, 0, grown, 0, 4)) continue
 
-            drawImage(
-                image = sample.bitmap.asImageBitmap(),
-                srcOffset = IntOffset(sample.sourceLeft, sample.sourceTop),
-                srcSize = IntSize(sample.sourceSize, sample.sourceSize),
-                dstOffset = IntOffset(left.roundToInt(), top.roundToInt()),
-                // Overdraw by a pixel: adjacent tiles are positioned
-                // independently and rounding leaves hairline seams otherwise.
-                dstSize = IntSize(width + 1, height + 1)
-            )
+            clip.reset()
+            clip.moveTo(grown[0], grown[1])
+            clip.lineTo(grown[2], grown[3])
+            clip.lineTo(grown[4], grown[5])
+            clip.lineTo(grown[6], grown[7])
+            clip.close()
+
+            val checkpoint = canvas.save()
+            canvas.clipPath(clip)
+            canvas.drawBitmap(sample.bitmap, matrix, TILE_PAINT)
+            canvas.restoreToCount(checkpoint)
         }
     }
 }

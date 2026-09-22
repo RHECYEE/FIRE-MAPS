@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Adaptive icon background. The app's own dark green, so the mark reads the
+     same on the phone launcher and in the Android Auto app list. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#20261F" android:pathData="M0,0h108v108h-108z" />
+    <path android:fillColor="#2A3327"
+        android:pathData="M0,64 C24,52 42,74 62,62 C80,51 94,66 108,58 L108,108 L0,108 Z" />
+</vector>

@@ -157,6 +157,103 @@ class GeoPdfReaderTest {
         // The product stores its frame name as a UTF-16BE string with a BOM.
         assertEquals("Transpo_2026_Burnt", document.primaryFrame!!.name)
     }
+
+    // ---- a sheet that writes its dictionary keys the other way round ----
+
+    /**
+     * The viewport bytes out of a CAL FIRE air operations sheet, verbatim.
+     *
+     * That product writes `<</BBox[...]/Measure<<...>>/Type/Viewport>>`, with
+     * the type last, where the Forest Service sheet above writes it first. PDF
+     * says nothing about the order of dictionary keys, so both are correct and
+     * a reader that assumes either is wrong.
+     */
+    private fun calFireFixture(): ByteArray =
+        javaClass.getResourceAsStream("/geopdf/airops_calfire_typelast.pdf")
+            ?.readBytes()
+            ?: error("missing CAL FIRE GeoPDF fixture")
+
+    private val calFire by lazy { GeoPdfReader.read(calFireFixture()) }
+
+    @Test
+    fun aSheetWithTypeWrittenLastIsStillGeoreferenced() {
+        // It read as a plain PDF: no position on it, no terrain under it, and
+        // nothing to tell the operator why.
+        assertEquals(PdfKind.GEOREFERENCED, calFire.kind)
+        assertTrue(calFire.isGeoreferenced)
+    }
+
+    @Test
+    fun theFixtureReallyDoesWriteTypeLast() {
+        // Otherwise the test above passes for the wrong reason and the defect
+        // it stands for is no longer covered by anything.
+        val text = String(calFireFixture(), Charsets.ISO_8859_1)
+        val bbox = text.indexOf("/BBox")
+        val type = text.indexOf("/Type/Viewport")
+        assertTrue("fixture has no viewport", bbox >= 0 && type >= 0)
+        assertTrue("fixture no longer writes /Type last", bbox < type)
+    }
+
+    @Test
+    fun theFrameFromThatSheetCarriesItsRealCoverage() {
+        val frame = calFire.primaryFrame
+        assertNotNull(frame)
+        frame!!
+        // Big Sur, on the Los Padres: the Timber incident this came off.
+        val bounds = frame.geographicBounds()
+        assertEquals(35.93571, bounds[0], 1e-5)
+        assertEquals(-121.99106, bounds[1], 1e-5)
+        assertEquals(36.52239, bounds[2], 1e-5)
+        assertEquals(-120.95451, bounds[3], 1e-5)
+    }
+
+    @Test
+    fun theFrameFromThatSheetProjectsProperly() {
+        val frame = calFire.primaryFrame!!
+        assertEquals("NAD_1983_UTM_Zone_10N", true, frame.wkt?.contains("UTM_Zone_10N"))
+        assertTrue("fell back to corner interpolation", frame.usesProjection)
+    }
+
+    @Test
+    fun aPositionInsideThatSheetLandsOnTheFrame() {
+        // The whole point of reading the thing: a position has to come back as
+        // a place on the page.
+        val frame = calFire.primaryFrame!!
+        val latitude = 36.22
+        val longitude = -121.5
+        assertTrue(frame.containsGeo(latitude, longitude))
+        val page = frame.geoToPage(latitude, longitude)
+        assertNotNull(page)
+        assertTrue(page!!.first in frame.box.left..frame.box.right)
+        assertTrue(page.second in frame.box.bottom..frame.box.top)
+    }
+
+    @Test
+    fun theRoundTripThroughThatFrameComesBackWhereItStarted() {
+        val frame = calFire.primaryFrame!!
+        for ((latitude, longitude) in listOf(
+            36.10 to -121.90, 36.22 to -121.50, 36.45 to -121.10
+        )) {
+            val page = frame.geoToPage(latitude, longitude)!!
+            val back = frame.pageToGeo(page.first, page.second)!!
+            assertEquals(latitude, back.latitude, 1e-6)
+            assertEquals(longitude, back.longitude, 1e-6)
+        }
+    }
+
+    @Test
+    fun repeatedViewportsOnThatSheetCollapseToOneFrame() {
+        // The sheet declares the same frame twenty-three times, once a layer.
+        assertEquals(1, calFire.frames.size)
+    }
+
+    @Test
+    fun theOtherSheetStillReadsTheSameWayItDid() {
+        // The fix must not be a swap of which ordering works.
+        assertEquals(PdfKind.GEOREFERENCED, document.kind)
+        assertEquals(3, document.frames.size)
+    }
+
 }
 
 /** Structural cases built as minimal PDFs so they stay small and explicit. */
@@ -244,5 +341,54 @@ class GeoPdfReaderStructureTest {
         val corner = frame.geoCorners[0]
         val page = frame.geoToPage(corner.latitude, corner.longitude)!!
         assertTrue(abs(page.first - frame.box.left) < 0.5)
+    }
+
+    /** The CAL FIRE ordering: the type declared after everything else. */
+    private fun viewportTypeLast(box: String) =
+        "<</BBox[$box]/Measure<</Bounds[0 0 0 1 1 1 1 0 0 0]" +
+            "/GCS<</Type/PROJCS/WKT($wkt)>>" +
+            "/GPTS[45.61569 -117.40092 45.86105 -117.40268 45.86171 -117.10787 " +
+            "45.61635 -117.10739]/LPTS[0 0 0 1 1 1 1 0]" +
+            "/Subtype/GEO/Type/Measure>>/Type/Viewport>>"
+
+    @Test
+    fun bothKeyOrderingsYieldTheSameFrame() {
+        // PDF dictionaries are unordered, so these two describe one map and
+        // must read as one map.
+        val first = GeoPdfReader.read(pdfWithViewports(viewport("36 234 1260 1692")))
+        val second = GeoPdfReader.read(pdfWithViewports(viewportTypeLast("36 234 1260 1692")))
+
+        assertEquals(PdfKind.GEOREFERENCED, second.kind)
+        assertEquals(first.frames.size, second.frames.size)
+        assertEquals(first.primaryFrame!!.box, second.primaryFrame!!.box)
+        assertEquals(
+            first.primaryFrame!!.geoCorners,
+            second.primaryFrame!!.geoCorners
+        )
+    }
+
+    @Test
+    fun aClosedSiblingCarryingABoxIsNotMistakenForTheViewport() {
+        // Walking outward from the coordinates, the first dictionary found
+        // with a /BBox in it is not necessarily the one the coordinates are
+        // in. This one has already closed before them, and taking it would
+        // put the frame's page box somewhere it never was -- which lands the
+        // position on the wrong part of the sheet rather than failing.
+        val decoy = "/Decoy<</Type/XObject/BBox[0 0 1 1]>>"
+        val viewport =
+            "<</BBox[36 234 1260 1692]$decoy/Measure<</Bounds[0 0 0 1 1 1 1 0 0 0]" +
+                "/GCS<</Type/PROJCS/WKT($wkt)>>" +
+                "/GPTS[45.61569 -117.40092 45.86105 -117.40268 45.86171 -117.10787 " +
+                "45.61635 -117.10739]/LPTS[0 0 0 1 1 1 1 0]" +
+                "/Subtype/GEO/Type/Measure>>/Type/Viewport>>"
+
+        val document = GeoPdfReader.read(pdfWithViewports(viewport))
+
+        assertEquals(PdfKind.GEOREFERENCED, document.kind)
+        val frame = document.primaryFrame!!
+        assertEquals(36.0, frame.box.left, 1e-9)
+        assertEquals(234.0, frame.box.bottom, 1e-9)
+        assertEquals(1260.0, frame.box.right, 1e-9)
+        assertEquals(1692.0, frame.box.top, 1e-9)
     }
 }

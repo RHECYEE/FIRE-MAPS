@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddLocationAlt
@@ -58,6 +59,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -71,12 +73,15 @@ import androidx.lifecycle.LifecycleEventObserver
 import com.rhecyee.firelinemap.FirelineApplication
 import com.rhecyee.firelinemap.data.AppSettings
 import com.rhecyee.firelinemap.data.IncidentEntity
+import com.rhecyee.firelinemap.data.ensureActiveIncident
+import com.rhecyee.firelinemap.data.parseLineString
 import com.rhecyee.firelinemap.data.MarkerEntity
 import com.rhecyee.firelinemap.resources.ResourceRepository
 import com.rhecyee.firelinemap.resources.ResourceSymbol
 import com.rhecyee.firelinemap.geopdf.DropPoint
 import com.rhecyee.firelinemap.geopdf.DropPointDetector
 import com.rhecyee.firelinemap.geopdf.ImportedMap
+import com.rhecyee.firelinemap.geopdf.IncidentProduct
 import com.rhecyee.firelinemap.geopdf.MapDocumentRepository
 import com.rhecyee.firelinemap.geopdf.MapSheetRenderer
 import com.rhecyee.firelinemap.geopdf.MapUrlImporter
@@ -86,9 +91,9 @@ import com.rhecyee.firelinemap.fireline.FirelineFeature
 import com.rhecyee.firelinemap.fireline.InferredPerimeter
 import com.rhecyee.firelinemap.fireline.PerimeterInference
 import com.rhecyee.firelinemap.geopdf.PdfKind
+import com.rhecyee.firelinemap.geopdf.TerrainSheet
 import com.rhecyee.firelinemap.geopdf.RemotePdf
 import com.rhecyee.firelinemap.geopdf.UrlProbe
-import com.rhecyee.firelinemap.location.LocationRepository
 import com.rhecyee.firelinemap.location.TrackRecordingState
 import com.rhecyee.firelinemap.medical.MedicalReport
 import com.rhecyee.firelinemap.medical.MedicalRepository
@@ -107,6 +112,7 @@ import com.rhecyee.firelinemap.location.TrackRecordingService
 import com.rhecyee.firelinemap.location.SegmentAnchor
 import com.rhecyee.firelinemap.location.TrackSettingsStore
 import com.rhecyee.firelinemap.map.BasemapTileCache
+import com.rhecyee.firelinemap.map.ElevationTiles
 import com.rhecyee.firelinemap.map.TileMath
 import com.rhecyee.firelinemap.measure.AreaUnit
 import com.rhecyee.firelinemap.measure.DistanceUnit
@@ -139,9 +145,16 @@ fun FirelineApp() {
     var coordinateFormat by remember { mutableStateOf(CoordinateFormat.DDM) }
 
     val trackSettings = remember { TrackSettingsStore(context) }
+    // Optimistic locally so the button responds to the press, then reconciled
+    // against the service, which is the only thing that knows whether it armed
+    // -- and which the Android Auto screen can now arm as well.
+    val armed by TrackRecordingState.armed.collectAsState()
     var watching by remember { mutableStateOf(false) }
+    LaunchedEffect(armed) { watching = armed }
     var stopThreshold by remember { mutableIntStateOf(trackSettings.stopThresholdSeconds) }
     var showTrackSettings by remember { mutableStateOf(false) }
+    var showCarCheck by remember { mutableStateOf(false) }
+    var incidentSummaries by remember { mutableStateOf<List<IncidentSummary>>(emptyList()) }
     var showSearch by remember { mutableStateOf(false) }
 
     // The map runs full screen until it is touched. Everything else is a
@@ -162,12 +175,17 @@ fun FirelineApp() {
         }
     }
     val liveTrack by TrackRecordingState.live.collectAsState()
+    val trackOutcome by TrackRecordingState.lastOutcome.collectAsState()
     var segmentAtDropPoints by remember { mutableStateOf(trackSettings.segmentAtDropPoints) }
+    var segmentAtVehicleStops by remember {
+        mutableStateOf(trackSettings.segmentAtVehicleStops)
+    }
     var dropPoints by remember { mutableStateOf<List<DropPoint>>(emptyList()) }
 
     val repository = remember { MapDocumentRepository(context) }
     val urlImporter = remember { MapUrlImporter(context.cacheDir) }
     val basemap = remember { BasemapTileCache(context) }
+    val elevationTiles = remember { ElevationTiles(context) }
     val elevations = remember { ElevationService() }
     val resources = remember { ResourceRepository(app.database.dao()) }
     val medical = remember { MedicalRepository(app.database.dao()) }
@@ -182,8 +200,12 @@ fun FirelineApp() {
     var showLayers by remember { mutableStateOf(false) }
     var showLegend by remember { mutableStateOf(true) }
     val settings = remember { AppSettings(context) }
+    val rememberedMapId = remember { settings.activeMapId }
+    var mapsLoaded by remember { mutableStateOf(false) }
     var topographyOn by remember { mutableStateOf(settings.topographyEnabled) }
     var landOwnershipOn by remember { mutableStateOf(settings.landOwnershipEnabled) }
+    var contoursOn by remember { mutableStateOf(settings.contourLinesEnabled) }
+    var contourInterval by remember { mutableIntStateOf(settings.contourIntervalFeet) }
     var autoRadius by remember { mutableIntStateOf(settings.autoDownloadRadiusMiles) }
     var wifiOnly by remember { mutableStateOf(settings.autoDownloadWifiOnly) }
     var cachedTerrain by remember { mutableStateOf(0L) }
@@ -218,11 +240,36 @@ fun FirelineApp() {
     var areaUnit by remember { mutableStateOf(AreaUnit.ACRES) }
     var elevationPending by remember { mutableStateOf(false) }
     var activeMap by remember { mutableStateOf<ImportedMap?>(null) }
-    var bitmap by remember { mutableStateOf<Bitmap?>(null) }
-    var sheetRenderer by remember { mutableStateOf<MapSheetRenderer?>(null) }
-    var pageWidth by remember { mutableIntStateOf(0) }
-    var pageHeight by remember { mutableIntStateOf(0) }
+
+    /**
+     * The sheet currently drawable, page and georeferencing together.
+     *
+     * They have to move as one. Choosing a map changed the frame straight away
+     * while the page raster caught up seconds later, so in between, the canvas
+     * drew the previous sheet's image through the newly chosen sheet's
+     * projection -- the old map warped, with the new map's position and pins on
+     * it. Two maps at once, which is exactly what it looked like.
+     */
+    var sheet by remember { mutableStateOf<RenderedSheet?>(null) }
+    val bitmap = sheet?.bitmap
+    val pageWidth = sheet?.pageWidth ?: 0
+    val pageHeight = sheet?.pageHeight ?: 0
+
+    /** True while a chosen map is still being rendered. */
+    val sheetLoading = activeMap != null && sheet?.mapId != activeMap?.id
+
+    /** Always the renderer for the sheet actually on screen, or none. */
+    val sheetRenderer = sheet?.renderer
     var statusMessage by remember { mutableStateOf<String?>(null) }
+
+    // What became of the last recording. Shown once and then cleared, so a
+    // discarded short track says why rather than looking like a lost drive.
+    LaunchedEffect(trackOutcome) {
+        trackOutcome?.let {
+            statusMessage = it
+            TrackRecordingState.reportOutcome(null)
+        }
+    }
 
     // Where is this: a tap asks the ground what it is, and the answer is
     // something that can be read out or pasted somewhere else.
@@ -248,7 +295,7 @@ fun FirelineApp() {
     // incident. Always rendered and labelled differently from a real fix.
     var simulated by remember { mutableStateOf<Pair<Double, Double>?>(null) }
 
-    val locationRepository = remember { LocationRepository(context) }
+    val locationRepository = app.location
     val gpsLocation by locationRepository.locations.collectAsState(initial = null)
     var hasLocationPermission by remember { mutableStateOf(locationRepository.hasPermission()) }
 
@@ -382,19 +429,26 @@ fun FirelineApp() {
         } else {
             locationRepository.start()
         }
-        if (incidents.isEmpty()) {
-            app.database.dao().upsertIncident(
-                IncidentEntity(
-                    id = UUID.randomUUID().toString(),
-                    name = "Burnt Creek 2026",
-                    year = 2026,
-                    createdAt = System.currentTimeMillis(),
-                    isActive = true
-                )
-            )
-        }
+        // Asked of the database rather than of `incidents`, which is a Room
+        // flow that has not emitted this early and reads as empty. Seeding off
+        // that inserted a fresh active incident on every single launch, and
+        // every marker, track and report stayed filed under the previous one.
+        ensureActiveIncident(app.database.dao())
         importedMaps = repository.imported()
-        if (activeMap == null) activeMap = importedMaps.firstOrNull()
+        if (activeMap == null && rememberedMapId != AppSettings.TERRAIN_ONLY) {
+            activeMap = importedMaps.firstOrNull { it.id == rememberedMapId }
+                ?: importedMaps.firstOrNull()
+        }
+        mapsLoaded = true
+    }
+
+    // Written out so the Android Auto screen opens the same sheet. It runs in
+    // its own process context and cannot see this composition's state. Held
+    // back until the sheets are listed, so the choice being restored is not
+    // overwritten by the empty state it is being restored into.
+    LaunchedEffect(activeMap?.id, mapsLoaded) {
+        if (!mapsLoaded) return@LaunchedEffect
+        settings.activeMapId = activeMap?.id ?: AppSettings.TERRAIN_ONLY
     }
 
     // Permission can also be granted from settings while the app is backgrounded.
@@ -416,38 +470,62 @@ fun FirelineApp() {
 
     // Closed when the screen goes away; the open descriptor belongs to it.
     androidx.compose.runtime.DisposableEffect(Unit) {
-        onDispose { sheetRenderer?.close() }
+        onDispose { sheet?.renderer?.close() }
     }
 
     LaunchedEffect(activeMap?.id) {
         val map = activeMap
-        // A sheet being swapped out takes its renderer with it. close() waits
-        // for any render still running on the old one before letting go of the
-        // descriptor.
-        withContext(Dispatchers.IO) { sheetRenderer?.close() }
-        sheetRenderer = null
+        // The outgoing sheet takes its renderer with it. close() waits for any
+        // render still running on the old one before freeing the descriptor,
+        // so it is done off the main thread.
+        val outgoing = sheet?.renderer
         if (map == null) {
-            bitmap = null
+            sheet = null
+            withContext(Dispatchers.IO) { outgoing?.close() }
             return@LaunchedEffect
         }
-        // Assigned before the first suspension point, so that a map switched
-        // again mid-render is still the next pass's job to close.
-        val renderer = MapSheetRenderer(map.file)
-        sheetRenderer = renderer
 
-        val rendered = withContext(Dispatchers.IO) {
-            renderer.pageSize() to renderer.renderOverview()
+        // Held outside the IO pass so that a map switched again mid-render
+        // still has its half-built renderer closed rather than leaked: the
+        // descriptor would otherwise stay open for as long as the app did.
+        var opened: MapSheetRenderer? = null
+        val built = try {
+            withContext(Dispatchers.IO) {
+                val renderer = MapSheetRenderer(map.file).also { opened = it }
+                val size = renderer.pageSize()
+                val overview = renderer.renderOverview()
+                if (size == null || overview == null) {
+                    renderer.close()
+                    null
+                } else {
+                    RenderedSheet(
+                        mapId = map.id,
+                        map = map,
+                        bitmap = overview,
+                        pageWidth = size.first,
+                        pageHeight = size.second,
+                        renderer = renderer
+                    )
+                }
+            }
+        } catch (error: Throwable) {
+            opened?.close()
+            throw error
         }
-        pageWidth = rendered.first?.first ?: 0
-        pageHeight = rendered.first?.second ?: 0
-        bitmap = rendered.second
+
+        // Published in one go, tagged with the map it came from. Until this
+        // lands the canvas keeps drawing the previous sheet whole.
+        sheet = built
+        withContext(Dispatchers.IO) { outgoing?.close() }
 
         // Read drop points off the freshly rendered sheet. Provisional: they
         // come from matching symbol colour, so they are drawn on the map for
-        // the operator to confirm rather than trusted silently.
+        // the operator to confirm rather than trusted silently. The overview is
+        // what is scanned: the symbols are large and the detail windows only
+        // ever cover part of the page.
         val frameForScan = map.frame
-        val rasterised = rendered.second
-        dropPoints = if (frameForScan == null || rasterised == null) {
+        val rasterised = built?.bitmap
+        dropPoints = if (frameForScan == null || rasterised == null || built == null) {
             emptyList()
         } else {
             withContext(Dispatchers.Default) {
@@ -460,8 +538,8 @@ fun FirelineApp() {
                     width = rasterised.width,
                     height = rasterised.height,
                     frame = frameForScan,
-                    pageWidthPoints = (rendered.first?.first ?: 0).toDouble(),
-                    pageHeightPoints = (rendered.first?.second ?: 0).toDouble()
+                    pageWidthPoints = built.pageWidth.toDouble(),
+                    pageHeightPoints = built.pageHeight.toDouble()
                 )
             }
         }
@@ -470,6 +548,37 @@ fun FirelineApp() {
 
     val displayLatitude = simulated?.first ?: gpsLocation?.latitude
     val displayLongitude = simulated?.second ?: gpsLocation?.longitude
+
+    // Terrain as the map in its own right, rather than as fill around an
+    // imported sheet. The anchor is held still between rebuilds: the canvas
+    // resets pan and zoom whenever the sheet identity changes, and rebuilding
+    // on every fix would drag the view out from under whoever is reading it.
+    var terrainAnchor by remember { mutableStateOf<Pair<Double, Double>?>(null) }
+    LaunchedEffect(displayLatitude, displayLongitude) {
+        val lat = displayLatitude ?: return@LaunchedEffect
+        val lon = displayLongitude ?: return@LaunchedEffect
+        val anchor = terrainAnchor
+        if (anchor == null ||
+            TerrainSheet.needsReanchor(anchor.first, anchor.second, lat, lon)
+        ) {
+            terrainAnchor = lat to lon
+        }
+    }
+    val terrainMap = remember(terrainAnchor) {
+        terrainAnchor?.let { TerrainSheet.map(it.first, it.second) }
+    }
+    val terrainPage = remember { TerrainSheet.blankPage() }
+
+    // Only stands in when nothing is open. A plain PDF is still shown: the
+    // operator chose to look at it, and swapping it for terrain would take away
+    // the document rather than add a map.
+    val onTerrain = activeMap == null && terrainMap != null
+    // The map drawn is the one whose page is in hand, never the one merely
+    // chosen. See RenderedSheet.
+    val canvasMap = if (onTerrain) terrainMap else sheet?.map
+    val canvasPage = if (onTerrain) terrainPage else bitmap
+    val canvasPageWidth = if (onTerrain) TerrainSheet.PAGE_POINTS else pageWidth
+    val canvasPageHeight = if (onTerrain) TerrainSheet.PAGE_POINTS else pageHeight
     val trackEntities by (activeIncident?.id?.let { app.database.dao().observeTracks(it) }
         ?: kotlinx.coroutines.flow.flowOf(emptyList()))
         .collectAsState(initial = emptyList())
@@ -827,10 +936,44 @@ fun FirelineApp() {
             importedMaps = importedMaps,
             activeMapId = activeMap?.id,
             onSelectMap = { activeMap = it; showLayers = false },
+            onSelectTerrain = { activeMap = null; showLayers = false },
+            onDeleteMap = { map ->
+                scope.launch {
+                    // Cleared first, so the canvas is never left holding a
+                    // sheet whose file has just gone.
+                    if (activeMap?.id == map.id) activeMap = null
+                    withContext(Dispatchers.IO) { repository.delete(map.id) }
+                    importedMaps = withContext(Dispatchers.IO) { repository.imported() }
+                    statusMessage = "Removed ${IncidentProduct.parse(map.displayName).title}"
+                }
+            },
+            onDeleteOlderPeriods = {
+                scope.launch {
+                    val described = importedMaps.map { it to IncidentProduct.parse(it.displayName) }
+                    val newest = described.mapNotNull { it.second.period }.minOrNull()
+                    if (newest != null) {
+                        val stale = described.filter {
+                            it.second.period != null && it.second.period != newest
+                        }
+                        if (activeMap?.id in stale.map { it.first.id }) activeMap = null
+                        withContext(Dispatchers.IO) {
+                            stale.forEach { repository.delete(it.first.id) }
+                        }
+                        importedMaps = withContext(Dispatchers.IO) { repository.imported() }
+                        statusMessage = "Removed ${stale.size} sheet" +
+                            (if (stale.size == 1) "" else "s") +
+                            " from earlier periods"
+                    }
+                }
+            },
             topographyOn = topographyOn,
             onToggleTopography = { settings.topographyEnabled = it; topographyOn = it },
             landOwnershipOn = landOwnershipOn,
             onToggleLandOwnership = { settings.landOwnershipEnabled = it; landOwnershipOn = it },
+            contoursOn = contoursOn,
+            onToggleContours = { settings.contourLinesEnabled = it; contoursOn = it },
+            contourIntervalFeet = contourInterval,
+            onContourInterval = { settings.contourIntervalFeet = it; contourInterval = it },
             packages = layerPackages,
             onToggle = { layer, on ->
                 scope.launch { app.database.dao().upsertLayerPackage(layer.copy(enabled = on)) }
@@ -885,6 +1028,24 @@ fun FirelineApp() {
         ParcelDetailDialog(parcel = parcel, onDismiss = { tappedParcel = null })
     }
 
+    // Counted off the database rather than guessed, so an incident that holds
+    // work is distinguishable from one that only has a name.
+    LaunchedEffect(incidents) {
+        val dao = app.database.dao()
+        incidentSummaries = withContext(Dispatchers.IO) {
+            incidents.map { incident ->
+                val held = runCatching { dao.incidentContentCount(incident.id) }.getOrDefault(0)
+                IncidentSummary(
+                    id = incident.id,
+                    name = incident.name,
+                    detail = if (held == 0) "nothing filed yet"
+                    else "$held marker${if (held == 1) "" else "s"}, track" +
+                        "${if (held == 1) "" else "s"} and reports"
+                )
+            }
+        }
+    }
+
     queried?.let { spot ->
         WhereIsThisDialog(
             position = spot,
@@ -915,6 +1076,14 @@ fun FirelineApp() {
             cachedTerrain = withContext(Dispatchers.IO) { basemap.cachedBytes() }
         }
         SettingsSheet(
+            incidentName = activeIncident?.name.orEmpty(),
+            onIncidentName = { typed ->
+                val incident = activeIncident ?: return@SettingsSheet
+                // Written straight through rather than on a Save button. There
+                // is no second step to forget with gloves on, and the name is
+                // read back off the database wherever it is used.
+                scope.launch { app.database.dao().upsertIncident(incident.copy(name = typed)) }
+            },
             reporterName = reporterName,
             reporterQualification = reporterQualification,
             onReporterChange = { name, qualification ->
@@ -929,6 +1098,11 @@ fun FirelineApp() {
                 stopThreshold = trackSettings.stopThresholdSeconds
             },
             segmentAtDropPoints = segmentAtDropPoints,
+            segmentAtVehicleStops = segmentAtVehicleStops,
+            onToggleVehicleSegmenting = {
+                trackSettings.segmentAtVehicleStops = it
+                segmentAtVehicleStops = it
+            },
             onToggleSegmenting = {
                 trackSettings.segmentAtDropPoints = it
                 segmentAtDropPoints = it
@@ -942,6 +1116,23 @@ fun FirelineApp() {
             wifiOnly = wifiOnly,
             onWifiOnly = { settings.autoDownloadWifiOnly = it; wifiOnly = it },
             cachedTerrainBytes = cachedTerrain,
+            incidents = incidentSummaries,
+            activeIncidentId = activeIncident?.id,
+            onSelectIncident = { chosen ->
+                scope.launch { app.database.dao().setActiveIncident(chosen) }
+            },
+            onNewIncident = {
+                scope.launch {
+                    val fresh = com.rhecyee.firelinemap.data.seedIncident()
+                        .copy(name = "New incident")
+                    app.database.dao().upsertIncident(fresh)
+                    app.database.dao().setActiveIncident(fresh.id)
+                    statusMessage = "New incident created — name it above."
+                }
+            },
+            appVersion = com.rhecyee.firelinemap.BuildConfig.VERSION_NAME +
+                " (" + com.rhecyee.firelinemap.BuildConfig.VERSION_CODE + ")",
+            onCarCheck = { showCarCheck = true },
             onClearTerrain = {
                 scope.launch {
                     withContext(Dispatchers.IO) { basemap.clear() }
@@ -949,6 +1140,40 @@ fun FirelineApp() {
                 }
             },
             onDismiss = { showTrackSettings = false }
+        )
+    }
+
+    if (showCarCheck) {
+        CarCheckDialog(
+            onDismiss = { showCarCheck = false },
+            onCopy = { report ->
+                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE)
+                    as ClipboardManager
+                clipboard.setPrimaryClip(
+                    ClipData.newPlainText("Android Auto check", report)
+                )
+                statusMessage = "Report copied — paste it into a message."
+            },
+            onOpenAndroidAuto = {
+                // Its own launcher entry lands on the settings screen the
+                // developer options hang off. App details is the fallback for
+                // phones that do not expose one.
+                val direct = context.packageManager
+                    .getLaunchIntentForPackage("com.google.android.projection.gearhead")
+                val details = Intent(
+                    android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:com.google.android.projection.gearhead")
+                )
+                val opened = listOfNotNull(direct, details).any { intent ->
+                    runCatching {
+                        context.startActivity(
+                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                    }.isSuccess
+                }
+                if (!opened) statusMessage = "Android Auto could not be opened."
+                showCarCheck = false
+            }
         )
     }
 
@@ -1113,7 +1338,9 @@ fun FirelineApp() {
                 }
             )
 
-            if (chromeVisible && !showSearch) MapStatusRow(activeMap, statusMessage)
+            if (chromeVisible && !showSearch) {
+                MapStatusRow(activeMap, statusMessage, onTerrain)
+            }
 
             if (chromeVisible && !showSearch && simMode && simulated == null) {
                 SimulatedBanner("SIM MODE — tap the map to set a test position")
@@ -1228,11 +1455,33 @@ fun FirelineApp() {
             }
 
             Box(modifier = Modifier.weight(1f)) {
+                // Said out loud, because the canvas deliberately keeps showing
+                // the previous sheet until the chosen one is ready, and an arch
+                // E plot takes seconds. Without this the tap reads as ignored.
+                if (sheetLoading) {
+                    Text(
+                        "Opening ${
+                            IncidentProduct.parse(activeMap?.displayName.orEmpty()).title
+                        }\u2026",
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 10.dp)
+                            .background(
+                                MaterialTheme.colorScheme.primary,
+                                RoundedCornerShape(8.dp)
+                            )
+                            .padding(horizontal = 14.dp, vertical = 7.dp)
+                            .zIndex(2f),
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
                 MapCanvas(
-                    map = activeMap,
-                    bitmap = bitmap,
-                pageWidthPoints = pageWidth,
-                pageHeightPoints = pageHeight,
+                    map = canvasMap,
+                    bitmap = canvasPage,
+                pageWidthPoints = canvasPageWidth,
+                pageHeightPoints = canvasPageHeight,
                 latitude = displayLatitude,
                 longitude = displayLongitude,
                 positionIsSimulated = simulated != null,
@@ -1241,7 +1490,11 @@ fun FirelineApp() {
                 perimeter = perimeter,
                 queriedPosition = queried?.let { it.latitude to it.longitude },
                 dropPoints = if (segmentAtDropPoints) dropPoints else emptyList(),
-                basemap = basemap,
+                basemap = if (topographyOn) basemap else null,
+                elevation = elevationTiles,
+                contoursEnabled = contoursOn,
+                contourIntervalFeet = contourInterval,
+                maxScale = if (onTerrain) TERRAIN_MAX_SCALE else SHEET_MAX_SCALE,
                 measurePoints = measurePoints,
                 measureMode = measureMode,
                 markers = markers,
@@ -1543,33 +1796,22 @@ fun FirelineApp() {
  * it is written by this app, and org.json is only a stub on the unit test
  * classpath.
  */
-private fun parseLineString(geoJson: String): List<Pair<Double, Double>> {
-    val open = geoJson.indexOf("[[")
-    if (open < 0) return emptyList()
-    val close = geoJson.lastIndexOf("]]")
-    if (close <= open) return emptyList()
-    return Regex("""\[\s*(-?[0-9.eE+-]+)\s*,\s*(-?[0-9.eE+-]+)\s*\]""")
-        .findAll(geoJson.substring(open, close + 2))
-        .mapNotNull { match ->
-            // GeoJSON is longitude first.
-            val longitude = match.groupValues[1].toDoubleOrNull() ?: return@mapNotNull null
-            val latitude = match.groupValues[2].toDoubleOrNull() ?: return@mapNotNull null
-            latitude to longitude
-        }
-        .toList()
-}
 
 /** Twenty seconds of no touching and the controls fold away again. */
 private const val CHROME_TIMEOUT_MILLIS = 20_000L
 
 @Composable
-private fun MapStatusRow(map: ImportedMap?, message: String?) {
+private fun MapStatusRow(map: ImportedMap?, message: String?, onTerrain: Boolean = false) {
     val text: String
     val colour: Color
     when {
         message != null -> {
             text = message
             colour = Color(0xFFB3261E)
+        }
+        onTerrain -> {
+            text = "Terrain — ${BasemapTileCache.ATTRIBUTION} · import a GeoPDF for the sheet"
+            colour = Color(0xFF33691E)
         }
         map == null -> {
             text = "No map loaded — import from a file or a URL"
@@ -1672,3 +1914,31 @@ private fun ToolButton(
         }
     }
 }
+
+/**
+ * A sheet that can actually be drawn: its page, its size, and the map it came
+ * from, carried together.
+ *
+ * The three used to be separate pieces of state updated as each became
+ * available. Rendering an arch E plot takes seconds, so choosing a map left a
+ * window where the georeferencing had already switched and the page had not,
+ * and the canvas drew one sheet's image through another sheet's projection.
+ * Bundling them makes that window impossible to express.
+ */
+data class RenderedSheet(
+    val mapId: String,
+    val map: com.rhecyee.firelinemap.geopdf.ImportedMap,
+    val bitmap: android.graphics.Bitmap,
+    val pageWidth: Int,
+    val pageHeight: Int,
+    /**
+     * Draws the window on screen at the resolution it is being read at.
+     *
+     * Carried here rather than held beside this, for the same reason the page
+     * and the frame are: it has to change at the same instant they do. Held
+     * separately, a map chosen while the previous one was still on screen left
+     * the canvas laying windows of the new PDF over the old sheet -- the two
+     * maps at once this type exists to prevent, arriving by a different route.
+     */
+    val renderer: com.rhecyee.firelinemap.geopdf.MapSheetRenderer
+)

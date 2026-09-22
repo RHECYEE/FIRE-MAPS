@@ -18,6 +18,7 @@ import com.google.android.gms.location.Priority
 import com.rhecyee.firelinemap.FirelineApplication
 import com.rhecyee.firelinemap.MainActivity
 import com.rhecyee.firelinemap.data.TrackEntity
+import com.rhecyee.firelinemap.data.ensureActiveIncident
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -36,6 +37,15 @@ import java.util.UUID
  */
 class TrackRecordingService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * Watched for the whole life of the service, armed or not.
+     *
+     * The connection has to be known before a leg can be closed by losing it,
+     * and the first reading arrives when the observer is registered rather
+     * than when the vehicle next changes state.
+     */
+    private val vehicle = VehicleConnection(this)
 
     private lateinit var settingsStore: TrackSettingsStore
     private val detector by lazy { TrackDetector(settingsStore.settings()) }
@@ -60,6 +70,29 @@ class TrackRecordingService : Service() {
         super.onCreate()
         settingsStore = TrackSettingsStore(this)
         createNotificationChannel()
+        vehicle.watch { connected ->
+            if (connected) onVehicleStarted() else onVehicleStopped()
+        }
+    }
+
+    /**
+     * The head unit went away, so the engine did, so this leg ended here.
+     *
+     * The detector decides whether that is really an arrival -- a lead coming
+     * loose at road speed is not -- and whether there is a leg to close.
+     */
+    private fun onVehicleStopped() {
+        val event = detector.vehicleStopped(System.currentTimeMillis())
+        if (event is TrackEvent.Segmented) {
+            persist(detector.currentStartedAt, endedAt = null, isRecording = true)
+            updateNotification(
+                "Leg %d ended — vehicle stopped".format(detector.currentSegmentCount)
+            )
+        }
+    }
+
+    private fun onVehicleStarted() {
+        detector.vehicleStarted(System.currentTimeMillis())
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -69,10 +102,23 @@ class TrackRecordingService : Service() {
                 disarm()
             }
             else -> {
+                // Whatever the last recording had to say about itself, it is
+                // not news about this one.
+                TrackRecordingState.reportOutcome(null)
                 arm(intent?.getStringExtra(EXTRA_INCIDENT_ID))
                 // Re-read in case the sheet or the setting changed while armed.
                 detector.settings = settingsStore.settings()
                 detector.anchors = (application as FirelineApplication).dropPoints
+                // Two different things wear the same start action. The phone's
+                // button says AUTO RECORD TRAVEL and promises tracks that start
+                // themselves when you move, and that promise is kept. The car's
+                // says Record, which means record this drive, starting now --
+                // and making that one wait out the confirmation window is how
+                // pressing Record, driving, and pressing Stop ends with
+                // nothing to show for it.
+                if (intent?.getBooleanExtra(EXTRA_RECORD_NOW, false) == true) {
+                    openRequestedTrack()
+                }
             }
         }
         // Restarting after process death resumes watching; the open track is
@@ -93,6 +139,7 @@ class TrackRecordingService : Service() {
         }
 
         armed = true
+        TrackRecordingState.setArmed(true)
         detector.settings = settingsStore.settings()
         detector.anchors = (application as FirelineApplication).dropPoints
         startForeground(NOTIFICATION_ID, notification("Watching for travel"))
@@ -110,6 +157,7 @@ class TrackRecordingService : Service() {
 
     private fun disarm() {
         TrackRecordingState.clear()
+        TrackRecordingState.setArmed(false)
         client.removeLocationUpdates(callback)
         armed = false
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -172,19 +220,41 @@ class TrackRecordingService : Service() {
         }
     }
 
+    /** Opens a track because the operator asked, rather than waiting to be convinced. */
+    private fun openRequestedTrack() {
+        val event = detector.begin(System.currentTimeMillis())
+        if (event !is TrackEvent.Started) return
+        trackId = UUID.randomUUID().toString()
+        updateNotification("Travel recording — 0.0 km")
+        persist(event.atMillis, endedAt = null, isRecording = true)
+        publish(System.currentTimeMillis())
+    }
+
     private fun closeOpenTrack() {
-        val event = detector.finish()
-        if (event is TrackEvent.Ended) finalise(event)
+        when (val event = detector.finish()) {
+            is TrackEvent.Ended -> finalise(event)
+            // Nothing was open. Silence here is the worst answer available: the
+            // button goes back to Record, the line vanishes, and there is no
+            // way to tell that from a finished drive being thrown away.
+            else -> if (armed) TrackRecordingState.reportOutcome(
+                "Nothing recorded — no fix had arrived yet."
+            )
+        }
     }
 
     private fun finalise(event: TrackEvent.Ended) {
         val id = trackId ?: return
         trackId = null
-        val incident = incidentId ?: return
 
         if (!event.kept) {
             // Too short to be travel. Remove the in-progress row rather than
-            // leaving a stub in the incident's track list.
+            // leaving a stub in the incident's track list -- but say so, because
+            // from the car this looked exactly like a finished drive being
+            // thrown away.
+            TrackRecordingState.reportOutcome(
+                "Too short to keep — that was under the movement threshold, " +
+                    "not a recording fault."
+            )
             scope.launch {
                 (application as FirelineApplication).database.dao().deleteTrack(id)
             }
@@ -193,7 +263,16 @@ class TrackRecordingService : Service() {
 
         val track = event.track
         scope.launch {
-            (application as FirelineApplication).database.dao().upsertTrack(
+            val dao = (application as FirelineApplication).database.dao()
+            // Settled at the point of writing, not carried in from whoever
+            // started the recording. Returning early here because no incident
+            // arrived in the intent threw away a finished drive, which is the
+            // one thing this service exists to not do.
+            val incident = incidentId ?: ensureActiveIncident(dao)
+            TrackRecordingState.reportOutcome(
+                "Travel saved — %.1f km".format(track.distanceMeters / 1000.0)
+            )
+            dao.upsertTrack(
                 TrackEntity(
                     id = id,
                     incidentId = incident,
@@ -302,6 +381,7 @@ class TrackRecordingService : Service() {
 
     override fun onDestroy() {
         closeOpenTrack()
+        vehicle.stop()
         super.onDestroy()
     }
 
@@ -310,6 +390,13 @@ class TrackRecordingService : Service() {
     companion object {
         const val ACTION_START = "com.rhecyee.firelinemap.START_TRACK"
         const val ACTION_STOP = "com.rhecyee.firelinemap.STOP_TRACK"
+
+        /**
+         * Open a track immediately rather than waiting for movement to confirm
+         * itself. Set by the car's Record button; not by the phone's, which is
+         * an arm-and-watch and says so.
+         */
+        const val EXTRA_RECORD_NOW = "record_now"
         const val EXTRA_INCIDENT_ID = "incident_id"
         private const val CHANNEL_ID = "travel_recording"
         private const val NOTIFICATION_ID = 4102

@@ -18,6 +18,15 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import android.content.ClipData
+import android.content.ClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
+import com.rhecyee.firelinemap.util.CrashLog
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -35,8 +44,19 @@ import com.rhecyee.firelinemap.location.TrackSettingsStore
  * name could only be set by a developer. Both belong here, alongside the
  * things that spend data or storage.
  */
+/** One incident as the settings list shows it. */
+data class IncidentSummary(val id: String, val name: String, val detail: String)
+
+
 @Composable
 fun SettingsSheet(
+    incidentName: String,
+    onIncidentName: (String) -> Unit,
+    incidents: List<IncidentSummary>,
+    activeIncidentId: String?,
+    onSelectIncident: (String) -> Unit,
+    onNewIncident: () -> Unit,
+    appVersion: String,
     reporterName: String,
     reporterQualification: String,
     onReporterChange: (String, String) -> Unit,
@@ -44,6 +64,8 @@ fun SettingsSheet(
     onStopThreshold: (Int) -> Unit,
     segmentAtDropPoints: Boolean,
     onToggleSegmenting: (Boolean) -> Unit,
+    segmentAtVehicleStops: Boolean,
+    onToggleVehicleSegmenting: (Boolean) -> Unit,
     dropPointsFound: Int,
     autoDownloadRadius: Int,
     onAutoDownloadRadius: (Int) -> Unit,
@@ -51,6 +73,7 @@ fun SettingsSheet(
     onWifiOnly: (Boolean) -> Unit,
     cachedTerrainBytes: Long,
     onClearTerrain: () -> Unit,
+    onCarCheck: () -> Unit,
     onDismiss: () -> Unit
 ) {
     AlertDialog(
@@ -63,6 +86,72 @@ fun SettingsSheet(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                Heading("INCIDENT")
+                Text(
+                    "Names every track, marker and medical report filed from this " +
+                        "phone. It arrives seeded and is meant to be changed: the " +
+                        "incident you are on is not the one the app was built against.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = incidentName,
+                    onValueChange = onIncidentName,
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("Incident name") },
+                    placeholder = { Text("Burnt Creek 2026") }
+                )
+
+                if (incidents.size > 1) {
+                    Text(
+                        "Everything filed from this phone belongs to the incident " +
+                            "selected here. Switching changes what the map shows.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                incidents.forEach { summary ->
+                    val active = summary.id == activeIncidentId
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelectIncident(summary.id) }
+                            .padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            if (active) "\u25cf" else "\u25cb",
+                            color = if (active) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontWeight = FontWeight.Black
+                        )
+                        Column(Modifier.padding(start = 10.dp).weight(1f)) {
+                            Text(
+                                summary.name.take(38),
+                                fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Text(
+                                summary.detail,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+                Text(
+                    "NEW INCIDENT",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onNewIncident() }
+                        .padding(vertical = 8.dp),
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Black,
+                    style = MaterialTheme.typography.labelMedium
+                )
+
+                HorizontalDivider()
                 Heading("WHO IS REPORTING")
                 Text(
                     "Filled into medical reports automatically, so nobody types it " +
@@ -139,6 +228,110 @@ fun SettingsSheet(
                         color = MaterialTheme.colorScheme.error,
                         fontWeight = FontWeight.Bold,
                         style = MaterialTheme.typography.labelMedium
+                    )
+                }
+
+                HorizontalDivider()
+                Text(
+                    "Fireline Map $appVersion",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                HorizontalDivider()
+                Heading("LAST CRASH")
+                val crashContext = LocalContext.current
+                var crash by remember { mutableStateOf(CrashLog.latest(crashContext)) }
+                if (crash == null) {
+                    Text(
+                        "Nothing recorded. If the app closes itself, come back here " +
+                            "afterwards: what threw will be waiting, and it is the one " +
+                            "thing that says why.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    Text(
+                        (crash ?: "").trim().lineSequence().take(14).joinToString("\n"),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(
+                                MaterialTheme.colorScheme.surfaceVariant,
+                                RoundedCornerShape(6.dp)
+                            )
+                            .padding(8.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            "COPY",
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable {
+                                    val clipboard = crashContext.getSystemService(
+                                        ClipboardManager::class.java
+                                    )
+                                    clipboard?.setPrimaryClip(
+                                        ClipData.newPlainText("Fireline crash", crash)
+                                    )
+                                }
+                                .padding(vertical = 8.dp),
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Black,
+                            textAlign = TextAlign.Center
+                        )
+                        Text(
+                            "CLEAR",
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable {
+                                    CrashLog.clear(crashContext)
+                                    crash = null
+                                }
+                                .padding(vertical = 8.dp),
+                            color = MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.Black,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+
+                HorizontalDivider()
+                Heading("ANDROID AUTO")
+                Text(
+                    "An app the car host rejects is simply not listed, with nothing " +
+                        "reported anywhere to say why. This runs the checks over that, " +
+                        "on this phone, and says which side the problem is on.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    "RUN THE CHECK",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onCarCheck() }
+                        .padding(vertical = 8.dp),
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Black
+                )
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Split legs when the vehicle stops", fontWeight = FontWeight.Bold)
+                        Text(
+                            "Android Auto goes away when the engine does, which is what " +
+                                "happens when you pull in at a drop point and get out. " +
+                                "The leg ends there and the next one starts when you turn " +
+                                "the key again, so the time spent standing around is not " +
+                                "counted as driving.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = segmentAtVehicleStops,
+                        onCheckedChange = onToggleVehicleSegmenting
                     )
                 }
 

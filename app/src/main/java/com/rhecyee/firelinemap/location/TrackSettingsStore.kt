@@ -31,16 +31,28 @@ class TrackSettingsStore(context: Context) {
         get() = preferences.getBoolean(KEY_SEGMENT, false)
         set(value) = preferences.edit().putBoolean(KEY_SEGMENT, value).apply()
 
+    /**
+     * Split travel into legs when the vehicle shuts down.
+     *
+     * On by default, unlike the drop point split: losing the head unit is not
+     * an inference about anything, it is the engine going off.
+     */
+    var segmentAtVehicleStops: Boolean
+        get() = preferences.getBoolean(KEY_SEGMENT_VEHICLE, true)
+        set(value) = preferences.edit().putBoolean(KEY_SEGMENT_VEHICLE, value).apply()
+
     fun settings(): TrackDetectionSettings =
         TrackDetectionSettings(
             stopThresholdMillis = stopThresholdSeconds * 1000L,
-            segmentAtDropPoints = segmentAtDropPoints
+            segmentAtDropPoints = segmentAtDropPoints,
+            segmentAtVehicleStops = segmentAtVehicleStops
         )
 
     companion object {
         private const val KEY_AUTO = "auto_record"
         private const val KEY_STOP = "stop_threshold_seconds"
         private const val KEY_SEGMENT = "segment_at_drop_points"
+        private const val KEY_SEGMENT_VEHICLE = "segment_at_vehicle_stops"
 
         const val DEFAULT_STOP_SECONDS = 300
 

@@ -31,6 +31,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.style.TextAlign
+import com.rhecyee.firelinemap.data.AppSettings
+import com.rhecyee.firelinemap.geopdf.IncidentProduct
 import com.rhecyee.firelinemap.data.LayerPackageEntity
 import com.rhecyee.firelinemap.parcels.CountyRecord
 
@@ -46,10 +49,17 @@ fun LayersSheet(
     importedMaps: List<com.rhecyee.firelinemap.geopdf.ImportedMap>,
     activeMapId: String?,
     onSelectMap: (com.rhecyee.firelinemap.geopdf.ImportedMap) -> Unit,
+    onSelectTerrain: () -> Unit,
+    onDeleteMap: (com.rhecyee.firelinemap.geopdf.ImportedMap) -> Unit,
+    onDeleteOlderPeriods: () -> Unit,
     topographyOn: Boolean,
     onToggleTopography: (Boolean) -> Unit,
     landOwnershipOn: Boolean,
     onToggleLandOwnership: (Boolean) -> Unit,
+    contoursOn: Boolean,
+    onToggleContours: (Boolean) -> Unit,
+    contourIntervalFeet: Int,
+    onContourInterval: (Int) -> Unit,
     packages: List<LayerPackageEntity>,
     onToggle: (LayerPackageEntity, Boolean) -> Unit,
     onOpacity: (LayerPackageEntity, Float) -> Unit,
@@ -65,54 +75,159 @@ fun LayersSheet(
         text = {
             Column(
                 modifier = Modifier
-                    .heightIn(max = 430.dp)
+                    .heightIn(max = 520.dp)
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 SectionHeading("PRODUCT MAPS")
+
+                // Terrain is a map on its own, not only the fill around a
+                // sheet, so it has to be selectable even when sheets exist --
+                // the drive in and the search are often better read off topo
+                // than off an ops map that stops at the neatline.
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onSelectTerrain() }
+                        .padding(vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        if (activeMapId == null) "\u25cf" else "\u25cb",
+                        color = if (activeMapId == null) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        fontWeight = FontWeight.Black
+                    )
+                    Column(Modifier.padding(start = 10.dp)) {
+                        Text(
+                            "Terrain only",
+                            fontWeight = if (activeMapId == null) {
+                                FontWeight.Bold
+                            } else {
+                                FontWeight.Normal
+                            },
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Text(
+                            "USGS topo around you \u2014 no incident sheet",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFF2E7D32)
+                        )
+                    }
+                }
+
                 if (importedMaps.isEmpty()) {
                     Text(
-                        "No maps imported yet.",
+                        "No incident maps imported yet.",
                         style = MaterialTheme.typography.bodySmall
                     )
                 } else {
-                    importedMaps.forEach { map ->
+                    // Sorted by what they are rather than when they landed on
+                    // the device: newest operational period first, then by kind,
+                    // then division in order, which is how a packet is read.
+                    val described = importedMaps
+                        .map { it to IncidentProduct.parse(it.displayName) }
+                        .sortedBy { it.second.sortKey }
+
+                    val periods = described.mapNotNull { it.second.period }.distinct()
+                    if (periods.size > 1) {
+                        val newest = periods.min()
+                        val stale = described.count {
+                            it.second.period != null && it.second.period != newest
+                        }
+                        Text(
+                            "REMOVE $stale SHEET${if (stale == 1) "" else "S"} FROM " +
+                                "EARLIER PERIODS",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(
+                                    MaterialTheme.colorScheme.errorContainer,
+                                    RoundedCornerShape(6.dp)
+                                )
+                                .clickable { onDeleteOlderPeriods() }
+                                .padding(vertical = 9.dp),
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            fontWeight = FontWeight.Black,
+                            textAlign = TextAlign.Center,
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                        Text(
+                            "Keeps ${IncidentProduct.describePeriod(newest)}. " +
+                                "A fire posts two dozen sheets a period, every " +
+                                "period, so this is how the list stays usable to " +
+                                "the end of an assignment.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    described.forEach { (map, product) ->
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { onSelectMap(map) }
-                                .padding(vertical = 7.dp),
+                                .padding(vertical = 3.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                if (map.id == activeMapId) "●" else "○",
-                                color = if (map.id == activeMapId) {
-                                    MaterialTheme.colorScheme.primary
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                },
-                                fontWeight = FontWeight.Black
-                            )
-                            Column(Modifier.padding(start = 10.dp)) {
+                            Row(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable { onSelectMap(map) }
+                                    .padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
                                 Text(
-                                    map.displayName.take(40),
-                                    fontWeight = if (map.id == activeMapId) {
-                                        FontWeight.Bold
+                                    if (map.id == activeMapId) "\u25cf" else "\u25cb",
+                                    color = if (map.id == activeMapId) {
+                                        MaterialTheme.colorScheme.primary
                                     } else {
-                                        FontWeight.Normal
+                                        MaterialTheme.colorScheme.onSurfaceVariant
                                     },
-                                    style = MaterialTheme.typography.bodySmall
+                                    fontWeight = FontWeight.Black
                                 )
-                                Text(
-                                    map.kindLabel,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = if (map.document.isGeoreferenced) {
-                                        Color(0xFF2E7D32)
-                                    } else {
-                                        Color(0xFF8A6D00)
-                                    }
-                                )
+                                Column(Modifier.padding(start = 10.dp)) {
+                                    // What it is and which piece of the fire,
+                                    // first. The filenames are sixty characters
+                                    // of identical prefix with the division
+                                    // letter on the end, so a list showing the
+                                    // start of the name showed a dozen rows that
+                                    // read exactly alike.
+                                    Text(
+                                        product.title,
+                                        fontWeight = if (map.id == activeMapId) {
+                                            FontWeight.Black
+                                        } else {
+                                            FontWeight.Bold
+                                        },
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                    Text(
+                                        product.detail,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Text(
+                                        map.kindLabel,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (map.document.isGeoreferenced) {
+                                            Color(0xFF2E7D32)
+                                        } else {
+                                            Color(0xFF8A6D00)
+                                        }
+                                    )
+                                }
                             }
+                            Text(
+                                "REMOVE",
+                                modifier = Modifier
+                                    .clickable { onDeleteMap(map) }
+                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                color = MaterialTheme.colorScheme.error,
+                                fontWeight = FontWeight.Black,
+                                style = MaterialTheme.typography.labelSmall
+                            )
                         }
                     }
                 }
@@ -122,11 +237,41 @@ fun LayersSheet(
 
                 ToggleRow(
                     title = "Topographic basemap",
-                    subtitle = "USGS contours and shaded relief beneath the sheet. " +
-                        "Tiles are kept once seen.",
+                    subtitle = "USGS contours and shaded relief. Draws under an " +
+                        "imported sheet, and is the map on its own when there is " +
+                        "none. Tiles are kept once seen.",
                     checked = topographyOn,
                     onCheckedChange = onToggleTopography
                 )
+                ToggleRow(
+                    title = "Contour lines",
+                    subtitle = "Drawn from elevation data rather than taken off " +
+                        "the basemap, so they lie over an imported sheet as well " +
+                        "as over terrain, at whatever band the ground calls for.",
+                    checked = contoursOn,
+                    onCheckedChange = onToggleContours
+                )
+                if (contoursOn) {
+                    Text(
+                        "CONTOUR INTERVAL",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Black,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    IntervalChips(
+                        options = AppSettings.CONTOUR_INTERVALS_FEET,
+                        selected = contourIntervalFeet,
+                        label = { AppSettings.describeInterval(it) },
+                        onSelect = onContourInterval
+                    )
+                    Text(
+                        "Forty feet is what a USGS quad uses through most of the " +
+                            "mountain west. Tighten it on gentle ground, open it up " +
+                            "on a canyon wall.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 ToggleRow(
                     title = "Land ownership",
                     subtitle = "Tap bare ground for the administering agency. " +
@@ -456,4 +601,46 @@ fun LandOwnerDialog(
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } }
     )
+}
+
+/** A row of one-tap choices, sized so a gloved thumb can hit one. */
+@Composable
+private fun <T> IntervalChips(
+    options: List<T>,
+    selected: T,
+    label: (T) -> String,
+    onSelect: (T) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+        options.chunked(3).forEach { row ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                row.forEach { option ->
+                    val isSelected = option == selected
+                    Text(
+                        label(option),
+                        modifier = Modifier
+                            .weight(1f)
+                            .background(
+                                if (isSelected) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.surfaceVariant,
+                                RoundedCornerShape(6.dp)
+                            )
+                            .clickable { onSelect(option) }
+                            .padding(vertical = 9.dp),
+                        color = if (isSelected) Color.White
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
+                repeat(3 - row.size) {
+                    androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
+                }
+            }
+        }
+    }
 }

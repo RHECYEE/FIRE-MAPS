@@ -9,11 +9,10 @@
 /local.properties
 app/build/
 
-# Release signing. The key and its passwords are held outside the repository;
-# the build reads them from here or from the environment.
+# Kotlin compiler session files
+.kotlin/
+
+# Upload signing. Never commit the keystore or its passwords.
 keystore.properties
 *.jks
 *.keystore
-
-# Kotlin incremental build state.
-.kotlin/

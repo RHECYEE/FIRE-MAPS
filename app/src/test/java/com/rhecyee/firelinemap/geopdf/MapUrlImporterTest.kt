@@ -63,4 +63,51 @@ class MapUrlImporterTest {
         assertTrue(importer.parseListing("<html><a href='x.txt'>t</a></html>", "https://e.gov/")
             .isEmpty())
     }
+
+    // ---- the real published folder ----
+
+    private fun timberListing(): String =
+        javaClass.getResourceAsStream("/listing/wildfire_gov_timber_qr.html")
+            ?.readBytes()?.toString(Charsets.UTF_8)
+            ?: error("missing listing fixture")
+
+    private val timberUrl =
+        "https://ftp.wildfire.gov/public/incident_specific_maps/calif_s/2026/2026_Timber/QR/"
+
+    @Test
+    fun everyProductInTheRealFolderIsOffered() {
+        val entries = MapUrlImporter(File("/tmp")).parseListing(timberListing(), timberUrl)
+        // One operational period of a real fire: twenty-seven sheets, and the
+        // folder is posted again every day.
+        assertEquals(27, entries.size)
+        assertTrue(entries.all { it.url.startsWith(timberUrl) })
+        assertTrue(entries.all { it.name.endsWith(".pdf") })
+    }
+
+    @Test
+    fun namesWithSpacesComeBackReadableRatherThanEscaped() {
+        // The division sheets are published with a space in the name, which
+        // arrives percent-encoded in the href.
+        val entries = MapUrlImporter(File("/tmp")).parseListing(timberListing(), timberUrl)
+        val division = entries.firstOrNull { it.name.contains("DIV B-X") }
+        assertTrue("no readable division name in $entries", division != null)
+        assertTrue(division!!.url.contains("%20"))
+    }
+
+    @Test
+    fun theParentDirectoryLinkIsNotOfferedAsAProduct() {
+        val entries = MapUrlImporter(File("/tmp")).parseListing(timberListing(), timberUrl)
+        assertTrue(entries.none { it.name.contains("Parent") })
+        assertTrue(entries.none { it.url.endsWith("/") })
+    }
+
+    @Test
+    fun everyOfferedProductParsesIntoAReadableRow() {
+        // What the picker shows. If these did not parse the dialog would be
+        // twenty-seven rows of identical text again.
+        val entries = MapUrlImporter(File("/tmp")).parseListing(timberListing(), timberUrl)
+        val rows = entries.map { IncidentProduct.parse(it.name) }
+        assertTrue("some products did not parse", rows.all { it.kind != null })
+        assertEquals(entries.size, rows.map { it.title to it.detail }.distinct().size)
+    }
 }
