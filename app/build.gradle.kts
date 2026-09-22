@@ -95,6 +95,23 @@ android {
                 it.storeFile != null
             }
         }
+
+        /*
+         * A test build installs beside the store build, not over it.
+         *
+         * Same applicationId meant the only way to try a change on a phone was
+         * to uninstall the real app first, which takes the incidents, tracks
+         * and reports on it with them. Nobody is going to do that to a phone
+         * that has a shift's work on it, so changes went untried on a handset
+         * instead -- which is the more expensive habit of the two.
+         *
+         * Android Auto will not offer an unpublished applicationId until
+         * "Unknown sources" is turned on in its developer settings.
+         */
+        debug {
+            applicationIdSuffix = ".test"
+            versionNameSuffix = "-test"
+        }
     }
 
     // buildConfig for the version the settings screen shows: "which build
