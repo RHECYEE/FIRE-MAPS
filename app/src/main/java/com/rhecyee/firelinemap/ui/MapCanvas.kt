@@ -53,7 +53,11 @@ import androidx.compose.ui.unit.dp
 import com.rhecyee.firelinemap.map.BasemapTileCache
 import com.rhecyee.firelinemap.map.ElevationTiles
 import com.rhecyee.firelinemap.terrain.ContourWindows
+import com.rhecyee.firelinemap.terrain.ReliefRaster
+import com.rhecyee.firelinemap.terrain.ShadingOptions
 import com.rhecyee.firelinemap.terrain.rememberContours
+import com.rhecyee.firelinemap.terrain.rememberShadedRelief
+import com.rhecyee.firelinemap.terrain.shadingWindow
 import com.rhecyee.firelinemap.data.MarkerEntity
 import com.rhecyee.firelinemap.resources.ResourceSymbol
 import com.rhecyee.firelinemap.measure.MeasureMode
@@ -110,6 +114,14 @@ fun MapCanvas(
     elevation: ElevationTiles? = null,
     contoursEnabled: Boolean = false,
     contourIntervalFeet: Int = 40,
+    /**
+     * Hillshade and slope bands, or null for neither.
+     *
+     * Drawn from the same elevation the contours come from, so a slope band
+     * and the lines crossing it can never disagree about the ground.
+     */
+    shading: ShadingOptions? = null,
+    shadingOpacity: Float = 0.85f,
     measurePoints: List<MeasurePoint> = emptyList(),
     measureMode: MeasureMode = MeasureMode.DISTANCE,
     markers: List<MarkerEntity> = emptyList(),
@@ -430,6 +442,16 @@ fun MapCanvas(
             window = contourWindow
         )
 
+        val relief = rememberShadedRelief(
+            tiles = elevation,
+            options = shading,
+            window = run {
+                if (shading == null || elevation == null) return@run null
+                val ground = visibleGround ?: return@run null
+                shadingWindow(ground.north, ground.south, ground.west, ground.east)
+            }
+        )
+
         // Flattened onto the page once a trace lands, not once a frame. See
         // ContourOverlay: this is tens of thousands of inverse projections.
         val contourOverlay = remember(contours, map.id, pageWidthPoints, pageHeightPoints) {
@@ -605,6 +627,28 @@ fun MapCanvas(
                     drawHeight = drawHeight,
                     opacity = parcelOpacity,
                     showLabels = scale >= 4f
+                )
+            }
+
+            // Shading under the contours, over the sheet. Under the lines
+            // because a band of colour must not bury the one reading that is
+            // exact; over the sheet for the same reason the contours are --
+            // the slope that matters is the slope of the map being worked
+            // from, not of whatever the basemap happened to print.
+            val currentRelief = relief
+            if (currentRelief != null && frame != null &&
+                pageWidthPoints > 0 && pageHeightPoints > 0
+            ) {
+                drawShadedRelief(
+                    relief = currentRelief,
+                    frame = frame,
+                    pageWidthPoints = pageWidthPoints,
+                    pageHeightPoints = pageHeightPoints,
+                    originX = originX,
+                    originY = originY,
+                    drawWidth = drawWidth,
+                    drawHeight = drawHeight,
+                    opacity = shadingOpacity
                 )
             }
 
@@ -1495,4 +1539,72 @@ private fun DrawScope.drawQueryCrosshair(centre: Offset) {
     drawLine(accent, Offset(centre.x, centre.y - 24f), Offset(centre.x, centre.y - 8f), 3.5f)
     drawLine(accent, Offset(centre.x, centre.y + 8f), Offset(centre.x, centre.y + 24f), 3.5f)
     drawCircle(accent, radius = 2.5f, center = centre)
+}
+
+/**
+ * One paint, reused.
+ *
+ * Drawing happens on one thread and this is touched nowhere else. Allocating
+ * a Paint per frame for a layer that redraws with every pan is the kind of
+ * waste that only shows up as stutter on the phone somebody is actually
+ * holding.
+ */
+private val reliefPaint = android.graphics.Paint(
+    android.graphics.Paint.FILTER_BITMAP_FLAG or android.graphics.Paint.ANTI_ALIAS_FLAG
+)
+
+/**
+ * Places the shaded raster on the sheet by its own geographic corners.
+ *
+ * A four-point map rather than a stretch into a rectangle, because a
+ * georeferenced sheet is rotated against north by the convergence of its own
+ * grid. Dropping a north-up raster into an axis-aligned box on a sheet that
+ * is a degree or two off north puts every slope band that far out of place --
+ * which is invisible on a screen and wrong on the ground.
+ */
+private fun DrawScope.drawShadedRelief(
+    relief: ReliefRaster,
+    frame: com.rhecyee.firelinemap.geopdf.MapFrame,
+    pageWidthPoints: Int,
+    pageHeightPoints: Int,
+    originX: Float,
+    originY: Float,
+    drawWidth: Float,
+    drawHeight: Float,
+    opacity: Float
+) {
+    if (relief.bitmap.isRecycled) return
+
+    fun screen(latitude: Double, longitude: Double): Offset? {
+        val page = frame.geoToPage(latitude, longitude) ?: return null
+        return Offset(
+            originX + (page.first / pageWidthPoints).toFloat() * drawWidth,
+            originY + (1f - (page.second / pageHeightPoints).toFloat()) * drawHeight
+        )
+    }
+
+    val northWest = screen(relief.north, relief.west) ?: return
+    val northEast = screen(relief.north, relief.east) ?: return
+    val southEast = screen(relief.south, relief.east) ?: return
+    val southWest = screen(relief.south, relief.west) ?: return
+
+    val destination = floatArrayOf(
+        northWest.x, northWest.y,
+        northEast.x, northEast.y,
+        southEast.x, southEast.y,
+        southWest.x, southWest.y
+    )
+    if (destination.any { !it.isFinite() }) return
+
+    val source = floatArrayOf(
+        0f, 0f,
+        relief.bitmap.width.toFloat(), 0f,
+        relief.bitmap.width.toFloat(), relief.bitmap.height.toFloat(),
+        0f, relief.bitmap.height.toFloat()
+    )
+    val matrix = android.graphics.Matrix()
+    if (!matrix.setPolyToPoly(source, 0, destination, 0, 4)) return
+
+    reliefPaint.alpha = (opacity.coerceIn(0f, 1f) * 255f).roundToInt()
+    drawContext.canvas.nativeCanvas.drawBitmap(relief.bitmap, matrix, reliefPaint)
 }

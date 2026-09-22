@@ -19,6 +19,7 @@ This initial Android Studio project includes:
 - Tap-anywhere position readout in DDM, decimal degrees and the sheet's own
   UTM grid, each line copyable on its own
 - Fire perimeter inference from dropped observations
+- Slope shading and shaded relief, drawn from elevation
 - Foreground travel-recording service
 - Persistent track records with GeoJSON line geometry
 - Process-restart-compatible foreground service declaration
@@ -55,6 +56,42 @@ degrees-decimal-minutes, decimal degrees, and the active sheet's own UTM grid,
 plus range and bearing from the current fix and the ground elevation. Any one
 line copies on its own, or the whole block copies together, because which of
 those is wanted depends on whether it is going over a radio or into a form.
+
+## Slope shading
+
+Contour lines are the exact reading, but they have to be counted and
+interpolated between, and the question a crew boss actually asks -- *can we
+get on that* -- wants answering in the time it takes to glance at a phone on a
+dashboard.
+
+**Layers -> Slope shading** tints ground by how steep it is, in the bands
+equipment gets talked about in:
+
+| Band | | |
+|---|---|---|
+| 0-25% | Gentle | most equipment travels |
+| 25-40% | Moderate | dozer work gets directional |
+| 40-55% | Steep | past most dozer limits |
+| 55-75% | Very steep | handline and hose lays only |
+| 75%+ | Extreme | chutes and chimneys |
+
+Gentle ground is left untinted deliberately: most of most maps is gentle, and
+colouring it would put a wash over the whole sheet to say nothing. The tint
+starting at all is the signal.
+
+The figures are Horn's method over the same 3DEP elevation the contours are
+traced from, so a band and the lines crossing it can never disagree. They
+describe the ground, not what may be done on it -- what a machine or a crew
+can hold depends on soil, fuel, aspect, weather and who is driving, none of
+which is in a terrain model.
+
+**Layers -> Shaded relief** lights the ground from the northwest underneath
+the tint. Off by default: both basemaps already carry relief of their own, so
+a second one mostly muddies the first. It earns its place where the printed
+shading is too faint to read.
+
+Both are drawn on the Android Auto screen as well, where they matter most --
+somebody driving cannot count contour lines.
 
 ## Fireline
 

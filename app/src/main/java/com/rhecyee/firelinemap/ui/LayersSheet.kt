@@ -7,7 +7,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -57,6 +59,10 @@ fun LayersSheet(
     landOwnershipOn: Boolean,
     onToggleLandOwnership: (Boolean) -> Unit,
     contoursOn: Boolean,
+    slopeShadingOn: Boolean,
+    onToggleSlopeShading: (Boolean) -> Unit,
+    hillshadeOn: Boolean,
+    onToggleHillshade: (Boolean) -> Unit,
     onToggleContours: (Boolean) -> Unit,
     contourIntervalFeet: Int,
     onContourInterval: (Int) -> Unit,
@@ -272,6 +278,33 @@ fun LayersSheet(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+                ToggleRow(
+                    title = "Slope shading",
+                    subtitle = "Tints ground by how steep it is, in the bands " +
+                        "equipment gets talked about in. Answers \"can we get on " +
+                        "that\" at a glance, where the lines have to be counted.",
+                    checked = slopeShadingOn,
+                    onCheckedChange = onToggleSlopeShading
+                )
+                if (slopeShadingOn) {
+                    SlopeKey()
+                    Text(
+                        "Measured from the same elevation the contours come from. " +
+                            "A description of the ground, not a rule about it: what " +
+                            "will actually hold depends on soil, fuel and who is " +
+                            "driving, and none of that is in a terrain model.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                ToggleRow(
+                    title = "Shaded relief",
+                    subtitle = "Lights the ground from the northwest so ridges and " +
+                        "draws stand out. Off by default: both basemaps already " +
+                        "carry relief, and a second one mostly muddies the first.",
+                    checked = hillshadeOn,
+                    onCheckedChange = onToggleHillshade
+                )
                 ToggleRow(
                     title = "Land ownership",
                     subtitle = "Tap bare ground for the administering agency. " +
@@ -640,6 +673,49 @@ private fun <T> IntervalChips(
                 repeat(3 - row.size) {
                     androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
                 }
+            }
+        }
+    }
+}
+
+/**
+ * What the slope tint means, in the same colours the map uses.
+ *
+ * Drawn from the enum rather than restated, so a band whose colour or
+ * boundary changes cannot end up described here as what it used to be.
+ */
+@Composable
+private fun SlopeKey() {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        com.rhecyee.firelinemap.terrain.SlopeClass.entries.forEach { band ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(
+                    modifier = Modifier
+                        .size(26.dp, 14.dp)
+                        .background(
+                            if (band.colorArgb ushr 24 == 0) {
+                                Color.Transparent
+                            } else {
+                                // Shown at full strength in the key: a swatch
+                                // at the opacity it is drawn on the map with
+                                // is unreadable against a settings sheet.
+                                Color(band.colorArgb or (0xFF shl 24))
+                            },
+                            RoundedCornerShape(3.dp)
+                        )
+                ) {}
+                Text(
+                    "${band.range}  ${band.label}",
+                    modifier = Modifier.padding(start = 10.dp),
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    band.note,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }

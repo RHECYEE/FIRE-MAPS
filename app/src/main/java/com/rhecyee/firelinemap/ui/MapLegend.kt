@@ -43,6 +43,7 @@ fun MapLegend(
     hasDropPoints: Boolean,
     hasSearch: Boolean,
     hasFireline: Boolean,
+    hasSlopeShading: Boolean,
     simulated: Boolean,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
@@ -58,6 +59,14 @@ fun MapLegend(
         if (hasTrack) add(LegendEntry(Color(0xFFE91E63), "Recording now"))
         if (hasSavedTracks) add(LegendEntry(Color(0xFF9C27B0), "Saved track"))
         add(LegendEntry(Color(0xFFFFC400), "Measurement"))
+        if (hasSlopeShading) {
+            // Ranges rather than names: the number is what gets compared
+            // against what a machine will hold, and the key has room for one
+            // or the other.
+            com.rhecyee.firelinemap.terrain.SlopeClass.TINTED.forEach { band ->
+                add(LegendEntry(Color(band.colorArgb or (0xFF shl 24)), "Slope ${band.range}"))
+            }
+        }
         if (hasFireline) {
             add(LegendEntry(FIRE_RED, "Fire — observed", round = true))
             add(LegendEntry(NOT_FIRE_BLUE, "Not fire — observed", round = true))

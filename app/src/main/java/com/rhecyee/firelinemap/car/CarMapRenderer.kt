@@ -32,6 +32,10 @@ import com.rhecyee.firelinemap.map.ElevationTiles
 import com.rhecyee.firelinemap.terrain.ContourField
 import com.rhecyee.firelinemap.terrain.ContourWindow
 import com.rhecyee.firelinemap.terrain.ContourWindows
+import com.rhecyee.firelinemap.terrain.ReliefRaster
+import com.rhecyee.firelinemap.terrain.ShadingOptions
+import com.rhecyee.firelinemap.terrain.TerrainShading
+import com.rhecyee.firelinemap.terrain.shadingWindow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -119,6 +123,20 @@ class CarMapRenderer(
     private var contourTilesSeen = -1
     private var contourJob: Job? = null
     private var lastContourTraceAt = 0L
+
+    /**
+     * Ground tinted by steepness, and the relief under it.
+     *
+     * Worth more here than on the phone. A crew boss with the phone in their
+     * hand can count contour lines; somebody driving cannot, and the question
+     * that matters on the way in -- is the ground above that road something
+     * anyone should be under -- is the one a tint answers in a glance.
+     */
+    private var relief: ReliefRaster? = null
+    private var reliefWindow: ContourWindow? = null
+    private var reliefJob: Job? = null
+    private var reliefTilesSeen = -1
+    private var lastReliefAt = 0L
     private var sheetName: String? = null
     private var pageWidthPoints = 0
     private var pageHeightPoints = 0
@@ -135,6 +153,7 @@ class CarMapRenderer(
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
     private val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+    private val reliefPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
     private val sheetPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG).apply {
         // Held back a shade so the position and track stay findable on top of a
         // sheet that is mostly white paper.
@@ -308,6 +327,8 @@ class CarMapRenderer(
         sheetDetail = null
         sheetRenderer?.close()
         sheetRenderer = null
+        reliefJob?.cancel()
+        relief = null
     }
 
     // --------------------------------------------------------- surface hooks
@@ -396,6 +417,97 @@ class CarMapRenderer(
         }
     }
 
+    /**
+     * Re-shades when the ground on screen has moved somewhere else.
+     *
+     * Deliberately the same shape as [requestContours], down to the pacing:
+     * both read the same elevation, both cost tens of milliseconds, and both
+     * are worthless if they restart on every frame of a drive.
+     */
+    private fun requestShading(projection: CarMapProjection) {
+        val wanted = if (!settings.slopeShadingEnabled && !settings.hillshadeEnabled) {
+            null
+        } else {
+            ShadingOptions(
+                hillshade = settings.hillshadeEnabled,
+                slopeClasses = settings.slopeShadingEnabled
+            )
+        }
+        if (wanted == null) {
+            relief = null
+            reliefWindow = null
+            return
+        }
+        val owner = lifecycleOwner ?: return
+        val bounds = projection.visibleBounds()
+        val window = shadingWindow(
+            north = bounds.north, south = bounds.south,
+            west = bounds.west, east = bounds.east
+        ) ?: return
+
+        val tiles = elevation.version.intValue
+        val sameGround = window == reliefWindow
+        val moreGroundIsWorthIt = sameGround && tiles != reliefTilesSeen &&
+            System.currentTimeMillis() - lastReliefAt >= RETRACE_INTERVAL_MILLIS
+        if (sameGround && !moreGroundIsWorthIt) return
+        if (reliefJob?.isActive == true && sameGround) return
+
+        reliefJob?.cancel()
+        reliefWindow = window
+        reliefTilesSeen = tiles
+        lastReliefAt = System.currentTimeMillis()
+        reliefJob = owner.lifecycleScope.launch {
+            val shaded = withContext(Dispatchers.Default) {
+                val grid = elevation.grid(
+                    north = window.north, south = window.south,
+                    west = window.west, east = window.east,
+                    samples = TerrainShading.SAMPLES
+                ) ?: return@withContext null
+                val pass = TerrainShading.render(grid, wanted) ?: return@withContext null
+                val bitmap = Bitmap.createBitmap(
+                    pass.width, pass.height, Bitmap.Config.ARGB_8888
+                )
+                bitmap.setPixels(pass.pixels, 0, pass.width, 0, 0, pass.width, pass.height)
+                ReliefRaster(bitmap, pass.north, pass.south, pass.west, pass.east)
+            }
+            // Nothing shaded means the tiles have not landed; the previous
+            // raster stays up rather than the tint blinking off mid-drive.
+            if (shaded != null) relief = shaded
+        }
+    }
+
+    /** Places the shaded raster by its own corners, as the sheet is placed. */
+    private fun drawShading(canvas: Canvas, projection: CarMapProjection) {
+        val raster = relief ?: return
+        if (raster.bitmap.isRecycled) return
+        if (!settings.slopeShadingEnabled && !settings.hillshadeEnabled) return
+
+        val corners = listOf(
+            raster.north to raster.west,
+            raster.north to raster.east,
+            raster.south to raster.east,
+            raster.south to raster.west
+        )
+        val destination = FloatArray(8)
+        corners.forEachIndexed { index, (latitude, longitude) ->
+            val point = projection.toUnrotated(latitude, longitude)
+            if (!point.x.isFinite() || !point.y.isFinite()) return
+            destination[index * 2] = point.x
+            destination[index * 2 + 1] = point.y
+        }
+        val source = floatArrayOf(
+            0f, 0f,
+            raster.bitmap.width.toFloat(), 0f,
+            raster.bitmap.width.toFloat(), raster.bitmap.height.toFloat(),
+            0f, raster.bitmap.height.toFloat()
+        )
+        val matrix = Matrix()
+        if (!matrix.setPolyToPoly(source, 0, destination, 0, 4)) return
+
+        reliefPaint.alpha = (settings.shadingOpacity.coerceIn(0f, 1f) * 255f).roundToInt()
+        canvas.drawBitmap(raster.bitmap, matrix, reliefPaint)
+    }
+
     private fun currentProjection(): CarMapProjection? {
         val container = surfaceContainer ?: return null
         val width = container.width
@@ -442,6 +554,7 @@ class CarMapRenderer(
             return
         }
         requestContours(projection)
+        requestShading(projection)
         requestSheetDetail(projection)
 
         canvas.save()
@@ -450,6 +563,7 @@ class CarMapRenderer(
         )
         drawTerrain(canvas, projection)
         drawSheet(canvas, projection)
+        drawShading(canvas, projection)
         drawContours(canvas, projection, density)
         drawSavedTracks(canvas, projection, density)
         drawTrack(canvas, projection, density)

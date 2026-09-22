@@ -205,6 +205,8 @@ fun FirelineApp() {
     var topographyOn by remember { mutableStateOf(settings.topographyEnabled) }
     var landOwnershipOn by remember { mutableStateOf(settings.landOwnershipEnabled) }
     var contoursOn by remember { mutableStateOf(settings.contourLinesEnabled) }
+    var slopeShadingOn by remember { mutableStateOf(settings.slopeShadingEnabled) }
+    var hillshadeOn by remember { mutableStateOf(settings.hillshadeEnabled) }
     var contourInterval by remember { mutableIntStateOf(settings.contourIntervalFeet) }
     var autoRadius by remember { mutableIntStateOf(settings.autoDownloadRadiusMiles) }
     var wifiOnly by remember { mutableStateOf(settings.autoDownloadWifiOnly) }
@@ -972,6 +974,10 @@ fun FirelineApp() {
             onToggleLandOwnership = { settings.landOwnershipEnabled = it; landOwnershipOn = it },
             contoursOn = contoursOn,
             onToggleContours = { settings.contourLinesEnabled = it; contoursOn = it },
+            slopeShadingOn = slopeShadingOn,
+            onToggleSlopeShading = { settings.slopeShadingEnabled = it; slopeShadingOn = it },
+            hillshadeOn = hillshadeOn,
+            onToggleHillshade = { settings.hillshadeEnabled = it; hillshadeOn = it },
             contourIntervalFeet = contourInterval,
             onContourInterval = { settings.contourIntervalFeet = it; contourInterval = it },
             packages = layerPackages,
@@ -1494,6 +1500,14 @@ fun FirelineApp() {
                 elevation = elevationTiles,
                 contoursEnabled = contoursOn,
                 contourIntervalFeet = contourInterval,
+                shading = remember(slopeShadingOn, hillshadeOn) {
+                    if (!slopeShadingOn && !hillshadeOn) null
+                    else com.rhecyee.firelinemap.terrain.ShadingOptions(
+                        hillshade = hillshadeOn,
+                        slopeClasses = slopeShadingOn
+                    )
+                },
+                shadingOpacity = settings.shadingOpacity,
                 maxScale = if (onTerrain) TERRAIN_MAX_SCALE else SHEET_MAX_SCALE,
                 measurePoints = measurePoints,
                 measureMode = measureMode,
@@ -1599,6 +1613,7 @@ fun FirelineApp() {
                         hasDropPoints = segmentAtDropPoints && dropPoints.isNotEmpty(),
                         hasSearch = searchRegion != null,
                         hasFireline = firelineFeatures.isNotEmpty(),
+                        hasSlopeShading = slopeShadingOn,
                         simulated = simulated != null,
                         onDismiss = { showLegend = false },
                         modifier = Modifier.align(Alignment.TopStart).padding(6.dp)

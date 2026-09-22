@@ -69,6 +69,39 @@ class AppSettings(context: Context) {
         ).apply()
 
     /**
+     * Whether ground is tinted by how steep it is.
+     *
+     * On by default, which contour lines are not quite enough to justify on
+     * their own: the lines are the more exact reading, but they have to be
+     * counted and interpolated between, and the question "is that too steep
+     * to put a dozer on" wants answering in the time it takes to glance at a
+     * phone on a dashboard.
+     */
+    var slopeShadingEnabled: Boolean
+        get() = preferences.getBoolean(KEY_SLOPE_SHADING, true)
+        set(value) = preferences.edit().putBoolean(KEY_SLOPE_SHADING, value).apply()
+
+    /**
+     * Whether a shaded relief is drawn under the slope tint.
+     *
+     * Off by default, and not because it is not useful. Both basemaps already
+     * carry relief of their own -- the USGS topo has it printed in, and the
+     * incident products come with hillshade baked into the sheet -- so adding
+     * a second one mostly muddies the first. It earns its place over a plain
+     * sheet, or wherever the printed shading is too faint to read, and that
+     * is a judgement only the person looking at it can make.
+     */
+    var hillshadeEnabled: Boolean
+        get() = preferences.getBoolean(KEY_HILLSHADE, false)
+        set(value) = preferences.edit().putBoolean(KEY_HILLSHADE, value).apply()
+
+    /** How strongly the shading is laid over the map, nought to one. */
+    var shadingOpacity: Float
+        get() = preferences.getFloat(KEY_SHADING_OPACITY, DEFAULT_SHADING_OPACITY)
+        set(value) = preferences.edit()
+            .putFloat(KEY_SHADING_OPACITY, value.coerceIn(0.2f, 1f)).apply()
+
+    /**
      * The sheet the operator has open.
      *
      * Persisted so the Android Auto screen shows the same map as the phone.
@@ -111,6 +144,11 @@ class AppSettings(context: Context) {
         private const val KEY_ACTIVE_MAP = "active_map_id"
         private const val KEY_CONTOURS = "contour_lines_enabled"
         private const val KEY_CONTOUR_INTERVAL = "contour_interval_feet"
+        private const val KEY_SLOPE_SHADING = "slope_shading_enabled"
+        private const val KEY_HILLSHADE = "hillshade_enabled"
+        private const val KEY_SHADING_OPACITY = "shading_opacity"
+
+        const val DEFAULT_SHADING_OPACITY = 0.85f
 
         // Aliased rather than restated: two lists of intervals is one list
         // that will eventually disagree with the other.

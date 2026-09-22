@@ -100,11 +100,7 @@ object TerrainMath {
         val (dzdx, dzdy) = gradients(grid, cellSizeMeters)
         if (hypot(dzdx, dzdy) * 100.0 < flatThresholdPercent) return null
 
-        // Downhill is the negative of the gradient; north is zero and the
-        // compass runs clockwise, which is the other way round from maths.
-        var degrees = Math.toDegrees(Math.atan2(dzdy, -dzdx))
-        degrees = 90.0 - degrees
-        return ((degrees % 360.0) + 360.0) % 360.0
+        return aspectFromGradients(dzdx, dzdy)
     }
 
     fun reading(
@@ -119,6 +115,81 @@ object TerrainMath {
             slopePercent = slopePercent(grid, cellSizeMeters),
             aspectDegrees = aspectDegrees(grid, cellSizeMeters)
         )
+    }
+
+    /**
+     * Horn's differences read straight out of a larger grid.
+     *
+     * The windowed [slopePercent] and [aspectDegrees] above are for answering
+     * about one point. Shading asks about every point of a grid a hundred and
+     * fifty thousand cells across, and copying a nine-element window out for
+     * each one allocates a hundred and fifty thousand arrays to do arithmetic
+     * that touches each value once. This writes into a caller's array instead.
+     *
+     * The two cell sizes are separate because the grids come in on a
+     * latitude/longitude lattice, where a step east is shorter ground than a
+     * step north by the cosine of the latitude -- assuming otherwise tilts
+     * every slope on the map by that factor.
+     *
+     * Edges are clamped rather than skipped: a border of unshaded pixels round
+     * every window would tile into a grid of seams across the map.
+     *
+     * @return false when any of the nine samples is unknown.
+     */
+    fun gradientsAt(
+        values: FloatArray,
+        width: Int,
+        height: Int,
+        column: Int,
+        row: Int,
+        cellEastMeters: Double,
+        cellNorthMeters: Double,
+        out: DoubleArray
+    ): Boolean {
+        if (width < 2 || height < 2 || out.size < 2) return false
+        if (cellEastMeters <= 0.0 || cellNorthMeters <= 0.0) return false
+
+        val left = (column - 1).coerceIn(0, width - 1)
+        val middle = column.coerceIn(0, width - 1)
+        val right = (column + 1).coerceIn(0, width - 1)
+        val above = (row - 1).coerceIn(0, height - 1)
+        val centre = row.coerceIn(0, height - 1)
+        val below = (row + 1).coerceIn(0, height - 1)
+
+        val a = values[above * width + left]
+        val b = values[above * width + middle]
+        val c = values[above * width + right]
+        val d = values[centre * width + left]
+        val f = values[centre * width + right]
+        val g = values[below * width + left]
+        val h = values[below * width + middle]
+        val i = values[below * width + right]
+        if (a.isNaN() || b.isNaN() || c.isNaN() || d.isNaN() ||
+            f.isNaN() || g.isNaN() || h.isNaN() || i.isNaN()
+        ) {
+            return false
+        }
+
+        // Clamping shortens the run at an edge; dividing by the full span
+        // would report a gentler slope there than the ground has.
+        val eastSpan = (right - left) * cellEastMeters
+        val northSpan = (below - above) * cellNorthMeters
+        if (eastSpan <= 0.0 || northSpan <= 0.0) return false
+
+        out[0] = ((c + 2 * f + i) - (a + 2 * d + g)) / (4.0 * eastSpan)
+        out[1] = ((g + 2 * h + i) - (a + 2 * b + c)) / (4.0 * northSpan)
+        return true
+    }
+
+    /**
+     * Downhill direction in compass degrees for a pair of gradients.
+     *
+     * Split out so the shading pass and the point reading above agree by
+     * construction rather than by two people writing the same atan2 twice.
+     */
+    fun aspectFromGradients(dzdx: Double, dzdy: Double): Double {
+        val degrees = 90.0 - Math.toDegrees(Math.atan2(dzdy, -dzdx))
+        return ((degrees % 360.0) + 360.0) % 360.0
     }
 
     /** Horn's weighted differences, returned as rise over run. */
