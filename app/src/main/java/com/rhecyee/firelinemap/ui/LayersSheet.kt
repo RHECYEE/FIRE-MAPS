@@ -59,6 +59,8 @@ fun LayersSheet(
     landOwnershipOn: Boolean,
     onToggleLandOwnership: (Boolean) -> Unit,
     contoursOn: Boolean,
+    keptShapes: List<com.rhecyee.firelinemap.annotations.MapAnnotation>,
+    onRemoveShape: (com.rhecyee.firelinemap.annotations.MapAnnotation) -> Unit,
     slopeShadingOn: Boolean,
     onToggleSlopeShading: (Boolean) -> Unit,
     hillshadeOn: Boolean,
@@ -312,6 +314,23 @@ fun LayersSheet(
                     checked = landOwnershipOn,
                     onCheckedChange = onToggleLandOwnership
                 )
+
+                HorizontalDivider()
+                SectionHeading("LEFT ON THE MAP")
+
+                if (keptShapes.isEmpty()) {
+                    Text(
+                        "Nothing kept yet. The measuring tool's KEEP leaves a leg " +
+                            "up; the perimeter tool's SAVE leaves the polygon it " +
+                            "worked out. Both stay until they are removed here.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    keptShapes.forEach { shape ->
+                        KeptShapeRow(shape = shape, onRemove = { onRemoveShape(shape) })
+                    }
+                }
 
                 HorizontalDivider()
                 SectionHeading("PROPERTY PARCELS")
@@ -718,5 +737,43 @@ private fun SlopeKey() {
                 )
             }
         }
+    }
+}
+
+/** One shape a tool left on the map, and the way to take it off again. */
+@Composable
+private fun KeptShapeRow(
+    shape: com.rhecyee.firelinemap.annotations.MapAnnotation,
+    onRemove: () -> Unit
+) {
+    val kind = shape.kind
+    val colour = when (kind) {
+        com.rhecyee.firelinemap.annotations.AnnotationKind.FIRELINE_PERIMETER -> FIRE_RED
+        else -> Color(0xFFFFC400)
+    }
+    val what = when (kind) {
+        com.rhecyee.firelinemap.annotations.AnnotationKind.FIRELINE_PERIMETER -> "Perimeter"
+        com.rhecyee.firelinemap.annotations.AnnotationKind.MEASURE_AREA -> "Measured area"
+        com.rhecyee.firelinemap.annotations.AnnotationKind.MEASURE_LINE -> "Measured leg"
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(
+            modifier = Modifier
+                .size(6.dp, 30.dp)
+                .background(colour, RoundedCornerShape(3.dp))
+        ) {}
+        Column(modifier = Modifier.padding(start = 10.dp).weight(1f)) {
+            Text("$what · ${shape.label}", fontWeight = FontWeight.Bold)
+            Text(
+                shape.note ?: java.text.SimpleDateFormat("d MMM HH:mm", java.util.Locale.US)
+                    .format(shape.createdAt),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        TextButton(onClick = onRemove) { Text("Remove") }
     }
 }

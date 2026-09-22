@@ -20,6 +20,7 @@ This initial Android Studio project includes:
   UTM grid, each line copyable on its own
 - Fire perimeter inference from dropped observations
 - Slope shading and shaded relief, drawn from elevation
+- Measured legs and committed perimeters left on the map, phone and car
 - Foreground travel-recording service
 - Persistent track records with GeoJSON line geometry
 - Process-restart-compatible foreground service declaration
@@ -92,6 +93,29 @@ shading is too faint to read.
 
 Both are drawn on the Android Auto screen as well, where they matter most --
 somebody driving cannot count contour lines.
+
+## Leaving things on the map
+
+Both tools produce a shape that used to stop existing the moment the tool was
+put away, which was wrong the same way for both: a leg somebody measured is a
+leg somebody is about to drive, and a perimeter radioed in at fourteen thirty
+happened whether or not anyone is still editing it.
+
+The measuring tool's **KEEP** leaves the current leg up, labelled with its
+figure, and clears itself so the next one can be laid down straight away.
+Several can be up at once, which is the point -- three measured legs is how a
+route gets followed. The perimeter tool's **SAVE** leaves the polygon it
+worked out, labelled with the time and the acreage, so an 0600 and a 1400
+perimeter on one map show growth.
+
+A kept shape is a snapshot, not a live view of whatever the tool currently
+holds. The fireline observations stay separately editable underneath, so
+correcting a bad point still corrects the working perimeter without
+disturbing one already committed.
+
+Everything kept is drawn on the Android Auto screen too, and labelled there
+whatever the zoom -- a driver cannot pinch to find out which leg is which.
+**Layers -> Left on the map** lists them and takes them off again.
 
 ## Fireline
 

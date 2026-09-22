@@ -20,6 +20,9 @@ import androidx.lifecycle.lifecycleScope
 import com.rhecyee.firelinemap.FirelineApplication
 import com.rhecyee.firelinemap.data.AppSettings
 import com.rhecyee.firelinemap.data.MarkerEntity
+import com.rhecyee.firelinemap.annotations.AnnotationGeometry
+import com.rhecyee.firelinemap.annotations.AnnotationKind
+import com.rhecyee.firelinemap.annotations.MapAnnotation
 import com.rhecyee.firelinemap.data.parseLineString
 import com.rhecyee.firelinemap.geopdf.MapDocumentRepository
 import com.rhecyee.firelinemap.geopdf.MapFrame
@@ -92,6 +95,16 @@ class CarMapRenderer(
 
     /** Finished travel for this incident, and the drop points read off the sheet. */
     private var savedTracks: List<List<Pair<Double, Double>>> = emptyList()
+
+    /**
+     * Shapes the tools were told to leave up.
+     *
+     * The reason they exist at all is this screen. A leg measured out on the
+     * phone before setting off is a leg somebody then has to drive, and a
+     * figure that only lived while the measuring tool was open was no use by
+     * the time the truck was moving.
+     */
+    private var keptShapes: List<MapAnnotation> = emptyList()
     private val dropPoints get() = application.dropPoints
 
     /** The imported sheet as a whole page: the backdrop, always present. */
@@ -198,6 +211,7 @@ class CarMapRenderer(
             }
         }
         owner.lifecycleScope.launch { observeMarkers() }
+        owner.lifecycleScope.launch { observeKeptShapes() }
         owner.lifecycleScope.launch { observeSavedTracks() }
         refreshSheet()
     }
@@ -233,6 +247,82 @@ class CarMapRenderer(
                     .map { parseLineString(it.geometryGeoJson) }
                     .filter { it.size >= 2 }
             }
+    }
+
+    /** Parsed once per change, never per frame, as the tracks are. */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private suspend fun observeKeptShapes() {
+        val dao = application.database.dao()
+        dao.observeActiveIncident()
+            .flatMapLatest { incident ->
+                if (incident == null) flowOf(emptyList())
+                else dao.observeMapAnnotations(incident.id)
+            }
+            .collect { rows ->
+                keptShapes = rows.mapNotNull { row ->
+                    val kind = AnnotationKind.from(row.kind) ?: return@mapNotNull null
+                    val rings = AnnotationGeometry.decode(row.geometryGeoJson)
+                    if (rings.isEmpty()) null
+                    else MapAnnotation(row.id, kind, row.label, rings, row.createdAt, row.note)
+                }
+            }
+    }
+
+    /**
+     * Draws the kept shapes, labelled.
+     *
+     * Labelled unconditionally here, unlike on the phone where the label waits
+     * for the map to be zoomed in. A driver cannot pinch to find out which leg
+     * is which.
+     */
+    private fun drawKeptShapes(
+        canvas: Canvas,
+        projection: CarMapProjection,
+        density: Float
+    ) {
+        if (keptShapes.isEmpty()) return
+        keptShapes.forEach { shape ->
+            val colour = when (shape.kind) {
+                AnnotationKind.FIRELINE_PERIMETER -> KEPT_PERIMETER
+                else -> KEPT_MEASUREMENT
+            }
+            val path = Path().apply { fillType = Path.FillType.EVEN_ODD }
+            var drew = false
+            shape.rings.forEach { ring ->
+                var started = false
+                ring.forEach { (latitude, longitude) ->
+                    val point = projection.toUnrotated(latitude, longitude)
+                    if (!point.x.isFinite() || !point.y.isFinite()) return@forEach
+                    if (started) path.lineTo(point.x, point.y) else {
+                        path.moveTo(point.x, point.y)
+                        started = true
+                    }
+                }
+                if (!started) return@forEach
+                if (shape.kind.isClosed) path.close()
+                drew = true
+            }
+            if (!drew) return@forEach
+
+            if (shape.kind.isClosed) {
+                fillPaint.color = (colour and 0x00FFFFFF) or (KEPT_FILL_ALPHA shl 24)
+                canvas.drawPath(path, fillPaint)
+            }
+            strokePaint.color = colour
+            strokePaint.strokeWidth = 3.5f * density
+            canvas.drawPath(path, strokePaint)
+
+            val anchor = shape.labelAnchor() ?: return@forEach
+            val at = projection.toUnrotated(anchor.first, anchor.second)
+            if (!at.x.isFinite() || !at.y.isFinite()) return@forEach
+            val size = 15f * density
+            labelHaloPaint.textSize = size
+            labelHaloPaint.strokeWidth = 4f * density
+            canvas.drawText(shape.label, at.x, at.y - size * 0.6f, labelHaloPaint)
+            labelPaint.textSize = size
+            labelPaint.color = Color.WHITE
+            canvas.drawText(shape.label, at.x, at.y - size * 0.6f, labelPaint)
+        }
     }
 
     /**
@@ -565,6 +655,7 @@ class CarMapRenderer(
         drawSheet(canvas, projection)
         drawShading(canvas, projection)
         drawContours(canvas, projection, density)
+        drawKeptShapes(canvas, projection, density)
         drawSavedTracks(canvas, projection, density)
         drawTrack(canvas, projection, density)
         canvas.restore()
@@ -1279,6 +1370,13 @@ class CarMapRenderer(
 
         /** The sheet is drawn slightly back so the position on top of it stays findable. */
         private const val SHEET_ALPHA = 236
+
+        /** A committed perimeter, and a measurement left up to follow. */
+        private const val KEPT_PERIMETER = 0xFFE53935.toInt()
+        private const val KEPT_MEASUREMENT = 0xFFFFC400.toInt()
+
+        /** Faint enough that the sheet underneath a kept polygon still reads. */
+        private const val KEPT_FILL_ALPHA = 0x30
 
         /** Where the vehicle sits down the display on a heading-up map. */
         private const val VEHICLE_SCREEN_FRACTION = 0.68f

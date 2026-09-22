@@ -190,6 +190,9 @@ fun FirelineApp() {
     val resources = remember { ResourceRepository(app.database.dao()) }
     val medical = remember { MedicalRepository(app.database.dao()) }
     val fireline = remember { com.rhecyee.firelinemap.fireline.FirelineRepository(app.database.dao()) }
+    val annotations = remember {
+        com.rhecyee.firelinemap.annotations.AnnotationRepository(app.database.dao())
+    }
     val reporter = remember { ReporterProfile(context) }
     var reporterName by remember { mutableStateOf(reporter.name) }
     var reporterQualification by remember { mutableStateOf(reporter.qualification) }
@@ -599,6 +602,13 @@ fun FirelineApp() {
     }
     var inspectingTrack by remember { mutableStateOf<SavedTrack?>(null) }
 
+    val keptShapes by (activeIncident?.id?.let { annotations.observe(it) }
+        ?: kotlinx.coroutines.flow.flowOf(emptyList()))
+        .collectAsState(initial = emptyList())
+    var inspectingShape by remember {
+        mutableStateOf<com.rhecyee.firelinemap.annotations.MapAnnotation?>(null)
+    }
+
     val layerPackages by app.database.dao().observeLayerPackages()
         .collectAsState(initial = emptyList())
     val activeParcelLayer = layerPackages.firstOrNull { it.kind == "PARCELS" && it.enabled }
@@ -974,6 +984,13 @@ fun FirelineApp() {
             onToggleLandOwnership = { settings.landOwnershipEnabled = it; landOwnershipOn = it },
             contoursOn = contoursOn,
             onToggleContours = { settings.contourLinesEnabled = it; contoursOn = it },
+            keptShapes = keptShapes,
+            onRemoveShape = { shape ->
+                scope.launch {
+                    withContext(Dispatchers.IO) { annotations.remove(shape.id) }
+                    statusMessage = "Removed ${shape.label} from the map."
+                }
+            },
             slopeShadingOn = slopeShadingOn,
             onToggleSlopeShading = { settings.slopeShadingEnabled = it; slopeShadingOn = it },
             hillshadeOn = hillshadeOn,
@@ -1396,6 +1413,44 @@ fun FirelineApp() {
                     onClear = {
                         measureSession.clear()
                         measurePoints = emptyList()
+                    },
+                    canKeep = measureSession.isMeasurable,
+                    onKeep = {
+                        val incident = activeIncident?.id
+                        val result = measureSession.result()
+                        val run = measureSession.currentPoints.map {
+                            it.latitude to it.longitude
+                        }
+                        if (incident == null) {
+                            statusMessage = "No incident to keep this against."
+                        } else {
+                            scope.launch {
+                                val kept = withContext(Dispatchers.IO) {
+                                    annotations.keep(
+                                        incidentId = incident,
+                                        kind = if (measureMode == MeasureMode.AREA) {
+                                            com.rhecyee.firelinemap.annotations
+                                                .AnnotationKind.MEASURE_AREA
+                                        } else {
+                                            com.rhecyee.firelinemap.annotations
+                                                .AnnotationKind.MEASURE_LINE
+                                        },
+                                        label = measurementLabel(
+                                            result, distanceUnit, areaUnit
+                                        ),
+                                        rings = listOf(run)
+                                    )
+                                }
+                                if (kept != null) {
+                                    // Cleared so the next leg starts empty:
+                                    // the whole point is to lay several down
+                                    // one after another.
+                                    measureSession.clear()
+                                    measurePoints = emptyList()
+                                    statusMessage = "Kept ${kept.label} on the map."
+                                }
+                            }
+                        }
                     }
                 )
             }
@@ -1449,11 +1504,33 @@ fun FirelineApp() {
                             statusMessage = "No incident to save these against."
                         } else {
                             val toSave = firelineFeatures
+                            val shape = perimeter
                             scope.launch {
                                 withContext(Dispatchers.IO) { fireline.save(incident, toSave) }
-                                statusMessage =
-                                    "Saved ${toSave.size} observations to " +
-                                        (activeIncident?.name ?: "this incident") + "."
+                                // The observations stay editable; this is the
+                                // perimeter as it stood when somebody committed
+                                // it, which is the thing that gets radioed in
+                                // and the thing worth still seeing tomorrow.
+                                val kept = if (shape.isEmpty) null else {
+                                    withContext(Dispatchers.IO) {
+                                        annotations.keep(
+                                            incidentId = incident,
+                                            kind = com.rhecyee.firelinemap.annotations
+                                                .AnnotationKind.FIRELINE_PERIMETER,
+                                            label = perimeterLabel(shape, areaUnit),
+                                            rings = shape.rings.map { ring ->
+                                                ring.points.map { it.latitude to it.longitude }
+                                            },
+                                            note = "Inferred from ${toSave.size} observations " +
+                                                "at a reach of ${shape.reachMeters.toInt()} m"
+                                        )
+                                    }
+                                }
+                                statusMessage = if (kept == null) {
+                                    "Saved ${toSave.size} observations."
+                                } else {
+                                    "Perimeter left on the map · ${kept.label}"
+                                }
                             }
                         }
                     }
@@ -1493,6 +1570,7 @@ fun FirelineApp() {
                 positionIsSimulated = simulated != null,
                 sheetRenderer = sheetRenderer,
                 firelineFeatures = firelineFeatures,
+                annotations = keptShapes,
                 perimeter = perimeter,
                 queriedPosition = queried?.let { it.latitude to it.longitude },
                 dropPoints = if (segmentAtDropPoints) dropPoints else emptyList(),
@@ -1957,3 +2035,40 @@ data class RenderedSheet(
      */
     val renderer: com.rhecyee.firelinemap.geopdf.MapSheetRenderer
 )
+
+/**
+ * What a kept perimeter is called on the map.
+ *
+ * Time first, because the reason to keep several is to compare them: an 0600
+ * and a 1400 perimeter on one map is how growth gets read, and acreage alone
+ * would leave two shapes with no way to tell which came first.
+ */
+private fun perimeterLabel(
+    perimeter: InferredPerimeter,
+    unit: AreaUnit
+): String {
+    val clock = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
+        .format(System.currentTimeMillis())
+    return "$clock · ${shortFigure(unit.from(perimeter.areaSquareMeters))} ${unit.label}"
+}
+
+/** And a kept measurement: the figure, because that is what it was taken for. */
+private fun measurementLabel(
+    result: com.rhecyee.firelinemap.measure.MeasureResult,
+    distanceUnit: DistanceUnit,
+    areaUnit: AreaUnit
+): String {
+    val squareMeters = result.areaSquareMeters
+    return if (squareMeters != null) {
+        "${shortFigure(areaUnit.from(squareMeters))} ${areaUnit.label}"
+    } else {
+        "${shortFigure(distanceUnit.from(result.totalDistanceMeters))} ${distanceUnit.label}"
+    }
+}
+
+private fun shortFigure(value: Double): String = when {
+    value >= 1_000 -> "%,.0f".format(value)
+    value >= 100 -> "%.0f".format(value)
+    value >= 10 -> "%.1f".format(value)
+    else -> "%.2f".format(value)
+}

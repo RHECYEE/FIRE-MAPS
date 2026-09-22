@@ -66,6 +66,8 @@ import com.rhecyee.firelinemap.geopdf.DropPoint
 import com.rhecyee.firelinemap.geopdf.ImportedMap
 import com.rhecyee.firelinemap.geopdf.MapSheetRenderer
 import com.rhecyee.firelinemap.geopdf.SheetDetail
+import com.rhecyee.firelinemap.annotations.AnnotationKind
+import com.rhecyee.firelinemap.annotations.MapAnnotation
 import com.rhecyee.firelinemap.fireline.FirelineFeature
 import com.rhecyee.firelinemap.fireline.FirelineKind
 import com.rhecyee.firelinemap.fireline.InferredPerimeter
@@ -100,6 +102,8 @@ fun MapCanvas(
      */
     sheetRenderer: MapSheetRenderer? = null,
     firelineFeatures: List<FirelineFeature> = emptyList(),
+    /** Shapes the tools have been told to leave on the map. */
+    annotations: List<MapAnnotation> = emptyList(),
     perimeter: InferredPerimeter? = null,
     queriedPosition: Pair<Double, Double>? = null,
     dropPoints: List<DropPoint> = emptyList(),
@@ -677,6 +681,26 @@ fun MapCanvas(
                         Offset(originX + dx * drawWidth, originY + dy * drawHeight)
                     )
                 }
+            }
+
+            // Kept shapes go under everything live, and like the perimeter
+            // below they are drawn before the position check: a leg measured
+            // out is there to be driven, and the drive is exactly when the
+            // receiver is most likely to have dropped out.
+            if (annotations.isNotEmpty() && frame != null &&
+                pageWidthPoints > 0 && pageHeightPoints > 0
+            ) {
+                drawAnnotations(
+                    annotations = annotations,
+                    frame = frame,
+                    pageWidthPoints = pageWidthPoints,
+                    pageHeightPoints = pageHeightPoints,
+                    originX = originX,
+                    originY = originY,
+                    drawWidth = drawWidth,
+                    drawHeight = drawHeight,
+                    labelsVisible = scale >= 1.5f
+                )
             }
 
             // Drawn ahead of the position check below. The perimeter tool is
@@ -1607,4 +1631,84 @@ private fun DrawScope.drawShadedRelief(
 
     reliefPaint.alpha = (opacity.coerceIn(0f, 1f) * 255f).roundToInt()
     drawContext.canvas.nativeCanvas.drawBitmap(relief.bitmap, matrix, reliefPaint)
+}
+
+/** The colour a kept shape is drawn in, by what made it. */
+private fun annotationColour(kind: AnnotationKind): Color = when (kind) {
+    // A committed perimeter is the same red as the working one, because it is
+    // the same claim about the ground. It is told apart by being solid: the
+    // working polygon is dashed precisely because it is still moving.
+    AnnotationKind.FIRELINE_PERIMETER -> FIRE_RED
+    AnnotationKind.MEASURE_LINE, AnnotationKind.MEASURE_AREA -> Color(0xFFFFC400)
+}
+
+/**
+ * Draws what the tools were told to keep.
+ *
+ * Labelled on the map rather than only in a list, because the reason to leave
+ * a measured leg up is to follow it, and a leg you have to tap to identify is
+ * no use to somebody driving. Labels come in only once the map is zoomed past
+ * the fitted view, where there is room for them.
+ */
+private fun DrawScope.drawAnnotations(
+    annotations: List<MapAnnotation>,
+    frame: com.rhecyee.firelinemap.geopdf.MapFrame,
+    pageWidthPoints: Int,
+    pageHeightPoints: Int,
+    originX: Float,
+    originY: Float,
+    drawWidth: Float,
+    drawHeight: Float,
+    labelsVisible: Boolean
+) {
+    fun screen(latitude: Double, longitude: Double): Offset? {
+        val page = frame.geoToPage(latitude, longitude) ?: return null
+        return Offset(
+            originX + (page.first / pageWidthPoints).toFloat() * drawWidth,
+            originY + (1f - (page.second / pageHeightPoints).toFloat()) * drawHeight
+        )
+    }
+
+    for (annotation in annotations) {
+        val colour = annotationColour(annotation.kind)
+        val path = Path().apply { fillType = PathFillType.EvenOdd }
+        var drewAnything = false
+
+        for (ring in annotation.rings) {
+            var started = false
+            for ((latitude, longitude) in ring) {
+                val point = screen(latitude, longitude) ?: continue
+                if (started) path.lineTo(point.x, point.y)
+                else { path.moveTo(point.x, point.y); started = true }
+            }
+            if (!started) continue
+            if (annotation.kind.isClosed) path.close()
+            drewAnything = true
+        }
+        if (!drewAnything) continue
+
+        if (annotation.kind.isClosed) drawPath(path, colour, alpha = 0.16f)
+        // Cased, so the line holds up over pale terrain and dark shading alike.
+        drawPath(path, Color.Black, alpha = 0.5f, style = Stroke(width = 7f))
+        drawPath(path, colour, style = Stroke(width = 3.5f))
+
+        if (!labelsVisible || annotation.label.isBlank()) continue
+        val anchor = annotation.labelAnchor()?.let { screen(it.first, it.second) } ?: continue
+        drawContext.canvas.nativeCanvas.drawText(
+            annotation.label,
+            anchor.x,
+            anchor.y - 12f,
+            annotationLabelPaint
+        )
+    }
+}
+
+/** One paint for every kept label; drawing is single-threaded. */
+private val annotationLabelPaint = android.graphics.Paint().apply {
+    color = android.graphics.Color.WHITE
+    textAlign = android.graphics.Paint.Align.CENTER
+    textSize = 26f
+    isAntiAlias = true
+    isFakeBoldText = true
+    setShadowLayer(5f, 0f, 0f, android.graphics.Color.BLACK)
 }

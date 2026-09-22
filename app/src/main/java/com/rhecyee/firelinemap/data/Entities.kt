@@ -309,3 +309,42 @@ data class FirelineObservationEntity(
     val recordedAt: Long,
     val note: String? = null
 )
+
+/**
+ * Something a tool put on the map and left there.
+ *
+ * The measuring tool and the perimeter tool both produce a shape that stops
+ * existing the moment the tool is put away, which is wrong in the same way
+ * for both: a leg somebody measured is a leg somebody is about to drive, and
+ * a perimeter that was radioed in at fourteen thirty is a thing that happened
+ * whether or not anyone is still editing it.
+ *
+ * Deliberately a snapshot rather than a live view of whatever the tool
+ * currently holds. Several can exist at once, and that is the point -- an
+ * 0600 perimeter and a 1400 perimeter on the same map is how growth gets
+ * read, and three measured legs left up is how a route gets followed.
+ *
+ * [geometryGeoJson] is a LineString for an open run and a Polygon for
+ * anything enclosed, longitude first, as every other geometry in this app is
+ * written.
+ */
+@Entity(
+    tableName = "map_annotations",
+    foreignKeys = [ForeignKey(
+        entity = IncidentEntity::class,
+        parentColumns = ["id"],
+        childColumns = ["incidentId"],
+        onDelete = ForeignKey.CASCADE
+    )],
+    indices = [Index("incidentId")]
+)
+data class MapAnnotationEntity(
+    @PrimaryKey val id: String,
+    val incidentId: String,
+    /** FIRELINE_PERIMETER, MEASURE_LINE or MEASURE_AREA. */
+    val kind: String,
+    val label: String,
+    val geometryGeoJson: String,
+    val createdAt: Long,
+    val note: String? = null
+)

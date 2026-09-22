@@ -176,6 +176,18 @@ interface FirelineDao {
      * One transaction, because a save that deleted the old set and then failed
      * to write the new one would take a shift's worth of ground truth with it.
      */
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertMapAnnotation(annotation: MapAnnotationEntity)
+
+    @Query("SELECT * FROM map_annotations WHERE incidentId = :incidentId ORDER BY createdAt")
+    fun observeMapAnnotations(incidentId: String): Flow<List<MapAnnotationEntity>>
+
+    @Query("DELETE FROM map_annotations WHERE id = :id")
+    suspend fun deleteMapAnnotation(id: String)
+
+    @Query("DELETE FROM map_annotations WHERE incidentId = :incidentId AND kind = :kind")
+    suspend fun deleteMapAnnotations(incidentId: String, kind: String)
+
     @Transaction
     suspend fun replaceFirelineObservations(
         incidentId: String,

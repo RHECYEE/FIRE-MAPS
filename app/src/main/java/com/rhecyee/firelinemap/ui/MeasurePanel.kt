@@ -41,6 +41,9 @@ fun MeasurePanel(
     onSelectMode: (MeasureMode) -> Unit,
     onUndo: () -> Unit,
     onClear: () -> Unit,
+    /** Leaves this measurement on the map and starts a fresh one. */
+    onKeep: () -> Unit = {},
+    canKeep: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -68,6 +71,18 @@ fun MeasurePanel(
                 onClick = { onSelectMode(MeasureMode.AREA) }
             )
             Spacer(Modifier.weight(1f))
+            if (canKeep) {
+                Text(
+                    "KEEP",
+                    modifier = Modifier
+                        .background(Color(0xFFFFC400), RoundedCornerShape(6.dp))
+                        .clickable { onKeep() }
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    color = Color(0xFF1A1400),
+                    fontWeight = FontWeight.Black,
+                    style = MaterialTheme.typography.labelMedium
+                )
+            }
             Text(
                 "UNDO",
                 modifier = Modifier
@@ -93,7 +108,8 @@ fun MeasurePanel(
                 if (mode == MeasureMode.AREA) {
                     "POLYGON — tap three or more points to enclose an area."
                 } else {
-                    "LINE — tap two points, or keep tapping to follow a road."
+                    "LINE — tap two points, or keep tapping to follow a road. " +
+                        "KEEP leaves one on the map and starts the next."
                 },
                 color = Color.White,
                 style = MaterialTheme.typography.bodySmall
