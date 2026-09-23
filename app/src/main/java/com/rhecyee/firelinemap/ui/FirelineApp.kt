@@ -209,6 +209,15 @@ fun FirelineApp() {
     var landOwnershipOn by remember { mutableStateOf(settings.landOwnershipEnabled) }
     var contoursOn by remember { mutableStateOf(settings.contourLinesEnabled) }
     var slopeShadingOn by remember { mutableStateOf(settings.slopeShadingEnabled) }
+    val detections = remember {
+        com.rhecyee.firelinemap.satellite.DetectionTileCache(context)
+    }
+    var detectionsOn by remember { mutableStateOf(settings.satelliteDetectionsEnabled) }
+    var detectionSources by remember {
+        mutableStateOf(
+            com.rhecyee.firelinemap.satellite.SatelliteSource.from(settings.satelliteSources)
+        )
+    }
     var hillshadeOn by remember { mutableStateOf(settings.hillshadeEnabled) }
     var contourInterval by remember { mutableIntStateOf(settings.contourIntervalFeet) }
     var autoRadius by remember { mutableIntStateOf(settings.autoDownloadRadiusMiles) }
@@ -782,6 +791,13 @@ fun FirelineApp() {
         inferring = false
     }
 
+    // Rolls onto the newest pass and drops the old one off the disk. Keyed on
+    // the layer being on, so a phone left running overnight is not still
+    // showing yesterday's heat in the morning.
+    LaunchedEffect(detectionsOn, lastInteraction) {
+        if (detectionsOn) detections.refresh()
+    }
+
     val toolArmed = measuring || placingResources || simMode || showSearch ||
         asking || drawingFireline
     LaunchedEffect(lastInteraction, toolArmed, chromeVisible) {
@@ -991,6 +1007,19 @@ fun FirelineApp() {
                     statusMessage = "Removed ${shape.label} from the map."
                 }
             },
+            detectionsOn = detectionsOn,
+            onToggleDetections = {
+                settings.satelliteDetectionsEnabled = it
+                detectionsOn = it
+                if (it) detections.refresh()
+            },
+            detectionSources = detectionSources,
+            onToggleDetectionSource = { source, on ->
+                val next = if (on) detectionSources + source else detectionSources - source
+                detectionSources = next
+                settings.satelliteSources = next.map { it.name }.toSet()
+            },
+            detectionCaption = detections.age().caption(detectionSources),
             slopeShadingOn = slopeShadingOn,
             onToggleSlopeShading = { settings.slopeShadingEnabled = it; slopeShadingOn = it },
             hillshadeOn = hillshadeOn,
@@ -1373,6 +1402,17 @@ fun FirelineApp() {
                 SimulatedBanner("SIMULATED POSITION — NOT A GPS FIX · Sim off returns to GPS")
             }
 
+            if (chromeVisible && !showSearch && detectionsOn) {
+                // On the map, not only in the layer sheet. Cached tiles keep
+                // rendering long after the connection went, and heat drawn
+                // with no date on it is the map telling a lie.
+                OffMapBanner(
+                    "SATELLITE HEAT · " +
+                        detections.age().caption(detectionSources).uppercase() +
+                        " · UNVERIFIED"
+                )
+            }
+
             if (chromeVisible && !showSearch && coverage?.incident == IncidentMapCoverage.OFF_MAP) {
                 val meters = coverage.metersOffMap?.roundToInt() ?: 0
                 val bearing = coverage.bearingToMapDegrees?.roundToInt() ?: 0
@@ -1576,6 +1616,8 @@ fun FirelineApp() {
                 dropPoints = if (segmentAtDropPoints) dropPoints else emptyList(),
                 basemap = if (topographyOn) basemap else null,
                 elevation = elevationTiles,
+                detections = if (detectionsOn) detections else null,
+                detectionSources = detectionSources,
                 contoursEnabled = contoursOn,
                 contourIntervalFeet = contourInterval,
                 shading = remember(slopeShadingOn, hillshadeOn) {
@@ -1692,6 +1734,7 @@ fun FirelineApp() {
                         hasSearch = searchRegion != null,
                         hasFireline = firelineFeatures.isNotEmpty(),
                         hasSlopeShading = slopeShadingOn,
+                        hasDetections = detectionsOn,
                         simulated = simulated != null,
                         onDismiss = { showLegend = false },
                         modifier = Modifier.align(Alignment.TopStart).padding(6.dp)

@@ -20,6 +20,7 @@ This initial Android Studio project includes:
   UTM grid, each line copyable on its own
 - Fire perimeter inference from dropped observations
 - Slope shading and shaded relief, drawn from elevation
+- Optional satellite heat detections (VIIRS and MODIS), always dated
 - Measured legs and committed perimeters left on the map, phone and car
 - Foreground travel-recording service
 - Persistent track records with GeoJSON line geometry
@@ -93,6 +94,40 @@ shading is too faint to read.
 
 Both are drawn on the Android Auto screen as well, where they matter most --
 somebody driving cannot count contour lines.
+
+## Satellite heat detections
+
+**Layers -> Satellite heat detections** draws thermal anomalies from NASA's
+near-real-time feed: VIIRS off NOAA-20, NOAA-21 and Suomi-NPP at 375 m, and
+MODIS off Terra and Aqua at 1 km. Free NASA GIBS imagery, no key and no
+account, for the same reason the basemap comes from the National Map.
+
+Each satellite is a separate pass drawn over the others rather than merged.
+Two birds seeing the same heat is a stronger statement than one, and
+flattening them would throw that away. MODIS is off by default -- a kilometre
+is most of a division -- and is carried for its overpass times rather than to
+be read as a location.
+
+Off by default, and it should stay a deliberate choice, because of what it is
+not:
+
+- **Not verified.** Nobody has looked at it. The science-quality version of
+  this data *is* checked by people, and runs years behind -- at the time of
+  writing the newest is more than six years old. It is a research archive,
+  not an alternative during an incident. For verified IR on a going fire,
+  import the `opsIR` sheet from the incident FTP.
+- **Not current.** A pass is a snapshot from whenever the satellite crossed,
+  a few hours behind at best, and after the connection goes the cached tiles
+  are as old as whenever they last loaded.
+- **Not a fire, and not a perimeter.** A detection means a pixel was hot. The
+  sensor cannot tell a fire from a burn pile, a flare or a hot roof, and it
+  misses what is under canopy or cloud.
+
+So the satellite and the date of the pass are stamped on the map whenever the
+layer is on, and on the car readout as well -- a driver cannot open a layer
+sheet, and red dots with no date against them get read as now. Tiles are
+filed by the pass they came from and older passes are deleted rather than
+kept, so a stale tile can never be drawn under today's date.
 
 ## Leaving things on the map
 

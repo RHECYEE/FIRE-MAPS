@@ -30,6 +30,8 @@ import com.rhecyee.firelinemap.geopdf.MapSheetRenderer
 import com.rhecyee.firelinemap.geopdf.SheetDetail
 import com.rhecyee.firelinemap.location.TrackRecordingState
 import com.rhecyee.firelinemap.map.BasemapTileCache
+import com.rhecyee.firelinemap.satellite.DetectionTileCache
+import com.rhecyee.firelinemap.satellite.SatelliteSource
 import com.rhecyee.firelinemap.resources.ResourceSymbol
 import com.rhecyee.firelinemap.map.ElevationTiles
 import com.rhecyee.firelinemap.terrain.ContourField
@@ -129,6 +131,7 @@ class CarMapRenderer(
     private var lastSheetDetailAt = 0L
 
     private val elevation = ElevationTiles(carContext)
+    private val detections = DetectionTileCache(carContext)
 
     /** The trace currently on screen, and what it was traced for. */
     private var contourPaths: CarContourPaths? = null
@@ -653,6 +656,7 @@ class CarMapRenderer(
         )
         drawTerrain(canvas, projection)
         drawSheet(canvas, projection)
+        drawDetections(canvas, projection)
         drawShading(canvas, projection)
         drawContours(canvas, projection, density)
         drawKeptShapes(canvas, projection, density)
@@ -667,6 +671,66 @@ class CarMapRenderer(
     }
 
     // --------------------------------------------------------------- terrain
+
+    /**
+     * Satellite heat over the sheet.
+     *
+     * Same placement as the terrain, one pass per selected satellite. Capped
+     * short of the map's own zoom because a 375 metre footprint has nothing
+     * more to say close in, and drawn over the sheet because a detection
+     * hidden behind the map it disagrees with is the one worth seeing.
+     *
+     * How old it is goes in the readout rather than here. A driver cannot
+     * open a layer sheet, and heat on a car screen with no date against it
+     * would be read as now.
+     */
+    private fun drawDetections(canvas: Canvas, projection: CarMapProjection) {
+        if (!settings.satelliteDetectionsEnabled) return
+        val sources = SatelliteSource.from(settings.satelliteSources)
+        if (sources.isEmpty()) return
+        detections.refresh()
+
+        val tileZoom = projection.zoom.roundToInt()
+            .coerceIn(0, DetectionTileCache.MAX_FETCH_ZOOM)
+        val bounds = projection.visibleBounds()
+        val minX = BasemapTileCache.tileX(bounds.west, tileZoom)
+        val maxX = BasemapTileCache.tileX(bounds.east, tileZoom)
+        val minY = BasemapTileCache.tileY(bounds.north, tileZoom)
+        val maxY = BasemapTileCache.tileY(bounds.south, tileZoom)
+        if (maxX < minX || maxY < minY) return
+        if ((maxX - minX + 1).toLong() * (maxY - minY + 1) > MAX_TILES_PER_FRAME) return
+
+        val span = (projection.worldSize / (1 shl tileZoom)).toFloat()
+        val destination = RectF()
+        val source = Rect()
+        for (satellite in sources) {
+            for (x in minX..maxX) {
+                for (y in minY..maxY) {
+                    val sample = detections.sample(satellite, tileZoom, x, y) ?: continue
+                    val left =
+                        (projection.anchorX + (x * span - projection.centerWorldX)).toFloat()
+                    val top =
+                        (projection.anchorY + (y * span - projection.centerWorldY)).toFloat()
+                    destination.set(left, top, left + span, top + span)
+                    source.set(
+                        sample.sourceLeft,
+                        sample.sourceTop,
+                        sample.sourceLeft + sample.sourceSize,
+                        sample.sourceTop + sample.sourceSize
+                    )
+                    canvas.drawBitmap(sample.bitmap, source, destination, bitmapPaint)
+                }
+            }
+        }
+    }
+
+    /** What the readout says about the heat on screen, or null when it is off. */
+    fun detectionCaption(): String? {
+        if (!settings.satelliteDetectionsEnabled) return null
+        val sources = SatelliteSource.from(settings.satelliteSources)
+        if (sources.isEmpty()) return null
+        return detections.age().caption(sources)
+    }
 
     private fun drawTerrain(canvas: Canvas, projection: CarMapProjection) {
         val tileZoom = projection.zoom.roundToInt().coerceIn(0, MAX_TILE_ZOOM)
@@ -1301,6 +1365,10 @@ class CarMapRenderer(
             else -> "Off ${sheetName}"
         }
         if (TrackRecordingState.live.value.recording) parts += "REC"
+        // Never let satellite heat sit on a car screen undated. The tiles go
+        // on rendering after the connection does not, and a driver reading
+        // red dots with nothing next to them will read them as now.
+        detectionCaption()?.let { parts += "HEAT: $it" }
         TrackRecordingState.lastOutcome.value?.let { parts += it }
         return parts.joinToString("  ·  ")
     }

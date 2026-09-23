@@ -44,6 +44,7 @@ fun MapLegend(
     hasSearch: Boolean,
     hasFireline: Boolean,
     hasSlopeShading: Boolean,
+    hasDetections: Boolean,
     simulated: Boolean,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
@@ -75,6 +76,9 @@ fun MapLegend(
         if (hasSearch) add(LegendEntry(Color(0xFF40C4FF), "Search area"))
         if (hasDropPoints) add(LegendEntry(Color(0xFF00E5FF), "Drop point read off sheet", true))
         if (hasParcels) add(LegendEntry(Color(0xFF8D6E63), "Property boundary"))
+        if (hasDetections) {
+            add(LegendEntry(Color(0xFFE53935), "Satellite heat — unverified", round = true))
+        }
         add(LegendEntry(Color(0xFFD50000), "Medical", round = true))
         add(LegendEntry(Color(0xFFB3261E), "Off this sheet"))
     }

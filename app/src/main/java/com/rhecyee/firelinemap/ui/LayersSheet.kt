@@ -59,6 +59,11 @@ fun LayersSheet(
     landOwnershipOn: Boolean,
     onToggleLandOwnership: (Boolean) -> Unit,
     contoursOn: Boolean,
+    detectionsOn: Boolean,
+    onToggleDetections: (Boolean) -> Unit,
+    detectionSources: Set<com.rhecyee.firelinemap.satellite.SatelliteSource>,
+    onToggleDetectionSource: (com.rhecyee.firelinemap.satellite.SatelliteSource, Boolean) -> Unit,
+    detectionCaption: String,
     keptShapes: List<com.rhecyee.firelinemap.annotations.MapAnnotation>,
     onRemoveShape: (com.rhecyee.firelinemap.annotations.MapAnnotation) -> Unit,
     slopeShadingOn: Boolean,
@@ -307,6 +312,41 @@ fun LayersSheet(
                     checked = hillshadeOn,
                     onCheckedChange = onToggleHillshade
                 )
+                ToggleRow(
+                    title = "Satellite heat detections",
+                    subtitle = "Where a satellite saw something hot on its last pass. " +
+                        "Free NASA data, no account. Not verified by anyone, and a " +
+                        "few hours behind at best.",
+                    checked = detectionsOn,
+                    onCheckedChange = onToggleDetections
+                )
+                if (detectionsOn) {
+                    Text(
+                        detectionCaption,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFFB3261E)
+                    )
+                    com.rhecyee.firelinemap.satellite.SatelliteSource.entries.forEach { source ->
+                        ToggleRow(
+                            title = source.label,
+                            subtitle = source.detail,
+                            checked = source in detectionSources,
+                            onCheckedChange = { onToggleDetectionSource(source, it) }
+                        )
+                    }
+                    Text(
+                        "A detection means a pixel was hot, not that it was a fire " +
+                            "and not where the edge is. The sensor cannot tell a fire " +
+                            "from a burn pile, a flare or a hot roof, and it misses " +
+                            "what is under canopy or cloud. The science-quality version " +
+                            "of this data is checked by people, and runs years behind; " +
+                            "for verified IR on an incident, import the opsIR sheet " +
+                            "from the incident FTP.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 ToggleRow(
                     title = "Land ownership",
                     subtitle = "Tap bare ground for the administering agency. " +

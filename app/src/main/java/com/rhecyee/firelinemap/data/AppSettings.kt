@@ -3,6 +3,7 @@ package com.rhecyee.firelinemap.data
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import com.rhecyee.firelinemap.satellite.SatelliteSource
 import com.rhecyee.firelinemap.terrain.ContourField
 import com.rhecyee.firelinemap.terrain.ContourGenerator
 
@@ -102,6 +103,25 @@ class AppSettings(context: Context) {
             .putFloat(KEY_SHADING_OPACITY, value.coerceIn(0.2f, 1f)).apply()
 
     /**
+     * Whether satellite thermal anomalies are drawn.
+     *
+     * Off by default, and it should stay a deliberate choice. These are
+     * unverified near-real-time detections: a satellite saw something hot
+     * when it went over, which is not the same as a fire, and the nearest it
+     * gets to now is a few hours behind. Switched on without being asked for,
+     * it would be read as where the fire is.
+     */
+    var satelliteDetectionsEnabled: Boolean
+        get() = preferences.getBoolean(KEY_DETECTIONS, false)
+        set(value) = preferences.edit().putBoolean(KEY_DETECTIONS, value).apply()
+
+    /** Which satellites, by name. More birds means more looks in a day. */
+    var satelliteSources: Set<String>
+        get() = preferences.getStringSet(KEY_DETECTION_SOURCES, null)
+            ?: SatelliteSource.DEFAULT.map { it.name }.toSet()
+        set(value) = preferences.edit().putStringSet(KEY_DETECTION_SOURCES, value).apply()
+
+    /**
      * The sheet the operator has open.
      *
      * Persisted so the Android Auto screen shows the same map as the phone.
@@ -147,6 +167,8 @@ class AppSettings(context: Context) {
         private const val KEY_SLOPE_SHADING = "slope_shading_enabled"
         private const val KEY_HILLSHADE = "hillshade_enabled"
         private const val KEY_SHADING_OPACITY = "shading_opacity"
+        private const val KEY_DETECTIONS = "satellite_detections_enabled"
+        private const val KEY_DETECTION_SOURCES = "satellite_detection_sources"
 
         const val DEFAULT_SHADING_OPACITY = 0.85f
 

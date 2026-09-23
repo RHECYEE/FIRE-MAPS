@@ -67,6 +67,8 @@ import com.rhecyee.firelinemap.geopdf.ImportedMap
 import com.rhecyee.firelinemap.geopdf.MapSheetRenderer
 import com.rhecyee.firelinemap.geopdf.SheetDetail
 import com.rhecyee.firelinemap.annotations.AnnotationKind
+import com.rhecyee.firelinemap.satellite.DetectionTileCache
+import com.rhecyee.firelinemap.satellite.SatelliteSource
 import com.rhecyee.firelinemap.annotations.MapAnnotation
 import com.rhecyee.firelinemap.fireline.FirelineFeature
 import com.rhecyee.firelinemap.fireline.FirelineKind
@@ -116,6 +118,15 @@ fun MapCanvas(
      * incident sheet at an interval the operator chose.
      */
     elevation: ElevationTiles? = null,
+    /**
+     * Satellite thermal anomalies, or null for none.
+     *
+     * Drawn over the sheet rather than under it: the whole reason to look at
+     * them is against the incident map, and a detection hidden by the sheet
+     * it contradicts would be the one worth seeing.
+     */
+    detections: DetectionTileCache? = null,
+    detectionSources: Set<SatelliteSource> = emptySet(),
     contoursEnabled: Boolean = false,
     contourIntervalFeet: Int = 40,
     /**
@@ -631,6 +642,26 @@ fun MapCanvas(
                     drawHeight = drawHeight,
                     opacity = parcelOpacity,
                     showLabels = scale >= 4f
+                )
+            }
+
+            // Detections over the ground and under everything the incident
+            // owns. They are evidence about the ground, not a decision
+            // somebody made, so they sit with the map rather than with the
+            // work drawn on it.
+            if (detections != null && detectionSources.isNotEmpty() && frame != null &&
+                pageWidthPoints > 0 && pageHeightPoints > 0
+            ) {
+                drawDetections(
+                    cache = detections,
+                    sources = detectionSources,
+                    frame = frame,
+                    pageWidthPoints = pageWidthPoints,
+                    pageHeightPoints = pageHeightPoints,
+                    originX = originX,
+                    originY = originY,
+                    drawWidth = drawWidth,
+                    drawHeight = drawHeight
                 )
             }
 
@@ -1200,6 +1231,45 @@ private fun DrawScope.drawBasemap(
     // colour with no way to tell it from the app having broken.
     val zoom = basemapZoom(bounds, spanMeters / size.width) ?: return
 
+    drawTileGrid(
+        frame = frame,
+        north = north, south = south, west = west, east = east,
+        zoom = zoom,
+        pageWidthPoints = pageWidthPoints,
+        pageHeightPoints = pageHeightPoints,
+        originX = originX,
+        originY = originY,
+        drawWidth = drawWidth,
+        drawHeight = drawHeight,
+        paint = TILE_PAINT
+    ) { tileZoom, x, y -> basemap.sample(tileZoom, x, y) }
+}
+
+/**
+ * Lays a grid of slippy tiles onto the sheet through its own projection.
+ *
+ * Shared by the terrain underneath and the satellite detections over the top,
+ * which is the whole reason it is a function: the placement is the fiddly
+ * part -- corner-to-corner mapping so a tile lands rotated exactly as the
+ * sheet's grid puts it, grown a hair so neighbours do not show a seam -- and
+ * two copies of it would be two things to keep in step.
+ */
+private inline fun DrawScope.drawTileGrid(
+    frame: com.rhecyee.firelinemap.geopdf.MapFrame,
+    north: Double,
+    south: Double,
+    west: Double,
+    east: Double,
+    zoom: Int,
+    pageWidthPoints: Int,
+    pageHeightPoints: Int,
+    originX: Float,
+    originY: Float,
+    drawWidth: Float,
+    drawHeight: Float,
+    paint: android.graphics.Paint,
+    sample: (zoom: Int, x: Int, y: Int) -> com.rhecyee.firelinemap.map.TileSample?
+) {
     val minX = BasemapTileCache.tileX(west, zoom)
     val maxX = BasemapTileCache.tileX(east, zoom)
     val minY = BasemapTileCache.tileY(north, zoom)
@@ -1212,7 +1282,7 @@ private fun DrawScope.drawBasemap(
 
     for (x in minX..maxX) {
         for (y in minY..maxY) {
-            val sample = basemap.sample(zoom, x, y) ?: continue
+            val sample = sample(zoom, x, y) ?: continue
             val quad = tileQuad(
                 frame = frame,
                 north = BasemapTileCache.tileNorth(y, zoom),
@@ -1711,4 +1781,70 @@ private val annotationLabelPaint = android.graphics.Paint().apply {
     isAntiAlias = true
     isFakeBoldText = true
     setShadowLayer(5f, 0f, 0f, android.graphics.Color.BLACK)
+}
+
+/**
+ * Satellite thermal anomalies over the sheet.
+ *
+ * Each selected satellite is a separate pass of the same grid, drawn one over
+ * another. They are not merged: two birds that both saw the same heat is a
+ * stronger statement than one that did, and flattening them into a single
+ * layer would throw that away.
+ *
+ * Capped well short of the zoom the sheet supports, because a 375 metre
+ * footprint has no more to say at 1:2000 than it did at 1:24000. What the
+ * screen shows past the cap is the same detection drawn larger, which is the
+ * honest thing for it to be.
+ */
+private fun DrawScope.drawDetections(
+    cache: DetectionTileCache,
+    sources: Set<SatelliteSource>,
+    frame: com.rhecyee.firelinemap.geopdf.MapFrame,
+    pageWidthPoints: Int,
+    pageHeightPoints: Int,
+    originX: Float,
+    originY: Float,
+    drawWidth: Float,
+    drawHeight: Float
+) {
+    val bounds = visibleGeoBounds(
+        frame = frame,
+        pageWidthPoints = pageWidthPoints,
+        pageHeightPoints = pageHeightPoints,
+        originX = originX,
+        originY = originY,
+        drawWidth = drawWidth,
+        drawHeight = drawHeight,
+        viewWidth = size.width,
+        viewHeight = size.height
+    ) ?: return
+
+    val centreLatitude = (bounds.north + bounds.south) / 2.0
+    val spanMeters = com.rhecyee.firelinemap.map.MapCoverage.distanceMeters(
+        centreLatitude, bounds.west, centreLatitude, bounds.east
+    )
+    if (spanMeters <= 0.0 || size.width <= 0f) return
+
+    val wanted = BasemapTileCache.zoomFor(
+        centreLatitude, spanMeters / size.width, DetectionTileCache.MAX_FETCH_ZOOM
+    )
+    val zoom = wanted.coerceIn(0, DetectionTileCache.MAX_FETCH_ZOOM)
+
+    for (source in sources) {
+        drawTileGrid(
+            frame = frame,
+            north = bounds.north,
+            south = bounds.south,
+            west = bounds.west,
+            east = bounds.east,
+            zoom = zoom,
+            pageWidthPoints = pageWidthPoints,
+            pageHeightPoints = pageHeightPoints,
+            originX = originX,
+            originY = originY,
+            drawWidth = drawWidth,
+            drawHeight = drawHeight,
+            paint = TILE_PAINT
+        ) { tileZoom, x, y -> cache.sample(source, tileZoom, x, y) }
+    }
 }
