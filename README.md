@@ -20,7 +20,9 @@ This initial Android Studio project includes:
   UTM grid, each line copyable on its own
 - Fire perimeter inference from dropped observations
 - Slope shading and shaded relief, drawn from elevation
-- Optional satellite heat detections (VIIRS and MODIS), always dated
+- Optional satellite heat detections (VIIRS and MODIS), always dated;
+  a free NASA FIRMS key turns them into per-detection points with
+  confidence and processing level, and a filter that means something
 - Measured legs and committed perimeters left on the map, phone and car
 - Foreground travel-recording service
 - Persistent track records with GeoJSON line geometry
@@ -99,8 +101,7 @@ somebody driving cannot count contour lines.
 
 **Layers -> Satellite heat detections** draws thermal anomalies from NASA's
 near-real-time feed: VIIRS off NOAA-20, NOAA-21 and Suomi-NPP at 375 m, and
-MODIS off Terra and Aqua at 1 km. Free NASA GIBS imagery, no key and no
-account, for the same reason the basemap comes from the National Map.
+MODIS off Terra and Aqua at 1 km.
 
 Each satellite is a separate pass drawn over the others rather than merged.
 Two birds seeing the same heat is a stronger statement than one, and
@@ -108,14 +109,53 @@ flattening them would throw that away. MODIS is off by default -- a kilometre
 is most of a division -- and is carried for its overpass times rather than to
 be read as a location.
 
+### Two ways in, and what the key buys
+
+Without a key the layer draws NASA GIBS imagery: no key, no account, for the
+same reason the basemap comes from the National Map. It works, it caches for
+offline, and every detection on it looks alike, because a picture cannot
+carry a confidence.
+
+Pasting a free **FIRMS key** into the same panel turns the layer into points
+instead, one per detection, each carrying what is actually known about it:
+
+- **How sure the algorithm was.** Colour: red high, orange nominal, yellow
+  low, grey for ungraded. The two instrument families say this differently --
+  VIIRS grades low/nominal/high, MODIS gives a number out of a hundred -- and
+  both are put on the same scale so "nominal and above" means one thing
+  whichever bird saw the fire.
+- **How far through processing it has got.** A hollow ring is a detection
+  that has not been processed yet: published within a minute of the satellite
+  passing over much of the US and Canada, and the one most likely to be
+  revised or withdrawn. Filled means the processed version has landed. These
+  are not two feeds -- they are the same observation at two ages.
+- **How big the sample was.** The circle is drawn at the sensor's footprint,
+  375 m or 1 km, not as a pin. A pin invites somebody to drive to it.
+
+**Show: All / Nominal + / High only** then becomes a real filter on real
+per-detection data rather than a picture somebody else already decided the
+contents of. It defaults to All, deliberately: a detection hidden for being
+low confidence looks exactly like ground nothing ever passed over.
+
+A key is free, takes an email, and comes from
+`firms.modaps.eosdis.nasa.gov/api/map_key`. It is pasted once on the phone;
+the car reads the same setting, because typing a key into a head unit while
+driving is not something this app is going to ask for. A rejected key says so
+on the layer instead of quietly showing an empty map, and is not retried until
+it is corrected -- the car redraws several times a second, and a bad key
+retried per frame would spend the whole rate limit in a minute.
+
 Off by default, and it should stay a deliberate choice, because of what it is
 not:
 
-- **Not verified.** Nobody has looked at it. The science-quality version of
-  this data *is* checked by people, and runs years behind -- at the time of
-  writing the newest is more than six years old. It is a research archive,
-  not an alternative during an incident. For verified IR on a going fire,
-  import the `opsIR` sheet from the incident FTP.
+- **Not verified, at any confidence.** Nobody has looked at any of it. High
+  confidence is the detection algorithm's opinion of its own output, arrived
+  at without a person, and a high-confidence gas flare is still a gas flare.
+  The science-quality version of this data *is* checked by people and runs
+  years behind -- at the time of writing the newest is more than six years
+  old. It is a research archive, not an alternative during an incident. For
+  verified IR on a going fire, import the `opsIR` sheet from the incident
+  FTP.
 - **Not current.** A pass is a snapshot from whenever the satellite crossed,
   a few hours behind at best, and after the connection goes the cached tiles
   are as old as whenever they last loaded.
@@ -123,11 +163,12 @@ not:
   sensor cannot tell a fire from a burn pile, a flare or a hot roof, and it
   misses what is under canopy or cloud.
 
-So the satellite and the date of the pass are stamped on the map whenever the
-layer is on, and on the car readout as well -- a driver cannot open a layer
-sheet, and red dots with no date against them get read as now. Tiles are
-filed by the pass they came from and older passes are deleted rather than
-kept, so a stale tile can never be drawn under today's date.
+So the layer is always dated, on the phone and on the car readout both -- a
+driver cannot open a layer sheet, and red dots with no date against them get
+read as now. Nothing here ever says "live". The keyless tiles are filed by
+the pass they came from and older passes are deleted rather than kept, so a
+stale tile can never be drawn under today's date; the keyed points carry the
+pass time per detection and the panel says how long ago the fetch landed.
 
 ## Leaving things on the map
 

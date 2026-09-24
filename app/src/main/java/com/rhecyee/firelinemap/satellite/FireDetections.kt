@@ -21,8 +21,21 @@ import java.util.concurrent.TimeUnit
 enum class SatelliteSource(
     /** Shown on the map and in the key. */
     val label: String,
-    /** The GIBS layer behind it. */
+    /** The GIBS layer behind the keyless raster. */
     val layerId: String,
+    /**
+     * The same satellite's name in the FIRMS area API.
+     *
+     * Held next to the GIBS layer id rather than in a second enum, because
+     * they are the same four satellites reached two ways, and the operator
+     * picks the satellite once. Keeping the pair together is what stops a
+     * bird being added to one path and forgotten on the other.
+     *
+     * Always the near-real-time product. That is the one carrying RT and URT
+     * detections; standard processing is a research archive running years
+     * behind, which is no use on a going fire.
+     */
+    val firmsId: String,
     /** Ground sample distance, which is the honest limit on precision. */
     val resolutionMeters: Int,
     val detail: String
@@ -30,18 +43,21 @@ enum class SatelliteSource(
     VIIRS_NOAA20(
         label = "VIIRS NOAA-20",
         layerId = "VIIRS_NOAA20_Thermal_Anomalies_375m_All_v2_NRT",
+        firmsId = "VIIRS_NOAA20_NRT",
         resolutionMeters = 375,
         detail = "375 m · about two passes a day"
     ),
     VIIRS_NOAA21(
         label = "VIIRS NOAA-21",
         layerId = "VIIRS_NOAA21_Thermal_Anomalies_375m_All_v2_NRT",
+        firmsId = "VIIRS_NOAA21_NRT",
         resolutionMeters = 375,
         detail = "375 m · newest of the three"
     ),
     VIIRS_SNPP(
         label = "VIIRS Suomi-NPP",
         layerId = "VIIRS_SNPP_Thermal_Anomalies_375m_All_v2_NRT",
+        firmsId = "VIIRS_SNPP_NRT",
         resolutionMeters = 375,
         detail = "375 m · the longest VIIRS record"
     ),
@@ -56,6 +72,7 @@ enum class SatelliteSource(
     MODIS(
         label = "MODIS Terra + Aqua",
         layerId = "MODIS_Combined_Thermal_Anomalies_All_v61_NRT",
+        firmsId = "MODIS_NRT",
         resolutionMeters = 1_000,
         detail = "1 km · different overpass times"
     );

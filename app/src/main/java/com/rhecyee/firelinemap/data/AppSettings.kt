@@ -3,6 +3,7 @@ package com.rhecyee.firelinemap.data
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import com.rhecyee.firelinemap.satellite.DetectionConfidence
 import com.rhecyee.firelinemap.satellite.SatelliteSource
 import com.rhecyee.firelinemap.terrain.ContourField
 import com.rhecyee.firelinemap.terrain.ContourGenerator
@@ -122,6 +123,47 @@ class AppSettings(context: Context) {
         set(value) = preferences.edit().putStringSet(KEY_DETECTION_SOURCES, value).apply()
 
     /**
+     * A NASA FIRMS key, or blank.
+     *
+     * Free, takes an email, and it is the one thing in this app that asks
+     * anybody to sign up for anything. It buys the detections as points
+     * rather than as a picture: each one carrying its own confidence and its
+     * own processing level, which is what makes filtering them a real control
+     * instead of a decision somebody else already made. Without it the layer
+     * still works, drawn from the keyless raster.
+     *
+     * Stored in plain preferences, like everything else here. It is a
+     * read-only key for public science data, rate-limited per key and
+     * carrying no account and no personal data -- worth no more to anybody
+     * who takes the phone than the map already on it.
+     */
+    var firmsMapKey: String
+        get() = preferences.getString(KEY_FIRMS, "").orEmpty()
+        set(value) = preferences.edit().putString(KEY_FIRMS, value.trim()).apply()
+
+    /** Whether detections can be fetched as points rather than as a picture. */
+    val firmsAvailable: Boolean get() = firmsMapKey.isNotBlank()
+
+    /**
+     * The weakest detection that still gets drawn.
+     *
+     * Defaults to showing everything, which is the safer way round: a
+     * detection hidden for being low confidence looks exactly like ground
+     * that never got looked at, and an operator reading absence as absence
+     * of fire is the failure worth designing against. The confidence is
+     * drawn into every point anyway, so raising this is a way to quieten a
+     * busy map rather than the only way to tell the grades apart.
+     */
+    var minimumConfidence: DetectionConfidence
+        get() = runCatching {
+            DetectionConfidence.valueOf(
+                preferences.getString(KEY_MIN_CONFIDENCE, null)
+                    ?: DetectionConfidence.LOW.name
+            )
+        }.getOrDefault(DetectionConfidence.LOW)
+        set(value) = preferences.edit().putString(KEY_MIN_CONFIDENCE, value.name).apply()
+
+    /**
      * The sheet the operator has open.
      *
      * Persisted so the Android Auto screen shows the same map as the phone.
@@ -169,6 +211,8 @@ class AppSettings(context: Context) {
         private const val KEY_SHADING_OPACITY = "shading_opacity"
         private const val KEY_DETECTIONS = "satellite_detections_enabled"
         private const val KEY_DETECTION_SOURCES = "satellite_detection_sources"
+        private const val KEY_FIRMS = "firms_map_key"
+        private const val KEY_MIN_CONFIDENCE = "detection_minimum_confidence"
 
         const val DEFAULT_SHADING_OPACITY = 0.85f
 
@@ -191,6 +235,21 @@ class AppSettings(context: Context) {
 
         const val MAX_RADIUS_MILES = 50
         val RADIUS_CHOICES = listOf(0, 5, 10, 25, 50)
+
+        /** The grades a map can be held to, weakest first. */
+        val CONFIDENCE_FLOORS = listOf(
+            DetectionConfidence.LOW,
+            DetectionConfidence.NOMINAL,
+            DetectionConfidence.HIGH
+        )
+
+        fun describeFloor(confidence: DetectionConfidence): String =
+            when (confidence) {
+                DetectionConfidence.LOW -> "All"
+                DetectionConfidence.NOMINAL -> "Nominal +"
+                DetectionConfidence.HIGH -> "High only"
+                DetectionConfidence.UNKNOWN -> "All"
+            }
 
         fun describeRadius(miles: Int): String =
             if (miles <= 0) "Off" else "$miles mi"

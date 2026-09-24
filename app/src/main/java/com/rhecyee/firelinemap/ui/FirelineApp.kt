@@ -213,6 +213,9 @@ fun FirelineApp() {
         com.rhecyee.firelinemap.satellite.DetectionTileCache(context)
     }
     var detectionsOn by remember { mutableStateOf(settings.satelliteDetectionsEnabled) }
+    val firmsFeed = remember { com.rhecyee.firelinemap.satellite.FirmsFeed() }
+    var firmsKey by remember { mutableStateOf(settings.firmsMapKey) }
+    var minimumConfidence by remember { mutableStateOf(settings.minimumConfidence) }
     var detectionSources by remember {
         mutableStateOf(
             com.rhecyee.firelinemap.satellite.SatelliteSource.from(settings.satelliteSources)
@@ -1019,7 +1022,25 @@ fun FirelineApp() {
                 detectionSources = next
                 settings.satelliteSources = next.map { it.name }.toSet()
             },
-            detectionCaption = detections.age().caption(detectionSources),
+            detectionCaption = if (firmsKey.isNotBlank()) {
+                firmsFeed.caption(minimumConfidence)
+            } else {
+                detections.age().caption(detectionSources)
+            },
+            firmsKey = firmsKey,
+            onFirmsKey = {
+                settings.firmsMapKey = it
+                firmsKey = it
+                // The old answer was fetched under the old key and may have
+                // been a rejection; keeping it would make a good key look
+                // broken until the next pan.
+                firmsFeed.clear()
+            },
+            minimumConfidence = minimumConfidence,
+            onMinimumConfidence = {
+                settings.minimumConfidence = it
+                minimumConfidence = it
+            },
             slopeShadingOn = slopeShadingOn,
             onToggleSlopeShading = { settings.slopeShadingEnabled = it; slopeShadingOn = it },
             hillshadeOn = hillshadeOn,
@@ -1618,6 +1639,9 @@ fun FirelineApp() {
                 elevation = elevationTiles,
                 detections = if (detectionsOn) detections else null,
                 detectionSources = detectionSources,
+                firmsFeed = if (detectionsOn) firmsFeed else null,
+                firmsKey = firmsKey,
+                minimumConfidence = minimumConfidence,
                 contoursEnabled = contoursOn,
                 contourIntervalFeet = contourInterval,
                 shading = remember(slopeShadingOn, hillshadeOn) {

@@ -30,7 +30,10 @@ import com.rhecyee.firelinemap.geopdf.MapSheetRenderer
 import com.rhecyee.firelinemap.geopdf.SheetDetail
 import com.rhecyee.firelinemap.location.TrackRecordingState
 import com.rhecyee.firelinemap.map.BasemapTileCache
+import com.rhecyee.firelinemap.satellite.DetectionStyle
 import com.rhecyee.firelinemap.satellite.DetectionTileCache
+import com.rhecyee.firelinemap.satellite.DetectionWindow
+import com.rhecyee.firelinemap.satellite.FirmsFeed
 import com.rhecyee.firelinemap.satellite.SatelliteSource
 import com.rhecyee.firelinemap.resources.ResourceSymbol
 import com.rhecyee.firelinemap.map.ElevationTiles
@@ -132,6 +135,17 @@ class CarMapRenderer(
 
     private val elevation = ElevationTiles(carContext)
     private val detections = DetectionTileCache(carContext)
+
+    /**
+     * The same heat as points, where the operator has set a key on the phone.
+     *
+     * The car never asks for one. A key is pasted once on a handset and the
+     * car reads it out of the same preferences, because typing anything into
+     * a head unit while driving is not a thing this app is going to ask for.
+     */
+    private val firmsFeed = FirmsFeed()
+    private var detectionWindow: DetectionWindow? = null
+    private var detectionJob: kotlinx.coroutines.Job? = null
 
     /** The trace currently on screen, and what it was traced for. */
     private var contourPaths: CarContourPaths? = null
@@ -517,6 +531,44 @@ class CarMapRenderer(
      * both read the same elevation, both cost tens of milliseconds, and both
      * are worthless if they restart on every frame of a drive.
      */
+    /**
+     * Fetches detections for the ground ahead, when there is a key.
+     *
+     * Same shape as the shading request: quantised window, one job, previous
+     * answer left on screen while the next is in flight. A driver must never
+     * watch the fire disappear because the truck moved.
+     */
+    private fun requestDetectionPoints(projection: CarMapProjection) {
+        val key = settings.firmsMapKey
+        if (!settings.satelliteDetectionsEnabled || key.isBlank()) {
+            if (detectionWindow != null) {
+                detectionWindow = null
+                firmsFeed.clear()
+            }
+            return
+        }
+        val sources = SatelliteSource.from(settings.satelliteSources)
+        if (sources.isEmpty()) return
+        val owner = lifecycleOwner ?: return
+
+        val bounds = projection.visibleBounds()
+        val window = DetectionWindow.of(
+            south = bounds.south, west = bounds.west,
+            north = bounds.north, east = bounds.east
+        ) ?: return
+        if (detectionJob?.isActive == true) return
+        // Asked before launching anything: this runs on the render loop, and
+        // a coroutine per frame just to be told the answer is already on the
+        // map is a cost paid several times a second for nothing.
+        if (!firmsFeed.wouldFetch(key, sources, window)) return
+
+        detectionWindow = window
+        detectionJob?.cancel()
+        detectionJob = owner.lifecycleScope.launch {
+            firmsFeed.refresh(mapKey = key, sources = sources, window = window)
+        }
+    }
+
     private fun requestShading(projection: CarMapProjection) {
         val wanted = if (!settings.slopeShadingEnabled && !settings.hillshadeEnabled) {
             null
@@ -649,6 +701,7 @@ class CarMapRenderer(
         requestContours(projection)
         requestShading(projection)
         requestSheetDetail(projection)
+        requestDetectionPoints(projection)
 
         canvas.save()
         canvas.rotate(
@@ -657,6 +710,7 @@ class CarMapRenderer(
         drawTerrain(canvas, projection)
         drawSheet(canvas, projection)
         drawDetections(canvas, projection)
+        drawDetectionPoints(canvas, projection, density)
         drawShading(canvas, projection)
         drawContours(canvas, projection, density)
         drawKeptShapes(canvas, projection, density)
@@ -686,6 +740,9 @@ class CarMapRenderer(
      */
     private fun drawDetections(canvas: Canvas, projection: CarMapProjection) {
         if (!settings.satelliteDetectionsEnabled) return
+        // A key means points, and points replace the picture. Drawing both
+        // would put every detection on the map twice.
+        if (settings.firmsAvailable) return
         val sources = SatelliteSource.from(settings.satelliteSources)
         if (sources.isEmpty()) return
         detections.refresh()
@@ -724,12 +781,71 @@ class CarMapRenderer(
         }
     }
 
+    /**
+     * Detections as points on the car screen.
+     *
+     * Bigger strokes than the phone draws: this is read at arm's length,
+     * through a windscreen, at whatever brightness the head unit decided on.
+     * The colours and the hollow-ring rule are the phone's, so the two
+     * screens cannot end up meaning different things by the same mark.
+     */
+    private fun drawDetectionPoints(
+        canvas: Canvas,
+        projection: CarMapProjection,
+        density: Float
+    ) {
+        if (!settings.satelliteDetectionsEnabled || !settings.firmsAvailable) return
+        val points = firmsFeed.visible(settings.minimumConfidence)
+        if (points.isEmpty()) return
+
+        val metersPerPixel = projection.metersPerPixel()
+        if (metersPerPixel <= 0 || !metersPerPixel.isFinite()) return
+
+        // Weakest first, so a confident detection is never buried under one
+        // the algorithm was unsure about.
+        val ordered = points.sortedBy { it.confidence.ordinal }
+        for (detection in ordered) {
+            val screen = projection.toScreen(detection.latitude, detection.longitude)
+            if (screen.x < -DETECTION_SLACK || screen.y < -DETECTION_SLACK ||
+                screen.x > canvas.width + DETECTION_SLACK ||
+                screen.y > canvas.height + DETECTION_SLACK
+            ) continue
+
+            val radius = DetectionStyle.radiusPixels(
+                resolutionMeters = detection.source?.resolutionMeters ?: 375,
+                metersPerPixel = metersPerPixel
+            ) * density
+            val colour = DetectionStyle.colour(detection.confidence)
+
+            if (DetectionStyle.isProvisional(detection.level)) {
+                strokePaint.color = 0x73000000
+                strokePaint.strokeWidth = 6f * density
+                canvas.drawCircle(screen.x, screen.y, radius, strokePaint)
+                strokePaint.color = colour
+                strokePaint.strokeWidth = 3f * density
+                canvas.drawCircle(screen.x, screen.y, radius, strokePaint)
+                fillPaint.color = colour
+                canvas.drawCircle(screen.x, screen.y, 2.5f * density, fillPaint)
+            } else {
+                fillPaint.color = (colour and 0x00FFFFFF) or 0x4D000000
+                canvas.drawCircle(screen.x, screen.y, radius, fillPaint)
+                strokePaint.color = 0x73000000
+                strokePaint.strokeWidth = 5f * density
+                canvas.drawCircle(screen.x, screen.y, radius, strokePaint)
+                strokePaint.color = colour
+                strokePaint.strokeWidth = 2.5f * density
+                canvas.drawCircle(screen.x, screen.y, radius, strokePaint)
+            }
+        }
+    }
+
     /** What the readout says about the heat on screen, or null when it is off. */
     fun detectionCaption(): String? {
         if (!settings.satelliteDetectionsEnabled) return null
         val sources = SatelliteSource.from(settings.satelliteSources)
         if (sources.isEmpty()) return null
-        return detections.age().caption(sources)
+        if (!settings.firmsAvailable) return detections.age().caption(sources)
+        return firmsFeed.caption(settings.minimumConfidence)
     }
 
     private fun drawTerrain(canvas: Canvas, projection: CarMapProjection) {
@@ -1475,6 +1591,9 @@ class CarMapRenderer(
 
         private const val MAX_TILE_ZOOM = 16
         private const val MAX_TILES_PER_FRAME = 240L
+
+        /** How far off screen a detection may sit and still be drawn. */
+        private const val DETECTION_SLACK = 96f
 
         private const val FEET_PER_METER = 3.280839895
 

@@ -18,6 +18,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
@@ -64,6 +65,10 @@ fun LayersSheet(
     detectionSources: Set<com.rhecyee.firelinemap.satellite.SatelliteSource>,
     onToggleDetectionSource: (com.rhecyee.firelinemap.satellite.SatelliteSource, Boolean) -> Unit,
     detectionCaption: String,
+    firmsKey: String,
+    onFirmsKey: (String) -> Unit,
+    minimumConfidence: com.rhecyee.firelinemap.satellite.DetectionConfidence,
+    onMinimumConfidence: (com.rhecyee.firelinemap.satellite.DetectionConfidence) -> Unit,
     keptShapes: List<com.rhecyee.firelinemap.annotations.MapAnnotation>,
     onRemoveShape: (com.rhecyee.firelinemap.annotations.MapAnnotation) -> Unit,
     slopeShadingOn: Boolean,
@@ -334,6 +339,16 @@ fun LayersSheet(
                             checked = source in detectionSources,
                             onCheckedChange = { onToggleDetectionSource(source, it) }
                         )
+                    }
+
+                    FirmsKeyField(value = firmsKey, onValue = onFirmsKey)
+
+                    if (firmsKey.isNotBlank()) {
+                        ConfidenceFloor(
+                            selected = minimumConfidence,
+                            onSelect = onMinimumConfidence
+                        )
+                        DetectionKey()
                     }
                     Text(
                         "A detection means a pixel was hot, not that it was a fire " +
@@ -815,5 +830,121 @@ private fun KeptShapeRow(
             )
         }
         TextButton(onClick = onRemove) { Text("Remove") }
+    }
+}
+
+
+/**
+ * Where the FIRMS key is pasted.
+ *
+ * Put in the layer it unlocks rather than buried in settings, because the
+ * moment somebody wants one is the moment they have just read what it buys.
+ * The address is spelled out in full: this gets read in a truck, and a key
+ * hunted for on a phone is a key nobody gets.
+ */
+@Composable
+private fun FirmsKeyField(value: String, onValue: (String) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        OutlinedTextField(
+            value = value,
+            // Trimmed on the way in because a key pasted off a web page
+            // arrives with a newline on it more often than not, and a
+            // trailing newline in a URL path is a rejection that looks
+            // exactly like a wrong key.
+            onValueChange = { onValue(it.trim()) },
+            label = { Text("NASA FIRMS key (optional)") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Text(
+            if (value.isBlank()) {
+                "Without a key the layer draws NASA's own picture of the heat: " +
+                    "it works, offline too, but every detection looks alike. " +
+                    "A key turns them into points that each carry how sure the " +
+                    "algorithm was and how far through processing it got, which " +
+                    "is what makes the filter below mean anything. Free, takes " +
+                    "an email: ${com.rhecyee.firelinemap.satellite.FirmsClient.KEY_SIGNUP}"
+            } else {
+                "Detections are being drawn as points. Clear the field to go " +
+                    "back to the keyless picture."
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+/** The weakest grade still drawn. */
+@Composable
+private fun ConfidenceFloor(
+    selected: com.rhecyee.firelinemap.satellite.DetectionConfidence,
+    onSelect: (com.rhecyee.firelinemap.satellite.DetectionConfidence) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            "SHOW",
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            AppSettings.CONFIDENCE_FLOORS.forEach { floor ->
+                FilterChip(
+                    selected = floor == selected,
+                    onClick = { onSelect(floor) },
+                    label = { Text(AppSettings.describeFloor(floor)) }
+                )
+            }
+        }
+        Text(
+            "Everything, by default. A detection hidden for being low " +
+                "confidence looks exactly like ground nothing ever passed " +
+                "over, so raise this to quieten a busy map rather than to " +
+                "decide what is real.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+/** What the colours and the hollow rings mean. */
+@Composable
+private fun DetectionKey() {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        listOf(
+            com.rhecyee.firelinemap.satellite.DetectionConfidence.HIGH,
+            com.rhecyee.firelinemap.satellite.DetectionConfidence.NOMINAL,
+            com.rhecyee.firelinemap.satellite.DetectionConfidence.LOW,
+            com.rhecyee.firelinemap.satellite.DetectionConfidence.UNKNOWN
+        ).forEach { grade ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(
+                    modifier = Modifier
+                        .size(26.dp, 14.dp)
+                        .background(
+                            Color(
+                                com.rhecyee.firelinemap.satellite.DetectionStyle.colour(grade)
+                            ),
+                            RoundedCornerShape(3.dp)
+                        )
+                ) {}
+                Text(
+                    grade.label,
+                    modifier = Modifier.padding(start = 10.dp),
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+        Text(
+            "A hollow ring is a detection that has not been processed yet: " +
+                "minutes old, fastest to arrive, and the one most likely to " +
+                "be revised or withdrawn on the next pass. Filled means the " +
+                "processed version has landed. Neither has been looked at by " +
+                "a person. The circle is the size of the sensor's footprint, " +
+                "not the size of the fire.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }

@@ -67,7 +67,13 @@ import com.rhecyee.firelinemap.geopdf.ImportedMap
 import com.rhecyee.firelinemap.geopdf.MapSheetRenderer
 import com.rhecyee.firelinemap.geopdf.SheetDetail
 import com.rhecyee.firelinemap.annotations.AnnotationKind
+import com.rhecyee.firelinemap.satellite.DetectionConfidence
+import com.rhecyee.firelinemap.satellite.DetectionStyle
 import com.rhecyee.firelinemap.satellite.DetectionTileCache
+import com.rhecyee.firelinemap.satellite.DetectionWindow
+import com.rhecyee.firelinemap.satellite.FireDetection
+import com.rhecyee.firelinemap.satellite.FirmsFeed
+import com.rhecyee.firelinemap.satellite.ObserveDetections
 import com.rhecyee.firelinemap.satellite.SatelliteSource
 import com.rhecyee.firelinemap.annotations.MapAnnotation
 import com.rhecyee.firelinemap.fireline.FirelineFeature
@@ -127,6 +133,17 @@ fun MapCanvas(
      */
     detections: DetectionTileCache? = null,
     detectionSources: Set<SatelliteSource> = emptySet(),
+    /**
+     * The same detections as points, where a FIRMS key makes that possible.
+     *
+     * Takes the place of the raster rather than joining it. Two drawings of
+     * the same heat, one of them a picture with no confidence in it, would
+     * double every detection on the map and make the layer look twice as
+     * certain as it is.
+     */
+    firmsFeed: FirmsFeed? = null,
+    firmsKey: String = "",
+    minimumConfidence: DetectionConfidence = DetectionConfidence.LOW,
     contoursEnabled: Boolean = false,
     contourIntervalFeet: Int = 40,
     /**
@@ -441,6 +458,41 @@ fun MapCanvas(
             )
         }
 
+        // Points where there is a key, the raster where there is not. The
+        // key is what buys a confidence per detection; without one the only
+        // thing on offer is a picture of where the heat was.
+        val pointsInsteadOfRaster = firmsFeed != null &&
+            firmsKey.isNotBlank() && detectionSources.isNotEmpty()
+
+        val detectionWindow = run {
+            if (!pointsInsteadOfRaster) return@run null
+            val ground = visibleGround ?: return@run null
+            DetectionWindow.of(
+                south = ground.south,
+                west = ground.west,
+                north = ground.north,
+                east = ground.east
+            )
+        }
+
+        if (firmsFeed != null) {
+            ObserveDetections(
+                feed = firmsFeed,
+                mapKey = firmsKey,
+                sources = detectionSources,
+                window = detectionWindow,
+                enabled = pointsInsteadOfRaster
+            )
+        }
+
+        // Read here rather than inside the draw so the canvas redraws when
+        // an answer lands. A DrawScope that reads state does not subscribe
+        // to it, so the points would otherwise appear on the next pan.
+        val detectionPoints = firmsFeed
+            ?.takeIf { pointsInsteadOfRaster }
+            ?.visible(minimumConfidence)
+            ?: emptyList()
+
         // How much country is actually on screen, which is what decides
         // whether an elevation figure fits between the lines.
         val visibleMeters = run {
@@ -650,12 +702,32 @@ fun MapCanvas(
             // somebody made, so they sit with the map rather than with the
             // work drawn on it.
             if (detections != null && detectionSources.isNotEmpty() && frame != null &&
-                pageWidthPoints > 0 && pageHeightPoints > 0
+                pageWidthPoints > 0 && pageHeightPoints > 0 && !pointsInsteadOfRaster
             ) {
                 drawDetections(
                     cache = detections,
                     sources = detectionSources,
                     frame = frame,
+                    pageWidthPoints = pageWidthPoints,
+                    pageHeightPoints = pageHeightPoints,
+                    originX = originX,
+                    originY = originY,
+                    drawWidth = drawWidth,
+                    drawHeight = drawHeight
+                )
+            }
+
+            if (detectionPoints.isNotEmpty() && frame != null &&
+                pageWidthPoints > 0 && pageHeightPoints > 0
+            ) {
+                drawDetectionPoints(
+                    detections = detectionPoints,
+                    frame = frame,
+                    metersPerPixel = if (visibleMeters > 0.0 && size.width > 0f) {
+                        visibleMeters / size.width
+                    } else {
+                        0.0
+                    },
                     pageWidthPoints = pageWidthPoints,
                     pageHeightPoints = pageHeightPoints,
                     originX = originX,
@@ -1796,6 +1868,75 @@ private val annotationLabelPaint = android.graphics.Paint().apply {
  * screen shows past the cap is the same detection drawn larger, which is the
  * honest thing for it to be.
  */
+/**
+ * Detections as points, each one carrying what is known about it.
+ *
+ * Three things are said at once and all three matter: where the sample was,
+ * how sure the algorithm was, and whether it has been through processing yet.
+ * Colour carries the confidence; a hollow ring carries the ones that have
+ * not been processed -- the minutes-old detections that arrive fastest and
+ * are most likely to be withdrawn.
+ *
+ * Drawn as a circle the size of the sensor's footprint rather than a dot,
+ * because that is what a detection is. A 375 metre pixel drawn as a pin
+ * invites somebody to drive to it.
+ */
+private fun DrawScope.drawDetectionPoints(
+    detections: List<FireDetection>,
+    frame: com.rhecyee.firelinemap.geopdf.MapFrame,
+    metersPerPixel: Double,
+    pageWidthPoints: Int,
+    pageHeightPoints: Int,
+    originX: Float,
+    originY: Float,
+    drawWidth: Float,
+    drawHeight: Float
+) {
+    // Weakest first, so a high-confidence detection is never buried under a
+    // low-confidence one drawn over the top of it.
+    val ordered = detections.sortedBy {
+        when (it.confidence) {
+            DetectionConfidence.HIGH -> 3
+            DetectionConfidence.NOMINAL -> 2
+            DetectionConfidence.LOW -> 1
+            DetectionConfidence.UNKNOWN -> 0
+        }
+    }
+
+    for (detection in ordered) {
+        val page = frame.geoToPage(detection.latitude, detection.longitude) ?: continue
+        val x = originX + (page.first / pageWidthPoints).toFloat() * drawWidth
+        val y = originY + (1f - (page.second / pageHeightPoints).toFloat()) * drawHeight
+        if (x < -DETECTION_SLACK || y < -DETECTION_SLACK ||
+            x > size.width + DETECTION_SLACK || y > size.height + DETECTION_SLACK
+        ) continue
+
+        val radius = DetectionStyle.radiusPixels(
+            resolutionMeters = detection.source?.resolutionMeters ?: 375,
+            metersPerPixel = metersPerPixel
+        )
+        val colour = Color(DetectionStyle.colour(detection.confidence))
+        val centre = Offset(x, y)
+
+        if (DetectionStyle.isProvisional(detection.level)) {
+            // Hollow: seen minutes ago, not yet processed, and the one most
+            // likely to disappear on the next pass.
+            drawCircle(Color.Black, radius = radius, center = centre, alpha = 0.45f,
+                style = Stroke(width = 5f))
+            drawCircle(colour, radius = radius, center = centre, style = Stroke(width = 2.5f))
+            drawCircle(colour, radius = 2.5f, center = centre)
+        } else {
+            drawCircle(colour, radius = radius, center = centre, alpha = 0.30f)
+            drawCircle(Color.Black, radius = radius, center = centre, alpha = 0.45f,
+                style = Stroke(width = 4f))
+            drawCircle(colour, radius = radius, center = centre, style = Stroke(width = 2f))
+        }
+    }
+}
+
+/** How far off screen a footprint may start and still be worth drawing. */
+private const val DETECTION_SLACK = 64f
+
 private fun DrawScope.drawDetections(
     cache: DetectionTileCache,
     sources: Set<SatelliteSource>,
