@@ -37,11 +37,10 @@ android {
         minSdk = 26
         targetSdk = 36
         // versionCode has to climb with every upload; versionName is what a
-        // crew reads in the listing. 12 is uploaded and accepted, so this is
-        // 13. Slope shading and kept shapes make it a minor rather than a
-        // patch.
-        versionCode = 13
-        versionName = "0.7.0"
+        // crew reads in the listing. 13 is uploaded, so this is 14. The
+        // satellite detection layer makes it a minor rather than a patch.
+        versionCode = 14
+        versionName = "0.8.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
